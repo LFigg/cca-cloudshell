@@ -3,8 +3,8 @@
 # Run this script first to install dependencies
 #
 # Quick Start:
-#   git clone https://github.com/LFigg/cca-cloudshell.git
-#   cd cca-cloudshell
+#   curl -sL https://github.com/LFigg/cca-cloudshell/archive/refs/heads/main.tar.gz | tar xz
+#   cd cca-cloudshell-main
 #   ./setup.sh
 
 set -e
