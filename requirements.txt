@@ -1,0 +1,28 @@
+# CCA CloudShell Requirements
+# Dependencies for running collectors in cloud shells
+
+# AWS (pre-installed in AWS CloudShell)
+boto3>=1.26.0
+
+# Azure
+azure-identity>=1.13.0
+azure-mgmt-compute>=30.0.0
+azure-mgmt-storage>=21.0.0
+azure-mgmt-sql>=3.0.0
+azure-mgmt-cosmosdb>=9.0.0
+azure-mgmt-containerservice>=26.0.0
+azure-mgmt-web>=7.0.0
+azure-mgmt-resource>=23.0.0
+azure-mgmt-recoveryservices>=2.0.0
+azure-mgmt-recoveryservicesbackup>=6.0.0
+azure-mgmt-redis>=14.0.0
+
+# Microsoft 365 / Graph API
+msgraph-sdk>=1.0.0
+
+# Reporting
+openpyxl>=3.1.0
+
+# Testing
+pytest>=7.0.0
+moto[all]>=5.0.0
