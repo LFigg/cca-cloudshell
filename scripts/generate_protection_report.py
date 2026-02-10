@@ -193,6 +193,33 @@ def format_tags(tags: Dict) -> str:
     return '; '.join(f"{k}={v}" for k, v in tags.items()) if tags else ''
 
 
+def get_eks_cluster(tags: Dict) -> str:
+    """Detect EKS cluster membership from instance tags.
+    
+    EKS nodes are tagged with:
+    - kubernetes.io/cluster/<cluster-name> = owned/shared
+    - eks:cluster-name = <cluster-name>
+    - aws:eks:cluster-name = <cluster-name>
+    """
+    if not tags:
+        return ''
+    
+    # Check for explicit eks cluster name tags
+    for key in ['eks:cluster-name', 'aws:eks:cluster-name']:
+        if key in tags:
+            return tags[key]
+    
+    # Check for kubernetes.io/cluster/* tags
+    for key, value in tags.items():
+        if key.startswith('kubernetes.io/cluster/'):
+            # Extract cluster name from tag key
+            cluster_name = key.replace('kubernetes.io/cluster/', '')
+            if value in ('owned', 'shared'):
+                return cluster_name
+    
+    return ''
+
+
 def generate_report(inventory_path: str, output_path: str):
     """Generate the protection report CSV with full hierarchy."""
     data = load_inventory(inventory_path)
@@ -266,19 +293,22 @@ def generate_report(inventory_path: str, output_path: str):
                 )
                 
                 if volume_snapshots:
-                    for snap in volume_snapshots:
+                    for snap_idx, snap in enumerate(volume_snapshots):
                         # For backup_plan: prefer definitive, then snapshot inference
                         backup_plan = vol_plan or inst_plan or infer_backup_plan(snap, backup_plans) or ''
                         protection_source = vol_source or inst_source or ('inferred' if backup_plan else '')
                         
                         rows.append({
+                            'service_family': 'EC2',
                             'instance_name': instance['name'],
                             'instance_id': instance_id,
+                            'instance_type': instance.get('metadata', {}).get('instance_type', ''),
+                            'eks_cluster': get_eks_cluster(instance.get('tags', {})),
                             'instance_region': instance['region'],
                             'instance_tags': format_tags(instance.get('tags', {})),
                             'volume_name': volume['name'],
                             'volume_id': volume_id,
-                            'volume_size_gb': volume['size_gb'],
+                            'volume_size_gb': volume['size_gb'] if snap_idx == 0 else '',
                             'snapshot_name': snap['name'],
                             'snapshot_id': snap['resource_id'],
                             'snapshot_size_gb': snap['size_gb'],
@@ -295,8 +325,11 @@ def generate_report(inventory_path: str, output_path: str):
                     has_backup_plan = bool(backup_plan)
                     
                     rows.append({
+                        'service_family': 'EC2',
                         'instance_name': instance['name'],
                         'instance_id': instance_id,
+                        'instance_type': instance.get('metadata', {}).get('instance_type', ''),
+                        'eks_cluster': get_eks_cluster(instance.get('tags', {})),
                         'instance_region': instance['region'],
                         'instance_tags': format_tags(instance.get('tags', {})),
                         'volume_name': volume['name'],
@@ -317,8 +350,11 @@ def generate_report(inventory_path: str, output_path: str):
                 instance, selection_index, protected_set, backup_plans
             )
             rows.append({
+                'service_family': 'EC2',
                 'instance_name': instance['name'],
                 'instance_id': instance_id,
+                'instance_type': instance.get('metadata', {}).get('instance_type', ''),
+                'eks_cluster': get_eks_cluster(instance.get('tags', {})),
                 'instance_region': instance['region'],
                 'instance_tags': format_tags(instance.get('tags', {})),
                 'volume_name': '(no volumes)',
@@ -346,18 +382,21 @@ def generate_report(inventory_path: str, output_path: str):
         )
         
         if volume_snapshots:
-            for snap in volume_snapshots:
+            for snap_idx, snap in enumerate(volume_snapshots):
                 backup_plan = vol_plan or infer_backup_plan(snap, backup_plans) or ''
                 protection_source = vol_source or ('inferred' if backup_plan else '')
                 
                 rows.append({
+                    'service_family': 'EBS',
                     'instance_name': '(orphan volume)',
                     'instance_id': '',
+                    'instance_type': '',
+                    'eks_cluster': '',
                     'instance_region': volume['region'],
                     'instance_tags': '',
                     'volume_name': volume['name'],
                     'volume_id': volume_id,
-                    'volume_size_gb': volume['size_gb'],
+                    'volume_size_gb': volume['size_gb'] if snap_idx == 0 else '',
                     'snapshot_name': snap['name'],
                     'snapshot_id': snap['resource_id'],
                     'snapshot_size_gb': snap['size_gb'],
@@ -371,8 +410,11 @@ def generate_report(inventory_path: str, output_path: str):
             # Orphan volume with no snapshots - check if in backup plan
             has_backup_plan = bool(vol_plan)
             rows.append({
+                'service_family': 'EBS',
                 'instance_name': '(orphan volume)',
                 'instance_id': '',
+                'instance_type': '',
+                'eks_cluster': '',
                 'instance_region': volume['region'],
                 'instance_tags': '',
                 'volume_name': volume['name'],
@@ -403,18 +445,21 @@ def generate_report(inventory_path: str, output_path: str):
         rds_snaps = [s for s in rds_snapshots if s.get('parent_resource_id') == db_identifier]
         
         if rds_snaps:
-            for snap in rds_snaps:
+            for snap_idx, snap in enumerate(rds_snaps):
                 backup_plan = rds_plan or infer_backup_plan(snap, backup_plans) or ''
                 protection_source = rds_source or ('inferred' if backup_plan else '')
                 
                 rows.append({
+                    'service_family': 'RDS',
                     'instance_name': rds['name'],
                     'instance_id': rds_id,
+                    'instance_type': rds.get('metadata', {}).get('instance_class', ''),
+                    'eks_cluster': '',
                     'instance_region': rds['region'],
                     'instance_tags': format_tags(rds.get('tags', {})),
                     'volume_name': f"({rds['resource_type'].split(':')[-1]} storage)",
                     'volume_id': '',
-                    'volume_size_gb': rds['size_gb'],
+                    'volume_size_gb': rds['size_gb'] if snap_idx == 0 else '',
                     'snapshot_name': snap['name'],
                     'snapshot_id': snap['resource_id'],
                     'snapshot_size_gb': snap['size_gb'],
@@ -428,8 +473,11 @@ def generate_report(inventory_path: str, output_path: str):
             # RDS with no snapshots - check if in backup plan
             has_backup_plan = bool(rds_plan)
             rows.append({
+                'service_family': 'RDS',
                 'instance_name': rds['name'],
                 'instance_id': rds_id,
+                'instance_type': rds.get('metadata', {}).get('instance_class', ''),
+                'eks_cluster': '',
                 'instance_region': rds['region'],
                 'instance_tags': format_tags(rds.get('tags', {})),
                 'volume_name': f"({rds['resource_type'].split(':')[-1]} storage)",
@@ -509,12 +557,12 @@ def generate_report(inventory_path: str, output_path: str):
     summary_data = [
         ["Resource Type", "Count", "Size (GB)", "Notes"],
         ["EC2 Instances", len(ec2_instances), "", ""],
-        ["EBS Volumes (Total)", len(ebs_volumes), f"{total_volume_size:,.1f}", ""],
-        ["  - Attached Volumes", len(ebs_volumes) - len(orphan_volumes), f"{attached_volume_size:,.1f}", ""],
-        ["  - Orphan Volumes", len(orphan_volumes), f"{orphan_volume_size:,.1f}", "Detached from instances"],
-        ["EBS Snapshots", len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']), f"{total_snapshot_size:,.1f}", ""],
-        ["RDS Databases", len(rds_instances), f"{total_rds_size:,.1f}", "Allocated storage"],
-        ["RDS Snapshots", len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']]), f"{total_rds_snapshot_size:,.1f}", ""],
+        ["EBS Volumes (Total)", len(ebs_volumes), round(total_volume_size, 1), ""],
+        ["  - Attached Volumes", len(ebs_volumes) - len(orphan_volumes), round(attached_volume_size, 1), ""],
+        ["  - Orphan Volumes", len(orphan_volumes), round(orphan_volume_size, 1), "Detached from instances"],
+        ["EBS Snapshots", len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']), round(total_snapshot_size, 1), ""],
+        ["RDS Databases", len(rds_instances), round(total_rds_size, 1), "Allocated storage"],
+        ["RDS Snapshots", len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']]), round(total_rds_snapshot_size, 1), ""],
         ["Backup Plans", len([r for r in backup_plans if r['resource_type'] == 'aws:backup:plan']), "", ""],
         ["Backup Selections", len(backup_selections), "", ""],
         ["Protected Resources", len(protected_resources), "", "Resources with recovery points"],
@@ -535,10 +583,10 @@ def generate_report(inventory_path: str, output_path: str):
     
     status_data = [
         ["Status", "Volume Count", "Size (GB)", "Percentage"],
-        ["Protected (with snapshots)", len(protected_volume_ids), f"{protected_volume_size:,.1f}", f"{protected_volume_size/total_volume_size*100:.1f}%" if total_volume_size else "0%"],
+        ["Protected (with snapshots)", len(protected_volume_ids), round(protected_volume_size, 1), round(protected_volume_size/total_volume_size*100, 1) if total_volume_size else 0],
         ["In Backup Plan (no snapshots)", len([r for r in rows if r['volume_id'] and 'In Backup Plan' in r['protection_status']]), "", ""],
-        ["Unprotected", len(unprotected_volume_ids), f"{unprotected_volume_size:,.1f}", f"{unprotected_volume_size/total_volume_size*100:.1f}%" if total_volume_size else "0%"],
-        ["Total", len(ebs_volumes), f"{total_volume_size:,.1f}", "100%"],
+        ["Unprotected", len(unprotected_volume_ids), round(unprotected_volume_size, 1), round(unprotected_volume_size/total_volume_size*100, 1) if total_volume_size else 0],
+        ["Total", len(ebs_volumes), round(total_volume_size, 1), 100],
     ]
     
     for row_idx, row_data in enumerate(status_data, start=22):
@@ -561,15 +609,37 @@ def generate_report(inventory_path: str, output_path: str):
     ws_report = wb.create_sheet(title="Protection Report")
     
     fieldnames = [
-        'instance_name', 'instance_id', 'instance_region', 'instance_tags',
+        'service_family', 'instance_name', 'instance_id', 'instance_type', 'eks_cluster', 'instance_region', 'instance_tags',
         'volume_name', 'volume_id', 'volume_size_gb',
         'snapshot_name', 'snapshot_id', 'snapshot_size_gb',
         'snapshot_created', 'snapshot_description', 'backup_plan', 'protection_source', 'protection_status'
     ]
     
+    # Pretty header mapping
+    header_display = {
+        'service_family': 'Service',
+        'instance_name': 'Instance Name',
+        'instance_id': 'Instance ID',
+        'instance_type': 'Instance Type',
+        'eks_cluster': 'EKS Cluster',
+        'instance_region': 'Region',
+        'instance_tags': 'Tags',
+        'volume_name': 'Volume Name',
+        'volume_id': 'Volume ID',
+        'volume_size_gb': 'Volume Size (GB)',
+        'snapshot_name': 'Snapshot Name',
+        'snapshot_id': 'Snapshot ID',
+        'snapshot_size_gb': 'Snapshot Size (GB)',
+        'snapshot_created': 'Snapshot Created',
+        'snapshot_description': 'Snapshot Description',
+        'backup_plan': 'Backup Plan',
+        'protection_source': 'Protection Source',
+        'protection_status': 'Protection Status'
+    }
+    
     # Header row
     for col_idx, header in enumerate(fieldnames, start=1):
-        cell = ws_report.cell(row=1, column=col_idx, value=header)
+        cell = ws_report.cell(row=1, column=col_idx, value=header_display.get(header, header))
         cell.fill = header_fill
         cell.font = header_font_white
         cell.border = thin_border
@@ -600,17 +670,17 @@ def generate_report(inventory_path: str, output_path: str):
     
     # Adjust column widths for report
     column_widths = {
-        'A': 20, 'B': 22, 'C': 12, 'D': 40,
-        'E': 18, 'F': 25, 'G': 12,
-        'H': 18, 'I': 45, 'J': 12,
-        'K': 22, 'L': 30, 'M': 25, 'N': 15, 'O': 20
+        'A': 10, 'B': 20, 'C': 22, 'D': 15, 'E': 18, 'F': 12, 'G': 40,
+        'H': 18, 'I': 25, 'J': 15,
+        'K': 18, 'L': 45, 'M': 15,
+        'N': 22, 'O': 30, 'P': 25, 'Q': 15, 'R': 18
     }
     for col, width in column_widths.items():
         ws_report.column_dimensions[col].width = width
     
     # Freeze header row and enable filters
     ws_report.freeze_panes = 'A2'
-    ws_report.auto_filter.ref = f"A1:O{len(rows) + 1}"
+    ws_report.auto_filter.ref = f"A1:R{len(rows) + 1}"
     
     # --- Backup Plans Sheet ---
     ws_plans = wb.create_sheet(title="Backup Plans")

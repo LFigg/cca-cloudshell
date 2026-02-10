@@ -487,6 +487,60 @@ def collect_eks_clusters(session: boto3.Session, region: str, account_id: str) -
     return resources
 
 
+def collect_eks_nodegroups(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect EKS node groups with instance mapping."""
+    resources = []
+    try:
+        eks = session.client('eks', region_name=region)
+        
+        clusters = eks.list_clusters().get('clusters', [])
+        
+        for cluster_name in clusters:
+            try:
+                nodegroups = eks.list_nodegroups(clusterName=cluster_name).get('nodegroups', [])
+                
+                for ng_name in nodegroups:
+                    try:
+                        ng = eks.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name)['nodegroup']
+                        
+                        # Get Auto Scaling group info if available
+                        asg_name = ''
+                        if ng.get('resources', {}).get('autoScalingGroups'):
+                            asg_name = ng['resources']['autoScalingGroups'][0].get('name', '')
+                        
+                        resource = CloudResource(
+                            provider="aws",
+                            account_id=account_id,
+                            region=region,
+                            resource_type="aws:eks:nodegroup",
+                            service_family="EKS",
+                            resource_id=ng.get('nodegroupArn', ''),
+                            name=ng_name,
+                            tags=ng.get('tags', {}),
+                            size_gb=0.0,
+                            parent_resource_id=cluster_name,
+                            metadata={
+                                'cluster_name': cluster_name,
+                                'status': ng.get('status'),
+                                'capacity_type': ng.get('capacityType'),
+                                'instance_types': ng.get('instanceTypes', []),
+                                'scaling_config': ng.get('scalingConfig', {}),
+                                'asg_name': asg_name,
+                            }
+                        )
+                        resources.append(resource)
+                    except Exception as e:
+                        logger.warning(f"[{region}] Failed to describe nodegroup {ng_name}: {e}")
+            except Exception as e:
+                logger.warning(f"[{region}] Failed to list nodegroups for cluster {cluster_name}: {e}")
+        
+        logger.info(f"[{region}] Found {len(resources)} EKS node groups")
+    except Exception as e:
+        logger.error(f"[{region}] Failed to collect EKS node groups: {e}")
+    
+    return resources
+
+
 # =============================================================================
 # Lambda Collector
 # =============================================================================
@@ -956,6 +1010,7 @@ def collect_region(session: boto3.Session, region: str, account_id: str) -> List
     
     # Containers & Compute
     resources.extend(collect_eks_clusters(session, region, account_id))
+    resources.extend(collect_eks_nodegroups(session, region, account_id))
     resources.extend(collect_lambda_functions(session, region, account_id))
     
     # Databases
