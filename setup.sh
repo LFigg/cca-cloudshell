@@ -1,6 +1,11 @@
 #!/bin/bash
 # CCA CloudShell - Setup Script
 # Run this script first to install dependencies
+#
+# Quick Start:
+#   git clone https://github.com/LFigg/cca-cloudshell.git
+#   cd cca-cloudshell
+#   ./setup.sh
 
 set -e
 

@@ -24,8 +24,9 @@ These standalone Python scripts collect cloud resource inventory including prima
 ### Setup
 
 ```bash
-# Clone or download the cca-cloudshell folder
-chmod +x setup.sh run_all.sh
+# Clone the repository
+git clone https://github.com/LFigg/cca-cloudshell.git
+cd cca-cloudshell
 
 # Run setup (installs dependencies)
 ./setup.sh
