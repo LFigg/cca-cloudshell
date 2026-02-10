@@ -1,6 +1,6 @@
 #!/bin/bash
 # CCA CloudShell - Run All Collectors
-# Combines output from AWS, Azure, and M365 collectors
+# Combines output from AWS, Azure, GCP, and M365 collectors
 
 set -e
 
@@ -55,6 +55,23 @@ else
     echo "    Set up Azure credentials or run in Azure Cloud Shell"
 fi
 
+# GCP Collection (if credentials available)
+if python3 -c "import google.auth; google.auth.default()" &> /dev/null 2>&1; then
+    echo ""
+    echo ">>> Running GCP Collector..."
+    GCP_OUTPUT="$OUTPUT_DIR/gcp"
+    python3 gcp_collect.py --output "$GCP_OUTPUT" 2>&1 || true
+    
+    GCP_INVENTORY=$(ls -t "$GCP_OUTPUT"/cca_inv_*.json 2>/dev/null | head -1)
+    if [ -n "$GCP_INVENTORY" ] && [ -f "$GCP_INVENTORY" ]; then
+        echo "GCP inventory: $GCP_INVENTORY"
+    fi
+else
+    echo ""
+    echo ">>> Skipping GCP (no credentials configured)"
+    echo "    Set up GCP credentials or run in Google Cloud Shell"
+fi
+
 # M365 Collection (if credentials available)
 if [ -n "$MS365_TENANT_ID" ] && [ -n "$MS365_CLIENT_ID" ] && [ -n "$MS365_CLIENT_SECRET" ]; then
     echo ""
@@ -81,5 +98,6 @@ echo ""
 echo "Individual outputs:"
 echo "  AWS:   $OUTPUT_DIR/aws/"
 echo "  Azure: $OUTPUT_DIR/azure/"
+echo "  GCP:   $OUTPUT_DIR/gcp/"
 echo "  M365:  $OUTPUT_DIR/m365/"
 echo "========================================"

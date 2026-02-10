@@ -7,6 +7,7 @@ Lightweight cloud resource assessment collectors designed for cloud shell enviro
 These standalone Python scripts collect cloud resource inventory including primary resources, snapshots, and backup configurations. They're optimized for:
 - **AWS CloudShell** - Pre-authenticated, no setup required
 - **Azure Cloud Shell** - Uses DefaultAzureCredential  
+- **Google Cloud Shell** - Uses application default credentials
 - **Microsoft 365** - Uses Azure AD app registration
 - **Local execution** - With configured credentials
 
@@ -86,11 +87,18 @@ python3 m365_collect.py --skip-sharepoint  # Skip specific services
 python3 m365_collect.py -o ./my_output     # Custom output dir
 ```
 
-### Run All Collectors
+### Google Cloud Shell
 
 ```bash
-# Run all configured collectors at once
-./run_all.sh ./combined_output
+# Open Google Cloud Shell from Cloud Console
+# Your credentials are already configured via application default credentials
+
+python3 gcp_collect.py
+
+# Options
+python3 gcp_collect.py --project my-project-id  # Specific project
+python3 gcp_collect.py --all-projects            # All accessible projects
+python3 gcp_collect.py --output ./my_output      # Custom output directory
 ```
 
 ## M365 Setup
@@ -129,9 +137,9 @@ cca-cloudshell/
 ├── README.md
 ├── requirements.txt        # Python dependencies
 ├── setup.sh                # Setup script
-├── run_all.sh              # Run all collectors
 ├── aws_collect.py          # AWS resource collector
 ├── azure_collect.py        # Azure resource collector
+├── gcp_collect.py          # Google Cloud resource collector
 ├── m365_collect.py         # Microsoft 365 collector
 ├── lib/
 │   ├── __init__.py
@@ -203,6 +211,20 @@ The Excel report includes:
 | **Backup Policies** | Backup policies with schedules |
 | **Backup Protected Items** | Resources protected by Azure Backup |
 | **Backup Recovery Points** | Actual backup data with sizes |
+
+### Google Cloud Platform
+| Resource Type | Description |
+|--------------|-------------|
+| Compute Engine Instances | Virtual machines with machine type, disks |
+| Persistent Disks | Block storage disks with size, type |
+| Disk Snapshots | Disk snapshots with size, creation time |
+| Cloud Storage Buckets | Object storage (bucket count) |
+| Cloud SQL Instances | Managed databases (MySQL, PostgreSQL, SQL Server) |
+| GKE Clusters | Kubernetes clusters with node pools |
+| Cloud Functions | Serverless functions with runtime, memory |
+| Filestore Instances | Managed file storage with capacity |
+| Memorystore Redis | In-memory cache instances |
+| Backup & DR Plans | Backup policies and plans |
 
 ### Microsoft 365
 | Resource Type | Description |
