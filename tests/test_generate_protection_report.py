@@ -290,7 +290,7 @@ class TestFormatTags:
     def test_format_empty_tags(self):
         """Test formatting empty tags."""
         assert format_tags({}) == ''
-        assert format_tags(None) == ''
+        assert format_tags(None) == ''  # type: ignore[arg-type]
 
 
 # =============================================================================
@@ -397,7 +397,7 @@ class TestInferBackupPlan:
         backup_plans = []  # No matching plans
         
         result = infer_backup_plan(snapshot, backup_plans)
-        assert 'daily' in result.lower()
+        assert result is not None and 'daily' in result.lower()
     
     def test_no_inference_possible(self):
         """Test when no inference is possible."""

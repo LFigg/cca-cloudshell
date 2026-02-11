@@ -107,7 +107,7 @@ class TestFormatBytesToGb:
     
     def test_none_bytes(self):
         """Test conversion of None."""
-        assert format_bytes_to_gb(None) == 0.0
+        assert format_bytes_to_gb(None) == 0.0  # type: ignore[arg-type]
     
     def test_one_gb(self):
         """Test conversion of exactly 1 GB."""
@@ -144,7 +144,7 @@ class TestFormatGbToTb:
     
     def test_none_gb(self):
         """Test conversion of None."""
-        assert format_gb_to_tb(None) == 0.0
+        assert format_gb_to_tb(None) == 0.0  # type: ignore[arg-type]
     
     def test_one_tb(self):
         """Test conversion of 1024 GB = 1 TB."""
