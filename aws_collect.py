@@ -4,11 +4,21 @@ CCA CloudShell - AWS Resource Collector
 
 Collects AWS resources for cloud protection assessment.
 Optimized for AWS CloudShell with minimal dependencies.
+Supports single-account and multi-account collection.
 
 Usage:
+    # Single account (current credentials)
     python3 aws_collect.py
     python3 aws_collect.py --regions us-east-1,us-west-2
     python3 aws_collect.py --output s3://my-bucket/assessments/
+    
+    # Multi-account via role assumption
+    python3 aws_collect.py --role-arn arn:aws:iam::123456789012:role/CCARole
+    python3 aws_collect.py --role-arns arn:aws:iam::111:role/CCA,arn:aws:iam::222:role/CCA
+    
+    # Multi-account via AWS Organizations discovery
+    python3 aws_collect.py --org-role CCARole
+    python3 aws_collect.py --org-role CCARole --external-id MySecretId
 """
 import argparse
 import json
@@ -52,6 +62,127 @@ def get_enabled_regions(session: boto3.Session) -> List[str]:
     ec2 = session.client('ec2', region_name='us-east-1')
     response = ec2.describe_regions(AllRegions=False)
     return sorted([r.get('RegionName', '') for r in response.get('Regions', []) if r.get('RegionName')])
+
+
+def assume_role(
+    session: boto3.Session,
+    role_arn: str,
+    external_id: Optional[str] = None,
+    session_name: str = "CCACloudShell"
+) -> boto3.Session:
+    """
+    Assume an IAM role and return a new session with temporary credentials.
+    
+    Args:
+        session: Source boto3 session for making the AssumeRole call
+        role_arn: ARN of the role to assume (e.g., arn:aws:iam::123456789012:role/CCARole)
+        external_id: Optional external ID for additional security
+        session_name: Session name for CloudTrail auditing
+    
+    Returns:
+        New boto3 Session with assumed role credentials
+    """
+    sts = session.client('sts')
+    
+    assume_params = {
+        'RoleArn': role_arn,
+        'RoleSessionName': session_name,
+        'DurationSeconds': 3600  # 1 hour
+    }
+    
+    if external_id:
+        assume_params['ExternalId'] = external_id
+    
+    try:
+        response = sts.assume_role(**assume_params)
+        credentials = response['Credentials']
+        
+        return boto3.Session(
+            aws_access_key_id=credentials['AccessKeyId'],
+            aws_secret_access_key=credentials['SecretAccessKey'],
+            aws_session_token=credentials['SessionToken']
+        )
+    except ClientError as e:
+        logger.error(f"Failed to assume role {role_arn}: {e}")
+        raise
+
+
+def discover_org_accounts(session: boto3.Session, include_suspended: bool = False) -> List[Dict[str, str]]:
+    """
+    Discover all accounts in the AWS Organization.
+    
+    Requires organizations:ListAccounts permission.
+    
+    Args:
+        session: boto3 session (must have Organizations access)
+        include_suspended: Whether to include suspended accounts
+    
+    Returns:
+        List of dicts with 'id', 'name', 'email', 'status' for each account
+    """
+    accounts = []
+    try:
+        org = session.client('organizations')
+        paginator = org.get_paginator('list_accounts')
+        
+        for page in paginator.paginate():
+            for account in page.get('Accounts', []):
+                status = account.get('Status', 'UNKNOWN')
+                if status == 'ACTIVE' or (include_suspended and status == 'SUSPENDED'):
+                    accounts.append({
+                        'id': account.get('Id', ''),
+                        'name': account.get('Name', ''),
+                        'email': account.get('Email', ''),
+                        'status': status
+                    })
+        
+        logger.info(f"Discovered {len(accounts)} accounts in organization")
+        return accounts
+    
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        if error_code == 'AWSOrganizationsNotInUseException':
+            logger.warning("AWS Organizations is not enabled for this account")
+        elif error_code == 'AccessDeniedException':
+            logger.error("Access denied to Organizations API. Need organizations:ListAccounts permission.")
+        else:
+            logger.error(f"Failed to list organization accounts: {e}")
+        return []
+
+
+def collect_account(
+    session: boto3.Session,
+    account_id: str,
+    regions: Optional[List[str]] = None
+) -> List[CloudResource]:
+    """
+    Collect all resources from a single AWS account.
+    
+    Args:
+        session: boto3 session with credentials for this account
+        account_id: AWS account ID
+        regions: List of regions to collect from (None = all enabled)
+    
+    Returns:
+        List of CloudResource objects
+    """
+    resources = []
+    
+    # Get regions if not specified
+    if regions is None:
+        regions = get_enabled_regions(session)
+    
+    logger.info(f"Collecting from account {account_id} across {len(regions)} regions")
+    
+    # S3 is global
+    resources.extend(collect_s3_buckets(session, account_id))
+    
+    # Regional resources
+    for region in regions:
+        resources.extend(collect_region(session, region, account_id))
+    
+    logger.info(f"Collected {len(resources)} resources from account {account_id}")
+    return resources
 
 
 # =============================================================================
@@ -1028,39 +1159,167 @@ def collect_region(session: boto3.Session, region: str, account_id: str) -> List
 
 
 def main():
-    parser = argparse.ArgumentParser(description='CCA CloudShell - AWS Resource Collector')
+    parser = argparse.ArgumentParser(
+        description='CCA CloudShell - AWS Resource Collector',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Single account (current credentials)
+  python3 aws_collect.py
+
+  # Specific regions
+  python3 aws_collect.py --regions us-east-1,us-west-2
+
+  # Assume role in another account
+  python3 aws_collect.py --role-arn arn:aws:iam::123456789012:role/CCARole
+
+  # Multiple accounts via role assumption
+  python3 aws_collect.py --role-arns arn:aws:iam::111:role/CCA,arn:aws:iam::222:role/CCA
+
+  # Auto-discover all accounts in AWS Organization
+  python3 aws_collect.py --org-role CCARole
+
+  # Organization discovery with external ID
+  python3 aws_collect.py --org-role CCARole --external-id MySecretId
+"""
+    )
+    
+    # Basic options
     parser.add_argument('--profile', help='AWS profile name (optional in CloudShell)')
     parser.add_argument('--regions', help='Comma-separated list of regions (default: all enabled)')
-    parser.add_argument('--output', help='Output directory or S3 path', default='.')
+    parser.add_argument('--output', '-o', help='Output directory or S3 path', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
     
-    args = parser.parse_args()
+    # Multi-account options
+    parser.add_argument(
+        '--role-arn',
+        help='Single role ARN to assume for collection (e.g., arn:aws:iam::123456789012:role/CCARole)'
+    )
+    parser.add_argument(
+        '--role-arns',
+        help='Comma-separated list of role ARNs to assume for multi-account collection'
+    )
+    parser.add_argument(
+        '--org-role',
+        help='Role name to assume in each Organization account (e.g., CCARole). '
+             'Discovers all accounts via Organizations API and assumes arn:aws:iam::<account>:role/<org-role>'
+    )
+    parser.add_argument(
+        '--external-id',
+        help='External ID for role assumption (applies to all role assumptions)'
+    )
+    parser.add_argument(
+        '--skip-accounts',
+        help='Comma-separated list of account IDs to skip (useful with --org-role)'
+    )
     
+    args = parser.parse_args()
     setup_logging(args.log_level)
     
-    # Create session
-    session = get_session(args.profile)
-    account_id = get_account_id(session)
+    # Create base session
+    base_session = get_session(args.profile)
+    base_account_id = get_account_id(base_session)
     
-    logger.info(f"AWS Account: {account_id}")
-    
-    # Get regions
+    # Parse regions
+    regions = None
     if args.regions:
         regions = [r.strip() for r in args.regions.split(',')]
+    
+    # Parse skip accounts
+    skip_accounts = set()
+    if args.skip_accounts:
+        skip_accounts = {a.strip() for a in args.skip_accounts.split(',')}
+    
+    # Determine collection mode and build list of (session, account_id) tuples
+    account_sessions: List[tuple] = []
+    
+    if args.org_role:
+        # Organizations discovery mode
+        logger.info("Discovering accounts via AWS Organizations...")
+        org_accounts = discover_org_accounts(base_session)
+        
+        if not org_accounts:
+            logger.error("No accounts discovered. Check Organizations permissions or use --role-arns instead.")
+            sys.exit(1)
+        
+        for account in org_accounts:
+            acc_id = account['id']
+            acc_name = account['name']
+            
+            if acc_id in skip_accounts:
+                logger.info(f"Skipping account {acc_id} ({acc_name})")
+                continue
+            
+            # Check if this is the management account (where we're running from)
+            if acc_id == base_account_id:
+                logger.info(f"Using current credentials for management account {acc_id} ({acc_name})")
+                account_sessions.append((base_session, acc_id, acc_name))
+            else:
+                # Assume role in member account
+                role_arn = f"arn:aws:iam::{acc_id}:role/{args.org_role}"
+                try:
+                    assumed_session = assume_role(base_session, role_arn, args.external_id)
+                    logger.info(f"Assumed role in account {acc_id} ({acc_name})")
+                    account_sessions.append((assumed_session, acc_id, acc_name))
+                except Exception as e:
+                    logger.warning(f"Failed to assume role in account {acc_id} ({acc_name}): {e}")
+                    continue
+    
+    elif args.role_arns:
+        # Explicit multi-account role assumption
+        role_arns = [r.strip() for r in args.role_arns.split(',')]
+        
+        for role_arn in role_arns:
+            try:
+                assumed_session = assume_role(base_session, role_arn, args.external_id)
+                acc_id = get_account_id(assumed_session)
+                logger.info(f"Assumed role {role_arn} (account {acc_id})")
+                account_sessions.append((assumed_session, acc_id, None))
+            except Exception as e:
+                logger.warning(f"Failed to assume role {role_arn}: {e}")
+                continue
+    
+    elif args.role_arn:
+        # Single role assumption
+        try:
+            assumed_session = assume_role(base_session, args.role_arn, args.external_id)
+            acc_id = get_account_id(assumed_session)
+            logger.info(f"Assumed role {args.role_arn} (account {acc_id})")
+            account_sessions.append((assumed_session, acc_id, None))
+        except Exception as e:
+            logger.error(f"Failed to assume role {args.role_arn}: {e}")
+            sys.exit(1)
+    
     else:
-        regions = get_enabled_regions(session)
+        # Single account mode (current credentials)
+        account_sessions.append((base_session, base_account_id, None))
     
-    logger.info(f"Collecting from {len(regions)} regions: {', '.join(regions)}")
+    if not account_sessions:
+        logger.error("No accounts to collect from")
+        sys.exit(1)
     
-    # Collect resources
-    all_resources = []
+    # Collect from all accounts
+    all_resources: List[CloudResource] = []
+    collected_accounts: List[Dict[str, Any]] = []
     
-    # S3 is global
-    all_resources.extend(collect_s3_buckets(session, account_id))
-    
-    # Regional resources
-    for region in regions:
-        all_resources.extend(collect_region(session, region, account_id))
+    for session, account_id, account_name in account_sessions:
+        try:
+            print(f"\n{'='*60}")
+            print(f"Collecting from account: {account_id}" + (f" ({account_name})" if account_name else ""))
+            print(f"{'='*60}")
+            
+            account_resources = collect_account(session, account_id, regions)
+            all_resources.extend(account_resources)
+            
+            collected_accounts.append({
+                'account_id': account_id,
+                'account_name': account_name,
+                'resource_count': len(account_resources)
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to collect from account {account_id}: {e}")
+            continue
     
     # Generate summaries
     summaries = aggregate_sizing(all_resources)
@@ -1069,12 +1328,17 @@ def main():
     run_id = generate_run_id()
     timestamp = get_timestamp()
     
+    # Determine if multi-account
+    is_multi_account = len(collected_accounts) > 1
+    account_ids = [a['account_id'] for a in collected_accounts]
+    
     output_data = {
         'run_id': run_id,
         'timestamp': timestamp,
         'provider': 'aws',
-        'account_id': account_id,
-        'regions': regions,
+        'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
+        'accounts': collected_accounts if is_multi_account else None,
+        'regions': regions if regions else 'all',
         'resource_count': len(all_resources),
         'resources': [r.to_dict() for r in all_resources]
     }
@@ -1083,11 +1347,16 @@ def main():
         'run_id': run_id,
         'timestamp': timestamp,
         'provider': 'aws',
-        'account_id': account_id,
+        'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
+        'accounts': collected_accounts if is_multi_account else None,
         'total_resources': len(all_resources),
         'total_capacity_gb': sum(s.total_gb for s in summaries),
         'summaries': [s.to_dict() for s in summaries]
     }
+    
+    # Remove None values
+    output_data = {k: v for k, v in output_data.items() if v is not None}
+    summary_data = {k: v for k, v in summary_data.items() if v is not None}
     
     # Write outputs
     output_base = args.output.rstrip('/')
@@ -1108,8 +1377,15 @@ def main():
     print(f"\n{'='*60}")
     print(f"AWS Cloud Assessment Complete")
     print(f"{'='*60}")
-    print(f"Account:   {account_id}")
-    print(f"Regions:   {len(regions)}")
+    
+    if is_multi_account:
+        print(f"Accounts:  {len(collected_accounts)}")
+        for acc in collected_accounts:
+            name_str = f" ({acc['account_name']})" if acc.get('account_name') else ""
+            print(f"  - {acc['account_id']}{name_str}: {acc['resource_count']} resources")
+    else:
+        print(f"Account:   {account_ids[0]}")
+    
     print(f"Resources: {len(all_resources)}")
     print(f"Run ID:    {run_id}")
     
