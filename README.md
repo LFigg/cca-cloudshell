@@ -34,6 +34,13 @@ Each collector generates:
 - `cca_<cloud>_sum_<time>.json` - Aggregated summary
 - `cca_<cloud>_sizing.csv` - Spreadsheet-ready sizing
 
+## Features
+
+- **Progress Tracking**: Rich terminal UI with spinners, progress bars, and resource counts (falls back to plain text when piping output)
+- **Retry Logic**: Automatic retry with exponential backoff for transient API failures
+- **Multi-Account/Project**: Collect across all accessible accounts, subscriptions, or projects
+- **Cloud Shell Ready**: Works out of the box in AWS, Azure, and Google Cloud Shell environments
+
 ## Documentation
 
 | Document | Description |
@@ -76,6 +83,14 @@ Generate an Excel report with protection status analysis:
 
 ```bash
 python scripts/generate_protection_report.py inventory.json report.xlsx
+```
+
+## Compatibility Check
+
+Verify your environment has the required dependencies:
+
+```bash
+python3 tests/test_cloudshell_compat.py
 ```
 
 ## Project Structure

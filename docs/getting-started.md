@@ -95,6 +95,16 @@ Each collector generates:
 | `cca_<cloud>_sum_<time>.json` | Aggregated summary |
 | `cca_<cloud>_sizing.csv` | Spreadsheet-ready sizing data |
 
+## Progress Display
+
+Collectors show real-time progress with:
+- Spinner animation during collection
+- Progress bar showing region/subscription progress
+- Resource counts as they're discovered
+- Summary table at completion
+
+When output is piped (non-TTY), plain text progress messages are shown instead.
+
 ## Next Steps
 
 - [AWS Collector](collectors/aws.md) - Multi-account, regions, all options

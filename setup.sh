@@ -37,28 +37,35 @@ echo ""
 echo "Which collector(s) do you want to set up?"
 echo "  1) AWS only (minimal dependencies)"
 echo "  2) Azure only"
-echo "  3) M365 only"
-echo "  4) All collectors"
+echo "  3) GCP only"
+echo "  4) M365 only"
+echo "  5) All collectors"
 echo ""
-read -p "Enter choice [1-4, default=4]: " choice
-choice=${choice:-4}
+read -p "Enter choice [1-5, default=5]: " choice
+choice=${choice:-5}
 
 case $choice in
     1)
         echo "Installing AWS dependencies..."
-        pip3 install --quiet boto3 rich
+        pip3 install --quiet boto3 rich tenacity
         ;;
     2)
         echo "Installing Azure dependencies..."
         pip3 install --quiet azure-identity azure-mgmt-compute azure-mgmt-storage \
             azure-mgmt-sql azure-mgmt-cosmosdb azure-mgmt-containerservice \
-            azure-mgmt-web azure-mgmt-resource rich
+            azure-mgmt-web azure-mgmt-resource rich tenacity
         ;;
     3)
-        echo "Installing M365 dependencies..."
-        pip3 install --quiet msgraph-sdk azure-identity rich
+        echo "Installing GCP dependencies..."
+        pip3 install --quiet google-cloud-compute google-cloud-storage \
+            google-cloud-sql google-cloud-container google-cloud-functions \
+            google-cloud-resource-manager rich tenacity
         ;;
     4)
+        echo "Installing M365 dependencies..."
+        pip3 install --quiet msgraph-sdk azure-identity rich tenacity
+        ;;
+    5)
         echo "Installing all dependencies..."
         pip3 install --quiet -r requirements.txt
         ;;
@@ -76,6 +83,7 @@ echo ""
 echo "Run the collectors:"
 echo "  AWS:   python3 aws_collect.py --help"
 echo "  Azure: python3 azure_collect.py --help"
+echo "  GCP:   python3 gcp_collect.py --help"
 echo "  M365:  python3 m365_collect.py --help"
 echo ""
 
