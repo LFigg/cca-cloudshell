@@ -10,6 +10,7 @@ Collects cloud resource inventory including:
 - Databases (managed SQL, NoSQL)
 - Snapshots and backups
 - Protection status analysis
+- Backup/snapshot cost analysis
 
 ## Quick Start
 
@@ -23,6 +24,7 @@ python3 aws_collect.py      # AWS
 python3 azure_collect.py    # Azure
 python3 gcp_collect.py      # GCP
 python3 m365_collect.py     # Microsoft 365
+python3 cost_collect.py --aws  # Backup/snapshot costs
 ```
 
 ## Output
@@ -41,6 +43,7 @@ Each collector generates:
 | [Azure Collector](docs/collectors/azure.md) | Subscriptions, resources |
 | [GCP Collector](docs/collectors/gcp.md) | Projects, regions, resources |
 | [M365 Collector](docs/collectors/m365.md) | App registration, Graph API |
+| [Cost Collector](docs/collectors/cost.md) | Backup/snapshot spending |
 | [Required Permissions](docs/PERMISSIONS.md) | IAM policies for each cloud |
 | [Output Formats](docs/output-formats.md) | JSON schema, CSV fields |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and solutions |
@@ -62,6 +65,9 @@ python3 gcp_collect.py --all-projects
 
 # Custom output directory
 python3 aws_collect.py -o ./my_output/
+
+# Analyze backup/snapshot costs
+python3 cost_collect.py --aws --start-date 2026-01-01
 ```
 
 ## Protection Report
@@ -78,6 +84,7 @@ python scripts/generate_protection_report.py inventory.json report.xlsx
 cca-cloudshell/
 ├── aws_collect.py          # AWS collector
 ├── azure_collect.py        # Azure collector
+├── cost_collect.py         # Cost analyzer
 ├── gcp_collect.py          # GCP collector
 ├── m365_collect.py         # M365 collector
 ├── lib/                    # Shared models and utilities

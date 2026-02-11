@@ -418,6 +418,74 @@ export MS365_CLIENT_SECRET="your-client-secret"
 
 ---
 
+## Cost Collector Permissions
+
+The cost collector (`cost_collect.py`) requires additional billing/cost permissions.
+
+### AWS Cost Explorer
+
+Add to your IAM policy:
+
+```json
+{
+    "Sid": "CostExplorerAccess",
+    "Effect": "Allow",
+    "Action": [
+        "ce:GetCostAndUsage",
+        "ce:GetCostForecast",
+        "ce:GetDimensionValues"
+    ],
+    "Resource": "*"
+}
+```
+
+| Permission | Purpose |
+|------------|---------|
+| `ce:GetCostAndUsage` | Query cost and usage data |
+| `ce:GetCostForecast` | Get cost forecasts (optional) |
+| `ce:GetDimensionValues` | List available filter values |
+
+### Azure Cost Management
+
+Assign the built-in **Cost Management Reader** role, or add to custom role:
+
+```json
+{
+    "Actions": [
+        "Microsoft.CostManagement/query/read",
+        "Microsoft.CostManagement/exports/read",
+        "Microsoft.Consumption/usageDetails/read"
+    ]
+}
+```
+
+| Permission | Purpose |
+|------------|---------|
+| `Microsoft.CostManagement/query/read` | Query cost data |
+| `Microsoft.Consumption/usageDetails/read` | Read usage details |
+
+### GCP BigQuery Billing
+
+GCP requires billing export to BigQuery. Grant these permissions:
+
+```yaml
+includedPermissions:
+  - bigquery.jobs.create
+  - bigquery.tables.getData
+```
+
+| Permission | Scope | Purpose |
+|------------|-------|---------|
+| `bigquery.jobs.create` | Project | Run queries |
+| `bigquery.tables.getData` | Billing table | Read billing data |
+
+**Note:** Before using the GCP cost collector:
+1. Enable BigQuery billing export in Cloud Console → Billing → Billing export
+2. Wait 24-48 hours for data to populate
+3. Grant `BigQuery Data Viewer` role on the billing dataset
+
+---
+
 ## Security Best Practices
 
 1. **Use read-only permissions** - The collectors only need read access
