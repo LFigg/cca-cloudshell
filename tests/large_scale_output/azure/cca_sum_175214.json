@@ -1,0 +1,80 @@
+{
+  "provider": "azure",
+  "run_id": "20260211-175214-57f0b35c",
+  "timestamp": "2026-02-11T17:52:14.610994Z",
+  "subscription_id": "12345678-1234-1234-1234-123456789012",
+  "total_resources": 936,
+  "total_capacity_gb": 268211.0,
+  "summaries": [
+    {
+      "provider": "azure",
+      "service_family": "AzureVM",
+      "resource_type": "azure:vm",
+      "resource_count": 200,
+      "total_gb": 40480.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureDisk",
+      "resource_type": "azure:disk",
+      "resource_count": 320,
+      "total_gb": 186912.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureSnapshot",
+      "resource_type": "azure:snapshot",
+      "resource_count": 200,
+      "total_gb": 38688.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureStorage",
+      "resource_type": "azure:storage:account",
+      "resource_count": 40,
+      "total_gb": 0.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureSQLDB",
+      "resource_type": "azure:sql:database",
+      "resource_count": 56,
+      "total_gb": 2131.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureCosmosDB",
+      "resource_type": "azure:cosmosdb:account",
+      "resource_count": 20,
+      "total_gb": 0.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureAKS",
+      "resource_type": "azure:aks:cluster",
+      "resource_count": 12,
+      "total_gb": 0.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureFunctions",
+      "resource_type": "azure:function:app",
+      "resource_count": 60,
+      "total_gb": 0.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureRedis",
+      "resource_type": "azure:redis:cache",
+      "resource_count": 20,
+      "total_gb": 0.0
+    },
+    {
+      "provider": "azure",
+      "service_family": "AzureRecoveryServices",
+      "resource_type": "azure:recovery:vault",
+      "resource_count": 8,
+      "total_gb": 0.0
+    }
+  ]
+}

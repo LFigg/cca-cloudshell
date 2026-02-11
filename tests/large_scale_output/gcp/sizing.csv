@@ -1,0 +1,14 @@
+provider,service_family,resource_type,resource_count,total_gb
+gcp,ComputeSnapshot,gcp:compute:snapshot,100,13050.0
+gcp,CloudStorage,gcp:storage:bucket,40,29275.699999999997
+gcp,Compute,gcp:compute:instance,200,91120.0
+gcp,PersistentDisk,gcp:compute:disk,320,163540.0
+gcp,CloudSQL,gcp:sql:instance,60,9520.0
+gcp,GKE,gcp:container:cluster,20,0.0
+gcp,CloudFunctions,gcp:functions:function,80,0.0
+gcp,Filestore,gcp:filestore:instance,20,149504.0
+gcp,Memorystore,gcp:redis:instance,20,209.0
+gcp,Backup,gcp:backupdr:vault,12,33989.0
+gcp,Backup,gcp:backupdr:plan,20,0.0
+gcp,Backup,gcp:backupdr:datasource,80,20585.0
+gcp,Backup,gcp:backupdr:backup,200,4863.7800000000025

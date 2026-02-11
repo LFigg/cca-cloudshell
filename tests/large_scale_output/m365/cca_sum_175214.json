@@ -1,0 +1,52 @@
+{
+  "provider": "microsoft365",
+  "run_id": "20260211-175214-d1cb8d4b",
+  "timestamp": "2026-02-11T17:52:14.696301Z",
+  "tenant_id": "12345678-1234-1234-1234-123456789012",
+  "total_resources": 1751,
+  "total_capacity_gb": 82059.06319273915,
+  "summaries": [
+    {
+      "provider": "microsoft365",
+      "service_family": "SharePoint",
+      "resource_type": "m365:sharepoint:site",
+      "resource_count": 100,
+      "total_gb": 24770.55018705316
+    },
+    {
+      "provider": "microsoft365",
+      "service_family": "EntraID",
+      "resource_type": "m365:entra:user",
+      "resource_count": 500,
+      "total_gb": 0.0
+    },
+    {
+      "provider": "microsoft365",
+      "service_family": "OneDrive",
+      "resource_type": "m365:onedrive:account",
+      "resource_count": 440,
+      "total_gb": 45759.911472925916
+    },
+    {
+      "provider": "microsoft365",
+      "service_family": "Exchange",
+      "resource_type": "m365:exchange:mailbox",
+      "resource_count": 461,
+      "total_gb": 11528.601532760076
+    },
+    {
+      "provider": "microsoft365",
+      "service_family": "Teams",
+      "resource_type": "m365:teams:team",
+      "resource_count": 100,
+      "total_gb": 0.0
+    },
+    {
+      "provider": "microsoft365",
+      "service_family": "EntraID",
+      "resource_type": "m365:entra:group",
+      "resource_count": 150,
+      "total_gb": 0.0
+    }
+  ]
+}
