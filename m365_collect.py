@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # Add lib to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.models import CloudResource
-from lib.utils import write_json as _write_json_to_path
+from lib.utils import write_json as _write_json_to_path, ProgressTracker
 
 
 # =============================================================================
@@ -558,12 +558,8 @@ Security Note:
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    print("="*70)
-    print("CCA CloudShell - Microsoft 365 Collector")
-    print("="*70)
-    print(f"Tenant ID: {args.tenant_id[:8]}...{args.tenant_id[-4:]}")
-    print(f"Output Directory: {args.output_dir}")
-    print("="*70 + "\n")
+    print(f"Tenant: {args.tenant_id[:8]}...{args.tenant_id[-4:]}")
+    print(f"Output: {args.output_dir}\n")
     
     # Initialize Graph client
     try:
@@ -577,24 +573,58 @@ Security Note:
         print(f"ERROR: Failed to initialize Graph client: {e}")
         sys.exit(1)
     
-    # Collect resources
+    # Count total collection tasks
+    num_tasks = 0
+    if not args.skip_sharepoint: num_tasks += 1
+    if not args.skip_onedrive: num_tasks += 1
+    if not args.skip_exchange: num_tasks += 1
+    if not args.skip_teams: num_tasks += 1
+    if args.include_entra: num_tasks += 2  # users + groups
+    
+    # Collect resources with progress tracking
     all_resources: List[CloudResource] = []
     
-    if not args.skip_sharepoint:
-        all_resources.extend(collect_sharepoint_sites(graph_client, args.tenant_id))
-    
-    if not args.skip_onedrive:
-        all_resources.extend(collect_onedrive_accounts(graph_client, args.tenant_id))
-    
-    if not args.skip_exchange:
-        all_resources.extend(collect_exchange_mailboxes(graph_client, args.tenant_id))
-    
-    if not args.skip_teams:
-        all_resources.extend(collect_teams(graph_client, args.tenant_id))
-    
-    if args.include_entra:
-        all_resources.extend(collect_entra_users(graph_client, args.tenant_id))
-        all_resources.extend(collect_entra_groups(graph_client, args.tenant_id))
+    with ProgressTracker("M365", total_accounts=num_tasks) as tracker:
+        if not args.skip_sharepoint:
+            tracker.update_task("Collecting SharePoint sites...")
+            resources = collect_sharepoint_sites(graph_client, args.tenant_id)
+            all_resources.extend(resources)
+            tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
+            tracker.complete_account()
+        
+        if not args.skip_onedrive:
+            tracker.update_task("Collecting OneDrive accounts...")
+            resources = collect_onedrive_accounts(graph_client, args.tenant_id)
+            all_resources.extend(resources)
+            tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
+            tracker.complete_account()
+        
+        if not args.skip_exchange:
+            tracker.update_task("Collecting Exchange mailboxes...")
+            resources = collect_exchange_mailboxes(graph_client, args.tenant_id)
+            all_resources.extend(resources)
+            tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
+            tracker.complete_account()
+        
+        if not args.skip_teams:
+            tracker.update_task("Collecting Teams...")
+            resources = collect_teams(graph_client, args.tenant_id)
+            all_resources.extend(resources)
+            tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
+            tracker.complete_account()
+        
+        if args.include_entra:
+            tracker.update_task("Collecting Entra ID users...")
+            resources = collect_entra_users(graph_client, args.tenant_id)
+            all_resources.extend(resources)
+            tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
+            tracker.complete_account()
+            
+            tracker.update_task("Collecting Entra ID groups...")
+            resources = collect_entra_groups(graph_client, args.tenant_id)
+            all_resources.extend(resources)
+            tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
+            tracker.complete_account()
     
     # Print summary
     print_m365_summary_table(all_resources)
@@ -638,12 +668,7 @@ Security Note:
     exec_file = write_json_file(exec_summary, f'executive_summary_{timestamp}.json', args.output_dir)
     print(f"Executive summary saved: {exec_file}")
     
-    print("\n" + "="*70)
-    print("Collection complete!")
-    print(f"Total resources: {len(all_resources)}")
-    print(f"Total storage: {sizing['total_storage_gb']:.2f} GB")
-    print(f"Output files in: {args.output_dir}")
-    print("="*70)
+    print(f"\nOutput files in: {args.output_dir}")
 
 
 if __name__ == '__main__':

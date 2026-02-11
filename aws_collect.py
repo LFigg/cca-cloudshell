@@ -37,7 +37,7 @@ from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     generate_run_id, get_timestamp, format_bytes_to_gb, tags_to_dict,
     get_name_from_tags, write_json, write_csv, setup_logging, print_summary_table,
-    retry_with_backoff
+    retry_with_backoff, ProgressTracker
 )
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,8 @@ def discover_org_accounts(session: boto3.Session, include_suspended: bool = Fals
 def collect_account(
     session: boto3.Session,
     account_id: str,
-    regions: Optional[List[str]] = None
+    regions: Optional[List[str]] = None,
+    tracker: Optional[ProgressTracker] = None
 ) -> List[CloudResource]:
     """
     Collect all resources from a single AWS account.
@@ -163,6 +164,7 @@ def collect_account(
         session: boto3 session with credentials for this account
         account_id: AWS account ID
         regions: List of regions to collect from (None = all enabled)
+        tracker: Optional progress tracker for UI feedback
     
     Returns:
         List of CloudResource objects
@@ -176,11 +178,21 @@ def collect_account(
     logger.info(f"Collecting from account {account_id} across {len(regions)} regions")
     
     # S3 is global
-    resources.extend(collect_s3_buckets(session, account_id))
+    if tracker:
+        tracker.update_task("Collecting S3 buckets...")
+    s3_resources = collect_s3_buckets(session, account_id)
+    resources.extend(s3_resources)
+    if tracker:
+        tracker.add_resources(len(s3_resources), sum(r.size_gb for r in s3_resources))
     
     # Regional resources
     for region in regions:
-        resources.extend(collect_region(session, region, account_id))
+        if tracker:
+            tracker.start_region(region)
+        region_resources = collect_region(session, region, account_id, tracker)
+        resources.extend(region_resources)
+        if tracker:
+            tracker.complete_region()
     
     logger.info(f"Collected {len(resources)} resources from account {account_id}")
     return resources
@@ -1153,42 +1165,51 @@ def collect_backup_protected_resources(session: boto3.Session, region: str, acco
 # Main Collection Logic
 # =============================================================================
 
-def collect_region(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+def collect_region(session: boto3.Session, region: str, account_id: str, tracker: Optional[ProgressTracker] = None) -> List[CloudResource]:
     """Collect all resources in a region."""
     resources = []
     
     logger.info(f"Collecting resources in {region}...")
     
+    def collect_and_track(name: str, collect_fn, *args):
+        """Helper to collect resources and update tracker."""
+        if tracker:
+            tracker.update_task(f"Collecting {name}...")
+        result = collect_fn(*args)
+        if tracker and result:
+            tracker.add_resources(len(result), sum(r.size_gb for r in result))
+        return result
+    
     # EC2
-    resources.extend(collect_ec2_instances(session, region, account_id))
-    resources.extend(collect_ebs_volumes(session, region, account_id))
-    resources.extend(collect_ebs_snapshots(session, region, account_id))
+    resources.extend(collect_and_track("EC2 instances", collect_ec2_instances, session, region, account_id))
+    resources.extend(collect_and_track("EBS volumes", collect_ebs_volumes, session, region, account_id))
+    resources.extend(collect_and_track("EBS snapshots", collect_ebs_snapshots, session, region, account_id))
     
     # RDS
-    resources.extend(collect_rds_instances(session, region, account_id))
-    resources.extend(collect_rds_clusters(session, region, account_id))
-    resources.extend(collect_rds_snapshots(session, region, account_id))
-    resources.extend(collect_rds_cluster_snapshots(session, region, account_id))
+    resources.extend(collect_and_track("RDS instances", collect_rds_instances, session, region, account_id))
+    resources.extend(collect_and_track("RDS clusters", collect_rds_clusters, session, region, account_id))
+    resources.extend(collect_and_track("RDS snapshots", collect_rds_snapshots, session, region, account_id))
+    resources.extend(collect_and_track("RDS cluster snapshots", collect_rds_cluster_snapshots, session, region, account_id))
     
     # Storage
-    resources.extend(collect_efs_filesystems(session, region, account_id))
-    resources.extend(collect_fsx_filesystems(session, region, account_id))
+    resources.extend(collect_and_track("EFS filesystems", collect_efs_filesystems, session, region, account_id))
+    resources.extend(collect_and_track("FSx filesystems", collect_fsx_filesystems, session, region, account_id))
     
     # Containers & Compute
-    resources.extend(collect_eks_clusters(session, region, account_id))
-    resources.extend(collect_eks_nodegroups(session, region, account_id))
-    resources.extend(collect_lambda_functions(session, region, account_id))
+    resources.extend(collect_and_track("EKS clusters", collect_eks_clusters, session, region, account_id))
+    resources.extend(collect_and_track("EKS node groups", collect_eks_nodegroups, session, region, account_id))
+    resources.extend(collect_and_track("Lambda functions", collect_lambda_functions, session, region, account_id))
     
     # Databases
-    resources.extend(collect_dynamodb_tables(session, region, account_id))
-    resources.extend(collect_elasticache_clusters(session, region, account_id))
+    resources.extend(collect_and_track("DynamoDB tables", collect_dynamodb_tables, session, region, account_id))
+    resources.extend(collect_and_track("ElastiCache clusters", collect_elasticache_clusters, session, region, account_id))
     
     # AWS Backup
-    resources.extend(collect_backup_vaults(session, region, account_id))
-    resources.extend(collect_backup_recovery_points(session, region, account_id))
-    resources.extend(collect_backup_plans(session, region, account_id))
-    resources.extend(collect_backup_selections(session, region, account_id))
-    resources.extend(collect_backup_protected_resources(session, region, account_id))
+    resources.extend(collect_and_track("Backup vaults", collect_backup_vaults, session, region, account_id))
+    resources.extend(collect_and_track("Backup recovery points", collect_backup_recovery_points, session, region, account_id))
+    resources.extend(collect_and_track("Backup plans", collect_backup_plans, session, region, account_id))
+    resources.extend(collect_and_track("Backup selections", collect_backup_selections, session, region, account_id))
+    resources.extend(collect_and_track("Backup protected resources", collect_backup_protected_resources, session, region, account_id))
     
     return resources
 
@@ -1348,24 +1369,26 @@ Examples:
     all_resources: List[CloudResource] = []
     collected_accounts: List[Dict[str, Any]] = []
     
-    for session, account_id, account_name in account_sessions:
-        try:
-            print(f"\n{'='*60}")
-            print(f"Collecting from account: {account_id}" + (f" ({account_name})" if account_name else ""))
-            print(f"{'='*60}")
-            
-            account_resources = collect_account(session, account_id, regions)
-            all_resources.extend(account_resources)
-            
-            collected_accounts.append({
-                'account_id': account_id,
-                'account_name': account_name,
-                'resource_count': len(account_resources)
-            })
-            
-        except Exception as e:
-            logger.error(f"Failed to collect from account {account_id}: {e}")
-            continue
+    # Determine total regions for progress tracking
+    total_regions = len(regions) if regions else len(get_enabled_regions(base_session))
+    
+    with ProgressTracker("AWS", total_regions=total_regions * len(account_sessions)) as tracker:
+        for session, account_id, account_name in account_sessions:
+            try:
+                tracker.start_account(account_id, account_name or "")
+                
+                account_resources = collect_account(session, account_id, regions, tracker)
+                all_resources.extend(account_resources)
+                
+                collected_accounts.append({
+                    'account_id': account_id,
+                    'account_name': account_name,
+                    'resource_count': len(account_resources)
+                })
+                
+            except Exception as e:
+                logger.error(f"Failed to collect from account {account_id}: {e}")
+                continue
     
     # Generate summaries
     summaries = aggregate_sizing(all_resources)
@@ -1419,24 +1442,15 @@ Examples:
     csv_data = [s.to_dict() for s in summaries]
     write_csv(csv_data, f"{output_base}/cca_aws_sizing.csv")
     
-    # Print summary to console
-    print(f"\n{'='*60}")
-    print(f"AWS Cloud Assessment Complete")
-    print(f"{'='*60}")
-    
+    # Print detailed results (ProgressTracker already showed collection summary)
     if is_multi_account:
-        print(f"Accounts:  {len(collected_accounts)}")
+        print(f"\nAccounts collected:")
         for acc in collected_accounts:
             name_str = f" ({acc['account_name']})" if acc.get('account_name') else ""
             print(f"  - {acc['account_id']}{name_str}: {acc['resource_count']} resources")
-    else:
-        print(f"Account:   {account_ids[0]}")
     
-    print(f"Resources: {len(all_resources)}")
-    print(f"Run ID:    {run_id}")
-    
+    print(f"\nRun ID: {run_id}")
     print_summary_table([s.to_dict() for s in summaries])
-    
     print(f"Output: {output_base}/")
 
 

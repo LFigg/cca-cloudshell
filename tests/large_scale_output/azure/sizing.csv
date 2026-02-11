@@ -1,9 +1,9 @@
 provider,service_family,resource_type,resource_count,total_gb
-azure,AzureVM,azure:vm,200,37600.0
-azure,AzureDisk,azure:disk,320,167456.0
-azure,AzureSnapshot,azure:snapshot,200,41856.0
+azure,AzureVM,azure:vm,200,40000.0
+azure,AzureDisk,azure:disk,320,191840.0
+azure,AzureSnapshot,azure:snapshot,200,39872.0
 azure,AzureStorage,azure:storage:account,40,0.0
-azure,AzureSQLDB,azure:sql:database,66,2300.0
+azure,AzureSQLDB,azure:sql:database,62,2080.0
 azure,AzureCosmosDB,azure:cosmosdb:account,20,0.0
 azure,AzureAKS,azure:aks:cluster,12,0.0
 azure,AzureFunctions,azure:function:app,60,0.0

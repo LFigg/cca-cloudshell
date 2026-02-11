@@ -20,6 +20,9 @@ if [ -n "$AWS_EXECUTION_ENV" ]; then
 elif [ -n "$ACC_TERM_ID" ] || [ -d "/home/$USER/clouddrive" ]; then
     echo "Detected: Azure Cloud Shell"
     SHELL_TYPE="azure"
+elif [ "$CLOUD_SHELL" = "true" ] || [ -n "$DEVSHELL_GCLOUD_CONFIG" ]; then
+    echo "Detected: Google Cloud Shell"
+    SHELL_TYPE="gcp"
 else
     echo "Detected: Local/Other environment"
     SHELL_TYPE="local"
@@ -43,17 +46,17 @@ choice=${choice:-4}
 case $choice in
     1)
         echo "Installing AWS dependencies..."
-        pip3 install --quiet boto3
+        pip3 install --quiet boto3 rich
         ;;
     2)
         echo "Installing Azure dependencies..."
         pip3 install --quiet azure-identity azure-mgmt-compute azure-mgmt-storage \
             azure-mgmt-sql azure-mgmt-cosmosdb azure-mgmt-containerservice \
-            azure-mgmt-web azure-mgmt-resource
+            azure-mgmt-web azure-mgmt-resource rich
         ;;
     3)
         echo "Installing M365 dependencies..."
-        pip3 install --quiet msgraph-sdk azure-identity
+        pip3 install --quiet msgraph-sdk azure-identity rich
         ;;
     4)
         echo "Installing all dependencies..."
@@ -83,4 +86,10 @@ if [ "$SHELL_TYPE" = "aws" ]; then
 elif [ "$SHELL_TYPE" = "azure" ]; then
     echo "Azure Cloud Shell detected - you can run azure_collect.py immediately"
     echo "Your Azure credentials are already configured via DefaultAzureCredential."
+elif [ "$SHELL_TYPE" = "gcp" ]; then
+    echo "Google Cloud Shell detected - you can run gcp_collect.py immediately"
+    echo "Your GCP credentials are already configured via Application Default Credentials."
 fi
+
+echo ""
+echo "Run compatibility check: python3 tests/test_cloudshell_compat.py"

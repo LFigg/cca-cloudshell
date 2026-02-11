@@ -44,7 +44,7 @@ from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     generate_run_id, get_timestamp, format_bytes_to_gb,
     write_json, write_csv, setup_logging, print_summary_table,
-    retry_with_backoff
+    retry_with_backoff, ProgressTracker
 )
 
 logger = logging.getLogger(__name__)
@@ -1051,39 +1051,48 @@ def collect_sql_database_backups(credential, subscription_id: str) -> List[Cloud
 # Main Collection Logic
 # =============================================================================
 
-def collect_subscription(credential, subscription_id: str, subscription_name: str) -> List[CloudResource]:
+def collect_subscription(credential, subscription_id: str, subscription_name: str, tracker: Optional[ProgressTracker] = None) -> List[CloudResource]:
     """Collect all resources in a subscription."""
     logger.info(f"Collecting resources from subscription: {subscription_name} ({subscription_id})")
     
     resources = []
     
+    def collect_and_track(name: str, collect_fn, *args):
+        """Helper to collect resources and update tracker."""
+        if tracker:
+            tracker.update_task(f"Collecting {name}...")
+        result = collect_fn(*args)
+        if tracker and result:
+            tracker.add_resources(len(result), sum(r.size_gb for r in result))
+        return result
+    
     # Compute
-    resources.extend(collect_vms(credential, subscription_id))
-    resources.extend(collect_disks(credential, subscription_id))
-    resources.extend(collect_disk_snapshots(credential, subscription_id))
+    resources.extend(collect_and_track("VMs", collect_vms, credential, subscription_id))
+    resources.extend(collect_and_track("Disks", collect_disks, credential, subscription_id))
+    resources.extend(collect_and_track("Disk snapshots", collect_disk_snapshots, credential, subscription_id))
     
     # Storage
-    resources.extend(collect_storage_accounts(credential, subscription_id))
-    resources.extend(collect_file_shares(credential, subscription_id))
+    resources.extend(collect_and_track("Storage accounts", collect_storage_accounts, credential, subscription_id))
+    resources.extend(collect_and_track("File shares", collect_file_shares, credential, subscription_id))
     
     # Databases
-    resources.extend(collect_sql_servers(credential, subscription_id))
-    resources.extend(collect_sql_managed_instances(credential, subscription_id))
-    resources.extend(collect_sql_database_backups(credential, subscription_id))
-    resources.extend(collect_cosmosdb_accounts(credential, subscription_id))
+    resources.extend(collect_and_track("SQL servers", collect_sql_servers, credential, subscription_id))
+    resources.extend(collect_and_track("SQL managed instances", collect_sql_managed_instances, credential, subscription_id))
+    resources.extend(collect_and_track("SQL backups", collect_sql_database_backups, credential, subscription_id))
+    resources.extend(collect_and_track("CosmosDB accounts", collect_cosmosdb_accounts, credential, subscription_id))
     
     # Containers & Compute
-    resources.extend(collect_aks_clusters(credential, subscription_id))
-    resources.extend(collect_function_apps(credential, subscription_id))
+    resources.extend(collect_and_track("AKS clusters", collect_aks_clusters, credential, subscription_id))
+    resources.extend(collect_and_track("Function apps", collect_function_apps, credential, subscription_id))
     
     # Cache
-    resources.extend(collect_redis_caches(credential, subscription_id))
+    resources.extend(collect_and_track("Redis caches", collect_redis_caches, credential, subscription_id))
     
     # Azure Backup (Recovery Services)
-    resources.extend(collect_recovery_services_vaults(credential, subscription_id))
-    resources.extend(collect_backup_policies(credential, subscription_id))
-    resources.extend(collect_backup_protected_items(credential, subscription_id))
-    resources.extend(collect_backup_recovery_points(credential, subscription_id))
+    resources.extend(collect_and_track("Recovery Services vaults", collect_recovery_services_vaults, credential, subscription_id))
+    resources.extend(collect_and_track("Backup policies", collect_backup_policies, credential, subscription_id))
+    resources.extend(collect_and_track("Backup protected items", collect_backup_protected_items, credential, subscription_id))
+    resources.extend(collect_and_track("Backup recovery points", collect_backup_recovery_points, credential, subscription_id))
     
     return resources
 
@@ -1134,14 +1143,17 @@ def main():
     subscription_ids = []
     failed_subscriptions = []
     
-    for sub in subscriptions:
-        try:
-            subscription_ids.append(sub['id'])
-            all_resources.extend(collect_subscription(credential, sub['id'], sub['name']))
-        except Exception as e:
-            logger.error(f"Failed to collect from subscription {sub['id']} ({sub['name']}): {e}")
-            failed_subscriptions.append({'id': sub['id'], 'name': sub['name'], 'error': str(e)})
-            continue
+    with ProgressTracker("Azure", total_accounts=len(subscriptions)) as tracker:
+        for sub in subscriptions:
+            try:
+                tracker.start_account(sub['id'], sub['name'])
+                subscription_ids.append(sub['id'])
+                all_resources.extend(collect_subscription(credential, sub['id'], sub['name'], tracker))
+                tracker.complete_account()
+            except Exception as e:
+                logger.error(f"Failed to collect from subscription {sub['id']} ({sub['name']}): {e}")
+                failed_subscriptions.append({'id': sub['id'], 'name': sub['name'], 'error': str(e)})
+                continue
     
     if failed_subscriptions:
         logger.warning(f"Collection failed for {len(failed_subscriptions)} subscription(s)")
@@ -1194,16 +1206,9 @@ def main():
     csv_data = [s.to_dict() for s in summaries]
     write_csv(csv_data, f"{output_base}/cca_azure_sizing.csv")
     
-    # Print summary
-    print(f"\n{'='*60}")
-    print(f"Azure Cloud Assessment Complete")
-    print(f"{'='*60}")
-    print(f"Subscriptions: {len(subscriptions)}")
-    print(f"Resources:     {len(all_resources)}")
-    print(f"Run ID:        {run_id}")
-    
+    # Print detailed results (ProgressTracker already showed collection summary)
+    print(f"\nRun ID: {run_id}")
     print_summary_table([s.to_dict() for s in summaries])
-    
     print(f"Output: {output_base}/")
 
 

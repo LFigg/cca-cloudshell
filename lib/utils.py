@@ -36,6 +36,25 @@ try:
 except ImportError:
     TENACITY_AVAILABLE = False
 
+# Progress display with rich
+try:
+    from rich.console import Console
+    from rich.progress import (
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        BarColumn,
+        TaskProgressColumn,
+        TimeElapsedColumn,
+        MofNCompleteColumn,
+    )
+    from rich.live import Live
+    from rich.table import Table
+    from rich.panel import Panel
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # Type variable for generic function decorator
@@ -101,6 +120,188 @@ def retry_with_backoff(
                 raise last_exception
             return wrapper  # type: ignore
         return decorator
+
+
+# =============================================================================
+# Progress Tracking
+# =============================================================================
+
+class ProgressTracker:
+    """
+    Progress tracker for collection operations with rich display.
+    
+    Falls back to simple print statements if rich is not available or
+    stdout is not a TTY (e.g., when piping output).
+    
+    Usage:
+        with ProgressTracker("AWS", total_regions=5) as tracker:
+            for region in regions:
+                tracker.start_region(region)
+                
+                for task in tasks:
+                    tracker.update_task(f"Collecting {task}...")
+                    resources = collect_task(...)
+                    tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
+                
+                tracker.complete_region()
+    """
+    
+    def __init__(
+        self,
+        provider: str,
+        total_regions: int = 0,
+        total_accounts: int = 0,
+        show_progress: bool = True
+    ):
+        self.provider = provider
+        self.total_regions = total_regions
+        self.total_accounts = total_accounts
+        self.show_progress = show_progress and sys.stdout.isatty()
+        
+        # Counters
+        self.completed_regions = 0
+        self.completed_accounts = 0
+        self.total_resources = 0
+        self.total_capacity_gb = 0.0
+        self.current_region = ""
+        self.current_account = ""
+        self.current_task = ""
+        
+        # Rich components
+        self._console = None
+        self._progress = None
+        self._live = None
+        self._main_task = None
+        self._use_rich = RICH_AVAILABLE and self.show_progress
+    
+    def __enter__(self):
+        if self._use_rich:
+            self._console = Console()
+            self._progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=self._console,
+                transient=False,
+            )
+            
+            total = self.total_regions or self.total_accounts or 1
+            desc = f"{self.provider} Collection"
+            self._main_task = self._progress.add_task(desc, total=total)
+            self._progress.start()
+        else:
+            print(f"\n{'='*60}")
+            print(f"{self.provider} Collection Starting")
+            print(f"{'='*60}")
+            if self.total_regions:
+                print(f"Regions: {self.total_regions}")
+            if self.total_accounts:
+                print(f"Accounts: {self.total_accounts}")
+            print()
+        
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._use_rich:
+            self._progress.stop()
+            self._console.print()
+            self._print_summary_rich()
+        else:
+            self._print_summary_plain()
+        return False
+    
+    def start_region(self, region: str):
+        """Mark the start of processing a region."""
+        self.current_region = region
+        if self._use_rich:
+            self._progress.update(
+                self._main_task,
+                description=f"{self.provider} [{region}]"
+            )
+        else:
+            print(f"  [{region}] Starting collection...")
+    
+    def start_account(self, account_id: str, account_name: str = ""):
+        """Mark the start of processing an account."""
+        self.current_account = account_id
+        display = f"{account_id} ({account_name})" if account_name else account_id
+        if self._use_rich:
+            self._progress.update(
+                self._main_task,
+                description=f"{self.provider} Account: {display}"
+            )
+        else:
+            print(f"\nAccount: {display}")
+    
+    def update_task(self, task_description: str):
+        """Update the current task being performed."""
+        self.current_task = task_description
+        if self._use_rich:
+            region_info = f"[{self.current_region}] " if self.current_region else ""
+            self._progress.update(
+                self._main_task,
+                description=f"{self.provider} {region_info}{task_description}"
+            )
+    
+    def add_resources(self, count: int, capacity_gb: float = 0.0):
+        """Add discovered resources to the running total."""
+        self.total_resources += count
+        self.total_capacity_gb += capacity_gb
+    
+    def complete_region(self):
+        """Mark a region as complete."""
+        self.completed_regions += 1
+        if self._use_rich:
+            self._progress.update(self._main_task, advance=1)
+        else:
+            capacity_tb = self.total_capacity_gb / 1024
+            print(f"  [{self.current_region}] Complete - Running total: {self.total_resources:,} resources, {capacity_tb:.2f} TB")
+    
+    def complete_account(self):
+        """Mark an account as complete."""
+        self.completed_accounts += 1
+        if self._use_rich:
+            self._progress.update(self._main_task, advance=1)
+    
+    def log_resource_count(self, resource_type: str, count: int, capacity_gb: float = 0.0):
+        """Log a resource count (for detailed tracking)."""
+        self.add_resources(count, capacity_gb)
+        # Don't print individual counts in progress mode - too noisy
+        # The logger.info calls in collectors still work for verbose mode
+    
+    def _print_summary_rich(self):
+        """Print a formatted summary using rich."""
+        capacity_tb = self.total_capacity_gb / 1024
+        
+        table = Table(title=f"{self.provider} Collection Summary", show_header=False)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        
+        if self.total_regions:
+            table.add_row("Regions", str(self.completed_regions))
+        if self.total_accounts:
+            table.add_row("Accounts", str(self.completed_accounts))
+        table.add_row("Total Resources", f"{self.total_resources:,}")
+        table.add_row("Total Capacity", f"{capacity_tb:,.2f} TB ({self.total_capacity_gb:,.2f} GB)")
+        
+        self._console.print(Panel(table))
+    
+    def _print_summary_plain(self):
+        """Print a plain text summary."""
+        capacity_tb = self.total_capacity_gb / 1024
+        
+        print(f"\n{'='*60}")
+        print(f"{self.provider} Collection Complete")
+        print(f"{'='*60}")
+        if self.total_regions:
+            print(f"  Regions:         {self.completed_regions}")
+        if self.total_accounts:
+            print(f"  Accounts:        {self.completed_accounts}")
+        print(f"  Total Resources: {self.total_resources:,}")
+        print(f"  Total Capacity:  {capacity_tb:,.2f} TB ({self.total_capacity_gb:,.2f} GB)")
+        print()
 
 
 def generate_run_id() -> str:

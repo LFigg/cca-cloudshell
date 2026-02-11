@@ -39,7 +39,7 @@ from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     generate_run_id, get_timestamp, format_bytes_to_gb,
     write_json, write_csv, setup_logging, print_summary_table,
-    retry_with_backoff
+    retry_with_backoff, ProgressTracker
 )
 
 logger = logging.getLogger(__name__)
@@ -808,34 +808,43 @@ def collect_backups(project_id: str) -> List[CloudResource]:
 # Main Collection
 # =============================================================================
 
-def collect_project(project_id: str) -> List[CloudResource]:
+def collect_project(project_id: str, tracker: Optional[ProgressTracker] = None) -> List[CloudResource]:
     """Collect all resources for a project."""
     logger.info(f"Collecting resources for project: {project_id}")
     
     all_resources = []
     
+    def collect_and_track(name: str, collect_fn, *args):
+        """Helper to collect resources and update tracker."""
+        if tracker:
+            tracker.update_task(f"Collecting {name}...")
+        result = collect_fn(*args)
+        if tracker and result:
+            tracker.add_resources(len(result), sum(r.size_gb for r in result))
+        return result
+    
     # Compute Engine
-    all_resources.extend(collect_compute_instances(project_id))
-    all_resources.extend(collect_persistent_disks(project_id))
-    all_resources.extend(collect_disk_snapshots(project_id))
+    all_resources.extend(collect_and_track("Compute instances", collect_compute_instances, project_id))
+    all_resources.extend(collect_and_track("Persistent disks", collect_persistent_disks, project_id))
+    all_resources.extend(collect_and_track("Disk snapshots", collect_disk_snapshots, project_id))
     
     # Storage
-    all_resources.extend(collect_storage_buckets(project_id))
-    all_resources.extend(collect_filestore_instances(project_id))
+    all_resources.extend(collect_and_track("Cloud Storage buckets", collect_storage_buckets, project_id))
+    all_resources.extend(collect_and_track("Filestore instances", collect_filestore_instances, project_id))
     
     # Databases
-    all_resources.extend(collect_cloud_sql_instances(project_id))
-    all_resources.extend(collect_memorystore_redis(project_id))
+    all_resources.extend(collect_and_track("Cloud SQL instances", collect_cloud_sql_instances, project_id))
+    all_resources.extend(collect_and_track("Memorystore Redis", collect_memorystore_redis, project_id))
     
     # Containers & Compute
-    all_resources.extend(collect_gke_clusters(project_id))
-    all_resources.extend(collect_cloud_functions(project_id))
+    all_resources.extend(collect_and_track("GKE clusters", collect_gke_clusters, project_id))
+    all_resources.extend(collect_and_track("Cloud Functions", collect_cloud_functions, project_id))
     
     # Backup & DR
-    all_resources.extend(collect_backup_plans(project_id))
-    all_resources.extend(collect_backup_vaults(project_id))
-    all_resources.extend(collect_backup_data_sources(project_id))
-    all_resources.extend(collect_backups(project_id))
+    all_resources.extend(collect_and_track("Backup plans", collect_backup_plans, project_id))
+    all_resources.extend(collect_and_track("Backup vaults", collect_backup_vaults, project_id))
+    all_resources.extend(collect_and_track("Backup data sources", collect_backup_data_sources, project_id))
+    all_resources.extend(collect_and_track("Backups", collect_backups, project_id))
     
     return all_resources
 
@@ -876,14 +885,17 @@ def main():
         all_resources = []
         failed_projects = []
         
-        for project_id in project_ids:
-            try:
-                resources = collect_project(project_id)
-                all_resources.extend(resources)
-            except Exception as e:
-                logger.error(f"Failed to collect from project {project_id}: {e}")
-                failed_projects.append({'project_id': project_id, 'error': str(e)})
-                continue
+        with ProgressTracker("GCP", total_accounts=len(project_ids)) as tracker:
+            for project_id in project_ids:
+                try:
+                    tracker.start_account(project_id)
+                    resources = collect_project(project_id, tracker)
+                    all_resources.extend(resources)
+                    tracker.complete_account()
+                except Exception as e:
+                    logger.error(f"Failed to collect from project {project_id}: {e}")
+                    failed_projects.append({'project_id': project_id, 'error': str(e)})
+                    continue
         
         if failed_projects:
             logger.warning(f"Collection failed for {len(failed_projects)} project(s)")
@@ -940,21 +952,7 @@ def main():
         csv_data = [s.to_dict() for s in sizing]
         write_csv(csv_data, csv_file)
         
-        # Print summary
-        print("\n" + "=" * 60)
-        print(f"GCP Collection Complete")
-        print("=" * 60)
-        print(f"Projects: {len(project_ids)}")
-        print(f"Total Resources: {len(all_resources)}")
-        print(f"\nResources by Type:")
-        
-        type_counts = {}
-        for r in all_resources:
-            type_counts[r.resource_type] = type_counts.get(r.resource_type, 0) + 1
-        
-        for rt, count in sorted(type_counts.items()):
-            print(f"  {rt}: {count}")
-        
+        # Print detailed results (ProgressTracker already showed collection summary)
         print(f"\nOutput files:")
         print(f"  Inventory: {inv_file}")
         print(f"  Summary: {sum_file}")

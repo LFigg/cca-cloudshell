@@ -1,7 +1,7 @@
 provider,service_family,resource_type,resource_count,total_gb
-microsoft365,SharePoint,m365:sharepoint:site,100,26624.05043391604
+microsoft365,SharePoint,m365:sharepoint:site,100,26822.1840191707
 microsoft365,EntraID,m365:entra:user,500,0.0
-microsoft365,OneDrive,m365:onedrive:account,423,42014.96842581406
-microsoft365,Exchange,m365:exchange:mailbox,449,11086.10138561856
+microsoft365,OneDrive,m365:onedrive:account,415,40702.74070610106
+microsoft365,Exchange,m365:exchange:mailbox,436,10953.92197594326
 microsoft365,Teams,m365:teams:team,100,0.0
 microsoft365,EntraID,m365:entra:group,150,0.0
