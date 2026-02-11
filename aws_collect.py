@@ -1097,12 +1097,12 @@ def main():
     
     # Short timestamp for filenames (HHMMSS) - keeps filename < 20 chars
     file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
-    write_json(output_data, f"{output_base}/cca_inv_{file_ts}.json")
-    write_json(summary_data, f"{output_base}/cca_sum_{file_ts}.json")
+    write_json(output_data, f"{output_base}/cca_aws_inv_{file_ts}.json")
+    write_json(summary_data, f"{output_base}/cca_aws_sum_{file_ts}.json")
     
     # Write CSV for spreadsheet use
     csv_data = [s.to_dict() for s in summaries]
-    write_csv(csv_data, f"{output_base}/sizing.csv")
+    write_csv(csv_data, f"{output_base}/cca_aws_sizing.csv")
     
     # Print summary to console
     print(f"\n{'='*60}")

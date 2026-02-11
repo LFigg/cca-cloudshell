@@ -1152,12 +1152,14 @@ def main():
     if output_base.startswith('https://') and '.blob.core.windows.net' in output_base:
         output_base = f"{output_base}/{run_id}"
     
-    write_json(output_data, f"{output_base}/inventory.json")
-    write_json(summary_data, f"{output_base}/summary.json")
+    # Short timestamp for filenames (HHMMSS)
+    file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
+    write_json(output_data, f"{output_base}/cca_azure_inv_{file_ts}.json")
+    write_json(summary_data, f"{output_base}/cca_azure_sum_{file_ts}.json")
     
     # Write CSV
     csv_data = [s.to_dict() for s in summaries]
-    write_csv(csv_data, f"{output_base}/sizing.csv")
+    write_csv(csv_data, f"{output_base}/cca_azure_sizing.csv")
     
     # Print summary
     print(f"\n{'='*60}")

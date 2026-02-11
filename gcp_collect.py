@@ -15,19 +15,23 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 # Google Cloud SDK - pre-installed in Cloud Shell
 try:
-    from google.cloud import compute_v1
-    from google.cloud import storage
-    from google.cloud import sqladmin_v1
-    from google.cloud.sql_v1 import SqlInstancesServiceClient
-    from google.api_core.exceptions import NotFound, PermissionDenied
-    import google.auth
+    from google.cloud import compute_v1  # type: ignore[import-untyped]
+    from google.cloud import storage  # type: ignore[import-untyped]
+    from google.cloud import sqladmin_v1  # type: ignore[import-untyped]
+    from google.cloud.sql_v1 import SqlInstancesServiceClient  # type: ignore[import-untyped,import-not-found]
+    from google.api_core.exceptions import NotFound, PermissionDenied  # type: ignore[import-untyped]
+    import google.auth  # type: ignore[import-untyped]
     HAS_GCP_SDK = True
 except ImportError:
     HAS_GCP_SDK = False
+    compute_v1: Any = None
+    storage: Any = None
+    sqladmin_v1: Any = None
+    google: Any = None
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
@@ -54,7 +58,7 @@ def get_credentials():
 
 def get_projects(credentials) -> List[Dict]:
     """Get all accessible projects."""
-    from google.cloud import resourcemanager_v3
+    from google.cloud import resourcemanager_v3  # type: ignore[import-untyped]
     
     client = resourcemanager_v3.ProjectsClient(credentials=credentials)
     projects = []
@@ -308,7 +312,7 @@ def collect_cloud_sql_instances(project_id: str) -> List[CloudResource]:
     """Collect Cloud SQL instances."""
     resources = []
     try:
-        from google.cloud.sql_v1 import SqlInstancesServiceClient
+        from google.cloud.sql_v1 import SqlInstancesServiceClient  # type: ignore[import-untyped,import-not-found]
         
         client = SqlInstancesServiceClient()
         
@@ -360,7 +364,7 @@ def collect_gke_clusters(project_id: str) -> List[CloudResource]:
     """Collect GKE clusters."""
     resources = []
     try:
-        from google.cloud import container_v1
+        from google.cloud import container_v1  # type: ignore[import-untyped]
         
         client = container_v1.ClusterManagerClient()
         
@@ -420,7 +424,7 @@ def collect_cloud_functions(project_id: str) -> List[CloudResource]:
     """Collect Cloud Functions."""
     resources = []
     try:
-        from google.cloud import functions_v2
+        from google.cloud import functions_v2  # type: ignore[import-untyped]
         
         client = functions_v2.FunctionServiceClient()
         
@@ -471,7 +475,7 @@ def collect_filestore_instances(project_id: str) -> List[CloudResource]:
     """Collect Filestore instances."""
     resources = []
     try:
-        from google.cloud import filestore_v1
+        from google.cloud import filestore_v1  # type: ignore[import-untyped]
         
         client = filestore_v1.CloudFilestoreManagerClient()
         
@@ -526,7 +530,7 @@ def collect_memorystore_redis(project_id: str) -> List[CloudResource]:
     """Collect Memorystore for Redis instances."""
     resources = []
     try:
-        from google.cloud import redis_v1
+        from google.cloud import redis_v1  # type: ignore[import-untyped]
         
         client = redis_v1.CloudRedisClient()
         
@@ -577,7 +581,7 @@ def collect_backup_plans(project_id: str) -> List[CloudResource]:
     """Collect Backup & DR backup plans."""
     resources = []
     try:
-        from google.cloud import backupdr_v1
+        from google.cloud import backupdr_v1  # type: ignore[import-untyped]
         
         client = backupdr_v1.BackupDRClient()
         
@@ -672,8 +676,11 @@ def main():
             project_ids = [p['id'] for p in projects]
         elif args.project:
             project_ids = [args.project]
-        else:
+        elif default_project:
             project_ids = [default_project]
+        else:
+            logger.error("No project specified and no default project found")
+            sys.exit(1)
         
         logger.info(f"Collecting from {len(project_ids)} project(s)")
         
@@ -717,9 +724,9 @@ def main():
         
         # Short timestamp for filenames (HHMMSS)
         file_ts = timestamp[11:19].replace(":", "")
-        inv_file = f"{output_dir}/cca_inv_{file_ts}.json"
-        sum_file = f"{output_dir}/cca_sum_{file_ts}.json"
-        csv_file = f"{output_dir}/sizing.csv"
+        inv_file = f"{output_dir}/cca_gcp_inv_{file_ts}.json"
+        sum_file = f"{output_dir}/cca_gcp_sum_{file_ts}.json"
+        csv_file = f"{output_dir}/cca_gcp_sizing.csv"
         
         write_json(inventory_data, inv_file)
         write_json(summary_data, sum_file)

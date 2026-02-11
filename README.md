@@ -151,8 +151,18 @@ cca-cloudshell/
 
 ## Output Files
 
-Each collector generates:
-- `inventory_<timestamp>.json` - Raw resource inventory with all resources, snapshots, and backup configs
+Each collector generates files with cloud-provider-specific prefixes:
+
+| Cloud | Inventory | Summary | Sizing CSV |
+|-------|-----------|---------|------------|
+| AWS | `cca_aws_inv_<HHMMSS>.json` | `cca_aws_sum_<HHMMSS>.json` | `cca_aws_sizing.csv` |
+| Azure | `cca_azure_inv_<HHMMSS>.json` | `cca_azure_sum_<HHMMSS>.json` | `cca_azure_sizing.csv` |
+| GCP | `cca_gcp_inv_<HHMMSS>.json` | `cca_gcp_sum_<HHMMSS>.json` | `cca_gcp_sizing.csv` |
+| M365 | `cca_m365_inv_<HHMMSS>.json` | `cca_m365_sum_<HHMMSS>.json` | - |
+
+- **Inventory**: Raw resource data with all resources, snapshots, and backup configs
+- **Summary**: Aggregated sizing and count information
+- **Sizing CSV**: Spreadsheet-friendly format (not available for M365)
 
 ### Protection Report
 

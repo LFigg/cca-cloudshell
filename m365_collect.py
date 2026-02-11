@@ -605,14 +605,16 @@ Required Azure AD App Permissions (Application type):
     
     # Raw inventory
     inventory = [asdict(r) for r in all_resources]
-    inventory_file = write_json(inventory, f'inventory_{timestamp}.json', args.output_dir)
+    # Use HHMMSS format for timestamp in filenames
+    file_ts = datetime.now().strftime('%H%M%S')
+    inventory_file = write_json(inventory, f'cca_m365_inv_{file_ts}.json', args.output_dir)
     print(f"Inventory saved: {inventory_file}")
     
     # Sizing summary
     sizing = aggregate_sizing(all_resources)
     sizing['tenant_id'] = args.tenant_id
     sizing['collection_timestamp'] = timestamp
-    sizing_file = write_json(sizing, f'sizing_summary_{timestamp}.json', args.output_dir)
+    sizing_file = write_json(sizing, f'cca_m365_sum_{file_ts}.json', args.output_dir)
     print(f"Sizing summary saved: {sizing_file}")
     
     # Executive summary
