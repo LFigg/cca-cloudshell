@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run tests and generate protection report
+# Run tests and generate protection and cost reports
 #
 # Usage: ./tests/run_tests_and_report.sh [test_type]
 #   test_type: all (default), unit, large-all, large-aws, large-azure, large-gcp, large-m365
@@ -80,6 +80,31 @@ done
 
 echo ""
 echo "========================================"
+echo "Generating Cost Reports"
+echo "========================================"
+echo ""
+
+# Find all cost inventory files and generate cost reports
+for COST_INV_FILE in $(ls -t tests/large_scale_output/*/cca_cost_inv_*.json tests/sample_output/cca_cost_inv_*.json 2>/dev/null); do
+    if [ -f "$COST_INV_FILE" ]; then
+        echo "Processing: $COST_INV_FILE"
+        COST_DIR=$(dirname "$COST_INV_FILE")
+        # Extract timestamp from inventory filename (e.g., cca_cost_inv_123456.json -> 123456)
+        COST_TS=$(basename "$COST_INV_FILE" | sed 's/cca_cost_inv_\([0-9]*\)\.json/\1/')
+        COST_SUM_FILE="$COST_DIR/cca_cost_sum_${COST_TS}.json"
+        COST_REPORT_FILE="$COST_DIR/cost_report.xlsx"
+        
+        if [ -f "$COST_SUM_FILE" ]; then
+            $PYTHON scripts/generate_cost_report.py --inventory "$COST_INV_FILE" --summary "$COST_SUM_FILE" --output "$COST_REPORT_FILE" || true
+        else
+            echo "  Warning: Summary file not found: $COST_SUM_FILE"
+        fi
+        echo ""
+    fi
+done
+
+echo ""
+echo "========================================"
 echo "Complete!"
 echo "========================================"
 echo ""
@@ -88,6 +113,13 @@ for dir in aws azure gcp m365; do
     if [ -d "tests/large_scale_output/$dir" ]; then
         echo ""
         echo "=== $dir ==="
-        ls -la tests/large_scale_output/$dir/*.xlsx tests/large_scale_output/$dir/*.json 2>/dev/null || echo "  (no files)"
+        ls -la tests/large_scale_output/$dir/*.xlsx tests/large_scale_output/$dir/*.json tests/large_scale_output/$dir/*.csv 2>/dev/null || echo "  (no files)"
     fi
 done
+
+# Also check sample_output for cost reports
+if [ -d "tests/sample_output" ]; then
+    echo ""
+    echo "=== sample_output ==="
+    ls -la tests/sample_output/*.xlsx tests/sample_output/*.json tests/sample_output/*.csv 2>/dev/null || echo "  (no files)"
+fi
