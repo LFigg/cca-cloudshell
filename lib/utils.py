@@ -19,13 +19,18 @@ import csv
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Callable, TypeVar, Optional
+from typing import List, Dict, Any, Callable, TypeVar, Optional, TYPE_CHECKING
 import uuid
 from functools import wraps
 
+# Type checking imports (not imported at runtime)
+if TYPE_CHECKING:
+    from rich.console import Console  # type: ignore[import-untyped]
+    from rich.progress import Progress, TaskID  # type: ignore[import-untyped]
+
 # Retry decorator for API calls
 try:
-    from tenacity import (
+    from tenacity import (  # type: ignore[import-untyped]
         retry,
         stop_after_attempt,
         wait_exponential,
@@ -38,8 +43,8 @@ except ImportError:
 
 # Progress display with rich
 try:
-    from rich.console import Console
-    from rich.progress import (
+    from rich.console import Console  # type: ignore[import-untyped]
+    from rich.progress import (  # type: ignore[import-untyped]
         Progress,
         SpinnerColumn,
         TextColumn,
@@ -48,9 +53,9 @@ try:
         TimeElapsedColumn,
         MofNCompleteColumn,
     )
-    from rich.live import Live
-    from rich.table import Table
-    from rich.panel import Panel
+    from rich.live import Live  # type: ignore[import-untyped]
+    from rich.table import Table  # type: ignore[import-untyped]
+    from rich.panel import Panel  # type: ignore[import-untyped]
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -86,11 +91,12 @@ def retry_with_backoff(
     """
     if TENACITY_AVAILABLE:
         def decorator(func: F) -> F:
-            return retry(
-                stop=stop_after_attempt(max_attempts),
-                wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
-                retry=retry_if_exception_type(exceptions),
-                before_sleep=before_sleep_log(logger, logging.WARNING),
+            # These are guaranteed to be defined when TENACITY_AVAILABLE is True
+            return retry(  # type: ignore[possibly-undefined]
+                stop=stop_after_attempt(max_attempts),  # type: ignore[possibly-undefined]
+                wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),  # type: ignore[possibly-undefined]
+                retry=retry_if_exception_type(exceptions),  # type: ignore[possibly-undefined]
+                before_sleep=before_sleep_log(logger, logging.WARNING),  # type: ignore[possibly-undefined]
                 reraise=True
             )(func)
         return decorator
@@ -99,7 +105,7 @@ def retry_with_backoff(
         def decorator(func: F) -> F:
             @wraps(func)
             def wrapper(*args, **kwargs):
-                last_exception = None
+                last_exception: BaseException = Exception("No attempts made")
                 wait_time = min_wait
                 
                 for attempt in range(max_attempts):
@@ -167,15 +173,20 @@ class ProgressTracker:
         self.current_account = ""
         self.current_task = ""
         
-        # Rich components
-        self._console = None
-        self._progress = None
+        # Rich components (typed for IDE support)
+        self._console: Optional["Console"] = None
+        self._progress: Optional["Progress"] = None
         self._live = None
-        self._main_task = None
+        self._main_task: Optional["TaskID"] = None
         self._use_rich = RICH_AVAILABLE and self.show_progress
     
     def __enter__(self):
         if self._use_rich:
+            from rich.console import Console  # type: ignore[import-untyped]
+            from rich.progress import (  # type: ignore[import-untyped]
+                Progress, SpinnerColumn, TextColumn, 
+                BarColumn, MofNCompleteColumn, TimeElapsedColumn
+            )
             self._console = Console()
             self._progress = Progress(
                 SpinnerColumn(),
@@ -189,6 +200,7 @@ class ProgressTracker:
             
             total = self.total_regions or self.total_accounts or 1
             desc = f"{self.provider} Collection"
+            assert self._progress is not None  # Guaranteed by _use_rich check above
             self._main_task = self._progress.add_task(desc, total=total)
             self._progress.start()
         else:
@@ -205,6 +217,8 @@ class ProgressTracker:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._use_rich:
+            assert self._progress is not None
+            assert self._console is not None
             self._progress.stop()
             self._console.print()
             self._print_summary_rich()
@@ -216,6 +230,7 @@ class ProgressTracker:
         """Mark the start of processing a region."""
         self.current_region = region
         if self._use_rich:
+            assert self._progress is not None
             self._progress.update(
                 self._main_task,
                 description=f"{self.provider} [{region}]"
@@ -228,6 +243,7 @@ class ProgressTracker:
         self.current_account = account_id
         display = f"{account_id} ({account_name})" if account_name else account_id
         if self._use_rich:
+            assert self._progress is not None
             self._progress.update(
                 self._main_task,
                 description=f"{self.provider} Account: {display}"
@@ -239,6 +255,7 @@ class ProgressTracker:
         """Update the current task being performed."""
         self.current_task = task_description
         if self._use_rich:
+            assert self._progress is not None
             region_info = f"[{self.current_region}] " if self.current_region else ""
             self._progress.update(
                 self._main_task,
@@ -254,6 +271,7 @@ class ProgressTracker:
         """Mark a region as complete."""
         self.completed_regions += 1
         if self._use_rich:
+            assert self._progress is not None
             self._progress.update(self._main_task, advance=1)
         else:
             capacity_tb = self.total_capacity_gb / 1024
@@ -263,6 +281,7 @@ class ProgressTracker:
         """Mark an account as complete."""
         self.completed_accounts += 1
         if self._use_rich:
+            assert self._progress is not None
             self._progress.update(self._main_task, advance=1)
     
     def log_resource_count(self, resource_type: str, count: int, capacity_gb: float = 0.0):
@@ -273,6 +292,9 @@ class ProgressTracker:
     
     def _print_summary_rich(self):
         """Print a formatted summary using rich."""
+        from rich.table import Table  # type: ignore[import-untyped]
+        from rich.panel import Panel  # type: ignore[import-untyped]
+        
         capacity_tb = self.total_capacity_gb / 1024
         
         table = Table(title=f"{self.provider} Collection Summary", show_header=False)
@@ -286,6 +308,7 @@ class ProgressTracker:
         table.add_row("Total Resources", f"{self.total_resources:,}")
         table.add_row("Total Capacity", f"{capacity_tb:,.2f} TB ({self.total_capacity_gb:,.2f} GB)")
         
+        assert self._console is not None
         self._console.print(Panel(table))
     
     def _print_summary_plain(self):
@@ -392,7 +415,7 @@ def write_json(data: Any, filepath: str) -> None:
     print(f"Wrote {filepath}")
 
 
-def write_csv(data: List[Dict], filepath: str, fieldnames: List[str] = None) -> None:
+def write_csv(data: List[Dict], filepath: str, fieldnames: Optional[List[str]] = None) -> None:
     """Write data to CSV file."""
     if not data:
         return
@@ -466,8 +489,8 @@ def write_to_s3(data: Any, s3_path: str, content_type: str = "application/json")
 def write_to_blob(data: Any, blob_url: str) -> None:
     """Write data to Azure Blob Storage."""
     try:
-        from azure.storage.blob import BlobClient
-        from azure.identity import DefaultAzureCredential
+        from azure.storage.blob import BlobClient  # type: ignore[import-not-found]
+        from azure.identity import DefaultAzureCredential  # type: ignore[import-not-found]
         
         credential = DefaultAzureCredential()
         blob_client = BlobClient.from_blob_url(blob_url, credential=credential)
@@ -487,7 +510,7 @@ def write_to_blob(data: Any, blob_url: str) -> None:
 def write_to_gcs(data: Any, gcs_path: str, content_type: str = "application/json") -> None:
     """Write data to Google Cloud Storage."""
     try:
-        from google.cloud import storage
+        from google.cloud import storage  # type: ignore[import-not-found]
         
         # Parse GCS path: gs://bucket/key
         parts = gcs_path.replace("gs://", "").split("/", 1)
@@ -557,7 +580,7 @@ def check_azure_permissions(credential, subscription_id: str) -> Dict[str, Any]:
     results = {'success': True, 'errors': [], 'warnings': []}
     
     try:
-        from azure.mgmt.compute import ComputeManagementClient
+        from azure.mgmt.compute import ComputeManagementClient  # type: ignore[import-not-found]
         
         # Test Compute access
         compute_client = ComputeManagementClient(credential, subscription_id)
@@ -586,7 +609,7 @@ def check_gcp_permissions(project_id: str) -> Dict[str, Any]:
     results = {'success': True, 'errors': [], 'warnings': []}
     
     try:
-        from google.cloud import compute_v1
+        from google.cloud import compute_v1  # type: ignore[import-not-found]
         
         # Test Compute access with a simple zones list
         client = compute_v1.ZonesClient()

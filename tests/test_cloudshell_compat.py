@@ -97,7 +97,7 @@ def check_azure_deps():
         errors.append("azure-identity")
     
     try:
-        from azure.mgmt.compute import ComputeManagementClient
+        from azure.mgmt.compute import ComputeManagementClient  # type: ignore[import-not-found]
         print("✓ azure-mgmt-compute")
     except ImportError:
         print("- azure-mgmt-compute not installed")
@@ -111,14 +111,14 @@ def check_gcp_deps():
     errors = []
     
     try:
-        from google.cloud import compute_v1
+        from google.cloud import compute_v1  # type: ignore[import-not-found]
         print("✓ google-cloud-compute")
     except ImportError:
         print("- google-cloud-compute not installed")
         errors.append("google-cloud-compute")
     
     try:
-        from google.cloud import storage
+        from google.cloud import storage  # type: ignore[import-not-found]
         print("✓ google-cloud-storage")
     except ImportError:
         print("- google-cloud-storage not installed")
@@ -130,8 +130,8 @@ def check_gcp_deps():
 def check_m365_deps():
     """Check M365 collector dependencies."""
     try:
-        from msgraph.graph_service_client import GraphServiceClient
-        from azure.identity import ClientSecretCredential
+        from msgraph.graph_service_client import GraphServiceClient  # type: ignore[import-not-found]
+        from azure.identity import ClientSecretCredential  # type: ignore[import-not-found]
         print("✓ msgraph-sdk + azure-identity")
         return True
     except ImportError:
