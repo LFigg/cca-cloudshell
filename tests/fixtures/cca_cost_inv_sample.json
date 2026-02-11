@@ -1,0 +1,32 @@
+{
+  "run_id": "cost_211420",
+  "timestamp": "2026-02-11T21:14:20Z",
+  "period": {
+    "start": "2026-01-01",
+    "end": "2026-01-31"
+  },
+  "providers": ["aws", "azure", "gcp"],
+  "total_cost": 24567.89,
+  "total_records": 19,
+  "records": [
+    {"provider": "aws", "category": "ec2_snapshot", "service": "Amazon EC2 EBS - Snapshot", "cost": 3245.67, "period_start": "2026-01-01", "region": "us-east-1", "usage_quantity": 32456.7, "usage_unit": "GB-Month"},
+    {"provider": "aws", "category": "ec2_snapshot", "service": "Amazon EC2 EBS - Snapshot", "cost": 1876.45, "period_start": "2026-01-01", "region": "us-west-2", "usage_quantity": 18764.5, "usage_unit": "GB-Month"},
+    {"provider": "aws", "category": "rds_snapshot", "service": "Amazon RDS - Snapshot", "cost": 1567.23, "period_start": "2026-01-01", "region": "us-east-1", "usage_quantity": 15672.3, "usage_unit": "GB-Month"},
+    {"provider": "aws", "category": "backup_storage", "service": "AWS Backup Storage", "cost": 2345.89, "period_start": "2026-01-01", "region": "us-east-1", "usage_quantity": 46917.8, "usage_unit": "GB-Month"},
+    {"provider": "aws", "category": "backup_storage", "service": "AWS Backup Vault Storage - Cold", "cost": 456.78, "period_start": "2026-01-01", "region": "us-east-1", "usage_quantity": 45678.0, "usage_unit": "GB-Month"},
+    {"provider": "aws", "category": "s3_storage", "service": "Amazon S3 - Standard", "cost": 987.65, "period_start": "2026-01-01", "region": "us-east-1", "usage_quantity": 42500.0, "usage_unit": "GB-Month"},
+    {"provider": "aws", "category": "s3_storage", "service": "Amazon S3 - Glacier", "cost": 234.56, "period_start": "2026-01-01", "region": "us-east-1", "usage_quantity": 58640.0, "usage_unit": "GB-Month"},
+    {"provider": "aws", "category": "data_transfer", "service": "AWS Data Transfer", "cost": 567.89, "period_start": "2026-01-01", "region": "us-east-1", "usage_quantity": 5678.9, "usage_unit": "GB"},
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 2456.78, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 24567.8, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 1234.56, "period_start": "2026-01-01", "region": "westus2", "usage_quantity": 12345.6, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - VM", "cost": 1876.54, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 200, "usage_unit": "VMs"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - Recovery Vault Storage", "cost": 2345.67, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 46913.4, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Hot", "cost": 765.43, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 33062.4, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Archive", "cost": 123.45, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 61725.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 1987.65, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 39753.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 876.54, "period_start": "2026-01-01", "region": "us-east1", "usage_quantity": 17530.8, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Standard Storage", "cost": 654.32, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 25166.2, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Nearline Storage", "cost": 234.56, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 23456.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "data_transfer", "service": "GCP Network Egress", "cost": 234.56, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 2345.6, "usage_unit": "GB"}
+  ]
+}

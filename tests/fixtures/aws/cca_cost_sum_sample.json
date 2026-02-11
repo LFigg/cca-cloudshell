@@ -1,0 +1,38 @@
+{
+  "run_id": "cost_aws_211420",
+  "timestamp": "2026-02-11T21:14:20Z",
+  "period": {"start": "2025-11-01", "end": "2026-01-31"},
+  "summary": {
+    "total_cost": 33847.23,
+    "currency": "USD",
+    "providers": {
+      "aws": {
+        "total_cost": 33847.23,
+        "categories": {
+          "ec2_snapshot": 14464.08,
+          "rds_snapshot": 4369.68,
+          "backup_storage": 7905.11,
+          "s3_storage": 3433.30,
+          "data_transfer": 1537.01
+        },
+        "regions": {
+          "us-east-1": 28551.03,
+          "us-west-2": 5296.20
+        }
+      }
+    },
+    "month_over_month": {
+      "previous_month_total": 10549.52,
+      "current_month_total": 11282.12,
+      "change_amount": 732.60,
+      "change_percent": 6.9
+    },
+    "top_services": [
+      {"service": "Amazon EC2 EBS - Snapshot", "cost": 14464.08, "percent": 42.7},
+      {"service": "AWS Backup Storage", "cost": 6703.90, "percent": 19.8},
+      {"service": "Amazon RDS - Snapshot", "cost": 4369.68, "percent": 12.9},
+      {"service": "Amazon S3 - Standard", "cost": 2787.64, "percent": 8.2},
+      {"service": "AWS Data Transfer", "cost": 1537.01, "percent": 4.5}
+    ]
+  }
+}

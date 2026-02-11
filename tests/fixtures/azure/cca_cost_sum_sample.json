@@ -1,0 +1,37 @@
+{
+  "run_id": "cost_azure_211420",
+  "timestamp": "2026-02-11T21:14:20Z",
+  "period": {"start": "2025-11-01", "end": "2026-01-31"},
+  "summary": {
+    "total_cost": 26628.83,
+    "currency": "USD",
+    "providers": {
+      "azure": {
+        "total_cost": 26628.83,
+        "categories": {
+          "disk_snapshot": 10377.74,
+          "backup_storage": 11975.28,
+          "blob_storage": 2543.93,
+          "sql_backup": 1732.09
+        },
+        "regions": {
+          "eastus": 23131.08,
+          "westus2": 3498.75
+        }
+      }
+    },
+    "month_over_month": {
+      "previous_month_total": 8326.02,
+      "current_month_total": 9414.77,
+      "change_amount": 1088.75,
+      "change_percent": 13.1
+    },
+    "top_services": [
+      {"service": "Azure Backup - Recovery Vault Storage", "cost": 6678.99, "percent": 25.1},
+      {"service": "Azure Managed Disk Snapshots", "cost": 10377.74, "percent": 39.0},
+      {"service": "Azure Backup - VM", "cost": 5296.29, "percent": 19.9},
+      {"service": "Azure Blob Storage - Hot", "cost": 2196.29, "percent": 8.2},
+      {"service": "Azure SQL Database Backup", "cost": 1732.09, "percent": 6.5}
+    ]
+  }
+}

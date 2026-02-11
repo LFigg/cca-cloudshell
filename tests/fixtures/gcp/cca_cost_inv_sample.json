@@ -1,0 +1,31 @@
+{
+  "run_id": "cost_gcp_211420",
+  "timestamp": "2026-02-11T21:14:20Z",
+  "period": {"start": "2025-11-01", "end": "2026-01-31"},
+  "providers": ["gcp"],
+  "total_cost": 12498.49,
+  "total_records": 21,
+  "records": [
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 1765.43, "period_start": "2025-11-01", "region": "us-central1", "usage_quantity": 35308.6, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 1876.54, "period_start": "2025-12-01", "region": "us-central1", "usage_quantity": 37530.8, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 1987.65, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 39753.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 765.43, "period_start": "2025-11-01", "region": "us-east1", "usage_quantity": 15308.6, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 821.09, "period_start": "2025-12-01", "region": "us-east1", "usage_quantity": 16421.8, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "disk_snapshot", "service": "GCE Persistent Disk Snapshot", "cost": 876.54, "period_start": "2026-01-01", "region": "us-east1", "usage_quantity": 17530.8, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Standard Storage", "cost": 587.65, "period_start": "2025-11-01", "region": "us-central1", "usage_quantity": 22602.5, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Standard Storage", "cost": 621.09, "period_start": "2025-12-01", "region": "us-central1", "usage_quantity": 23888.1, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Standard Storage", "cost": 654.32, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 25166.2, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Nearline Storage", "cost": 198.76, "period_start": "2025-11-01", "region": "us-central1", "usage_quantity": 19876.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Nearline Storage", "cost": 215.43, "period_start": "2025-12-01", "region": "us-central1", "usage_quantity": 21543.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Nearline Storage", "cost": 234.56, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 23456.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Coldline Storage", "cost": 65.43, "period_start": "2025-11-01", "region": "us-central1", "usage_quantity": 16357.5, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Coldline Storage", "cost": 71.09, "period_start": "2025-12-01", "region": "us-central1", "usage_quantity": 17772.5, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "cloud_storage", "service": "GCS Coldline Storage", "cost": 76.54, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 19135.0, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "data_transfer", "service": "GCP Network Egress", "cost": 198.76, "period_start": "2025-11-01", "region": "us-central1", "usage_quantity": 1987.6, "usage_unit": "GB"},
+    {"provider": "gcp", "category": "data_transfer", "service": "GCP Network Egress", "cost": 215.43, "period_start": "2025-12-01", "region": "us-central1", "usage_quantity": 2154.3, "usage_unit": "GB"},
+    {"provider": "gcp", "category": "data_transfer", "service": "GCP Network Egress", "cost": 234.56, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 2345.6, "usage_unit": "GB"},
+    {"provider": "gcp", "category": "sql_backup", "service": "Cloud SQL Backup", "cost": 321.09, "period_start": "2025-11-01", "region": "us-central1", "usage_quantity": 3210.9, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "sql_backup", "service": "Cloud SQL Backup", "cost": 343.21, "period_start": "2025-12-01", "region": "us-central1", "usage_quantity": 3432.1, "usage_unit": "GB-Month"},
+    {"provider": "gcp", "category": "sql_backup", "service": "Cloud SQL Backup", "cost": 367.89, "period_start": "2026-01-01", "region": "us-central1", "usage_quantity": 3678.9, "usage_unit": "GB-Month"}
+  ]
+}

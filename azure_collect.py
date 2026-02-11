@@ -14,7 +14,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 # Azure SDK - pre-installed in Azure Cloud Shell
@@ -43,7 +43,8 @@ sys.path.insert(0, '.')
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     generate_run_id, get_timestamp, format_bytes_to_gb,
-    write_json, write_csv, setup_logging, print_summary_table
+    write_json, write_csv, setup_logging, print_summary_table,
+    retry_with_backoff
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ def _extract_resource_group(resource_id: str) -> str:
 # VM Collector
 # =============================================================================
 
+@retry_with_backoff(max_attempts=3)
 def collect_vms(credential, subscription_id: str) -> List[CloudResource]:
     """Collect Azure Virtual Machines."""
     resources = []
@@ -1089,6 +1091,7 @@ def collect_subscription(credential, subscription_id: str, subscription_name: st
 def main():
     parser = argparse.ArgumentParser(description='CCA CloudShell - Azure Resource Collector')
     parser.add_argument('--subscription', help='Specific subscription ID (default: all accessible)')
+    parser.add_argument('--regions', help='Comma-separated list of regions to filter (e.g., eastus,westus2)')
     parser.add_argument('--output', help='Output directory or blob URL', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
     
@@ -1097,10 +1100,24 @@ def main():
     setup_logging(args.log_level)
     
     # Get credential
-    credential = get_credential()
+    try:
+        credential = get_credential()
+    except Exception as e:
+        logger.error(f"Failed to authenticate with Azure: {e}")
+        logger.error("Check your Azure credentials are configured correctly.")
+        sys.exit(1)
     
     # Get subscriptions
-    all_subscriptions = get_subscriptions(credential)
+    try:
+        all_subscriptions = get_subscriptions(credential)
+    except Exception as e:
+        logger.error(f"Failed to list Azure subscriptions: {e}")
+        logger.error("Check your credentials have subscription read access.")
+        sys.exit(1)
+    
+    if not all_subscriptions:
+        logger.error("No Azure subscriptions found. Check permissions.")
+        sys.exit(1)
     
     if args.subscription:
         subscriptions = [s for s in all_subscriptions if s['id'] == args.subscription]
@@ -1115,10 +1132,26 @@ def main():
     # Collect resources
     all_resources = []
     subscription_ids = []
+    failed_subscriptions = []
     
     for sub in subscriptions:
-        subscription_ids.append(sub['id'])
-        all_resources.extend(collect_subscription(credential, sub['id'], sub['name']))
+        try:
+            subscription_ids.append(sub['id'])
+            all_resources.extend(collect_subscription(credential, sub['id'], sub['name']))
+        except Exception as e:
+            logger.error(f"Failed to collect from subscription {sub['id']} ({sub['name']}): {e}")
+            failed_subscriptions.append({'id': sub['id'], 'name': sub['name'], 'error': str(e)})
+            continue
+    
+    if failed_subscriptions:
+        logger.warning(f"Collection failed for {len(failed_subscriptions)} subscription(s)")
+    
+    # Filter by regions if specified
+    if args.regions:
+        region_filter = {r.strip().lower() for r in args.regions.split(',')}
+        original_count = len(all_resources)
+        all_resources = [r for r in all_resources if r.region and r.region.lower() in region_filter]
+        logger.info(f"Filtered to {len(all_resources)} resources in regions: {', '.join(sorted(region_filter))} (from {original_count} total)")
     
     # Generate summaries
     summaries = aggregate_sizing(all_resources)

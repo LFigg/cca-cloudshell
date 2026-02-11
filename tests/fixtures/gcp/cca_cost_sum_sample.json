@@ -1,0 +1,37 @@
+{
+  "run_id": "cost_gcp_211420",
+  "timestamp": "2026-02-11T21:14:20Z",
+  "period": {"start": "2025-11-01", "end": "2026-01-31"},
+  "summary": {
+    "total_cost": 12498.49,
+    "currency": "USD",
+    "providers": {
+      "gcp": {
+        "total_cost": 12498.49,
+        "categories": {
+          "disk_snapshot": 8092.68,
+          "cloud_storage": 2724.87,
+          "data_transfer": 648.75,
+          "sql_backup": 1032.19
+        },
+        "regions": {
+          "us-central1": 10035.43,
+          "us-east1": 2463.06
+        }
+      }
+    },
+    "month_over_month": {
+      "previous_month_total": 3902.82,
+      "current_month_total": 4432.06,
+      "change_amount": 529.24,
+      "change_percent": 13.6
+    },
+    "top_services": [
+      {"service": "GCE Persistent Disk Snapshot", "cost": 8092.68, "percent": 64.7},
+      {"service": "GCS Standard Storage", "cost": 1863.06, "percent": 14.9},
+      {"service": "Cloud SQL Backup", "cost": 1032.19, "percent": 8.3},
+      {"service": "GCS Nearline Storage", "cost": 648.75, "percent": 5.2},
+      {"service": "GCP Network Egress", "cost": 648.75, "percent": 5.2}
+    ]
+  }
+}

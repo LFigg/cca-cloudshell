@@ -1,0 +1,20 @@
+{
+  "run_id": "cost_211420",
+  "timestamp": "2026-02-11T21:14:20Z",
+  "period": {"start": "2026-01-01", "end": "2026-01-31"},
+  "summary": {
+    "total_cost": 24567.89,
+    "currency": "USD",
+    "providers": {
+      "aws": {"total_cost": 11282.12, "categories": {"ec2_snapshot": 5122.12, "rds_snapshot": 1567.23, "backup_storage": 2802.67, "s3_storage": 1222.21, "data_transfer": 567.89}},
+      "azure": {"total_cost": 8802.43, "categories": {"disk_snapshot": 3691.34, "backup_storage": 4222.21, "blob_storage": 888.88}},
+      "gcp": {"total_cost": 4483.34, "categories": {"disk_snapshot": 2864.19, "cloud_storage": 888.88, "data_transfer": 234.56}}
+    },
+    "month_over_month": {"previous_month_total": 22456.78, "current_month_total": 24567.89, "change_amount": 2111.11, "change_percent": 9.4},
+    "top_services": [
+      {"service": "Amazon EC2 EBS - Snapshot", "cost": 5122.12, "percent": 20.8},
+      {"service": "Azure Managed Disk Snapshots", "cost": 3691.34, "percent": 15.0},
+      {"service": "Azure Backup - Recovery Vault Storage", "cost": 2345.67, "percent": 9.5}
+    ]
+  }
+}

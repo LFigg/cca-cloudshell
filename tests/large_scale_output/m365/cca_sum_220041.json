@@ -1,17 +1,17 @@
 {
   "provider": "microsoft365",
-  "run_id": "20260211-175214-d1cb8d4b",
-  "timestamp": "2026-02-11T17:52:14.696301Z",
+  "run_id": "20260211-220041-a5fd9078",
+  "timestamp": "2026-02-11T22:00:41.756801Z",
   "tenant_id": "12345678-1234-1234-1234-123456789012",
-  "total_resources": 1751,
-  "total_capacity_gb": 82059.06319273915,
+  "total_resources": 1722,
+  "total_capacity_gb": 79725.12024534866,
   "summaries": [
     {
       "provider": "microsoft365",
       "service_family": "SharePoint",
       "resource_type": "m365:sharepoint:site",
       "resource_count": 100,
-      "total_gb": 24770.55018705316
+      "total_gb": 26624.05043391604
     },
     {
       "provider": "microsoft365",
@@ -24,15 +24,15 @@
       "provider": "microsoft365",
       "service_family": "OneDrive",
       "resource_type": "m365:onedrive:account",
-      "resource_count": 440,
-      "total_gb": 45759.911472925916
+      "resource_count": 423,
+      "total_gb": 42014.96842581406
     },
     {
       "provider": "microsoft365",
       "service_family": "Exchange",
       "resource_type": "m365:exchange:mailbox",
-      "resource_count": 461,
-      "total_gb": 11528.601532760076
+      "resource_count": 449,
+      "total_gb": 11086.10138561856
     },
     {
       "provider": "microsoft365",

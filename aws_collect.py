@@ -36,7 +36,8 @@ sys.path.insert(0, '.')
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     generate_run_id, get_timestamp, format_bytes_to_gb, tags_to_dict,
-    get_name_from_tags, write_json, write_csv, setup_logging, print_summary_table
+    get_name_from_tags, write_json, write_csv, setup_logging, print_summary_table,
+    retry_with_backoff
 )
 
 logger = logging.getLogger(__name__)
@@ -480,6 +481,7 @@ def collect_rds_cluster_snapshots(session: boto3.Session, region: str, account_i
 # S3 Collector
 # =============================================================================
 
+@retry_with_backoff(max_attempts=3, exceptions=(ClientError,))
 def collect_s3_buckets(session: boto3.Session, account_id: str) -> List[CloudResource]:
     """Collect S3 buckets (global service)."""
     resources = []
@@ -585,7 +587,18 @@ def collect_eks_clusters(session: boto3.Session, region: str, account_id: str) -
     try:
         eks = session.client('eks', region_name=region)
         
-        clusters = eks.list_clusters().get('clusters', [])
+        # Paginate through all clusters
+        clusters = []
+        next_token = None
+        while True:
+            if next_token:
+                response = eks.list_clusters(nextToken=next_token)
+            else:
+                response = eks.list_clusters()
+            clusters.extend(response.get('clusters', []))
+            next_token = response.get('nextToken')
+            if not next_token:
+                break
         
         for cluster_name in clusters:
             try:
@@ -624,11 +637,33 @@ def collect_eks_nodegroups(session: boto3.Session, region: str, account_id: str)
     try:
         eks = session.client('eks', region_name=region)
         
-        clusters = eks.list_clusters().get('clusters', [])
+        # Paginate through all clusters
+        clusters = []
+        next_token = None
+        while True:
+            if next_token:
+                response = eks.list_clusters(nextToken=next_token)
+            else:
+                response = eks.list_clusters()
+            clusters.extend(response.get('clusters', []))
+            next_token = response.get('nextToken')
+            if not next_token:
+                break
         
         for cluster_name in clusters:
             try:
-                nodegroups = eks.list_nodegroups(clusterName=cluster_name).get('nodegroups', [])
+                # Paginate through all nodegroups for this cluster
+                nodegroups = []
+                ng_next_token = None
+                while True:
+                    if ng_next_token:
+                        ng_response = eks.list_nodegroups(clusterName=cluster_name, nextToken=ng_next_token)
+                    else:
+                        ng_response = eks.list_nodegroups(clusterName=cluster_name)
+                    nodegroups.extend(ng_response.get('nodegroups', []))
+                    ng_next_token = ng_response.get('nextToken')
+                    if not ng_next_token:
+                        break
                 
                 for ng_name in nodegroups:
                     try:
@@ -1217,8 +1252,19 @@ Examples:
     setup_logging(args.log_level)
     
     # Create base session
-    base_session = get_session(args.profile)
-    base_account_id = get_account_id(base_session)
+    try:
+        base_session = get_session(args.profile)
+    except Exception as e:
+        logger.error(f"Failed to create AWS session: {e}")
+        logger.error("Check your AWS credentials are configured correctly.")
+        sys.exit(1)
+    
+    try:
+        base_account_id = get_account_id(base_session)
+    except Exception as e:
+        logger.error(f"Failed to get AWS account ID: {e}")
+        logger.error("Check your credentials have sts:GetCallerIdentity permission.")
+        sys.exit(1)
     
     # Parse regions
     regions = None

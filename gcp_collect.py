@@ -38,7 +38,8 @@ sys.path.insert(0, '.')
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     generate_run_id, get_timestamp, format_bytes_to_gb,
-    write_json, write_csv, setup_logging, print_summary_table
+    write_json, write_csv, setup_logging, print_summary_table,
+    retry_with_backoff
 )
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ def get_zones(project_id: str) -> List[str]:
 # Compute Engine Collectors
 # =============================================================================
 
+@retry_with_backoff(max_attempts=3)
 def collect_compute_instances(project_id: str) -> List[CloudResource]:
     """Collect Compute Engine instances across all zones."""
     resources = []
@@ -842,6 +844,7 @@ def main():
     parser = argparse.ArgumentParser(description='CCA CloudShell - GCP Resource Collector')
     parser.add_argument('--project', help='GCP project ID (default: current project)')
     parser.add_argument('--all-projects', action='store_true', help='Collect from all accessible projects')
+    parser.add_argument('--regions', help='Comma-separated list of regions to filter (e.g., us-central1,us-east1)')
     parser.add_argument('--output', help='Output directory or GCS path', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
     
@@ -871,10 +874,26 @@ def main():
         logger.info(f"Collecting from {len(project_ids)} project(s)")
         
         all_resources = []
+        failed_projects = []
         
         for project_id in project_ids:
-            resources = collect_project(project_id)
-            all_resources.extend(resources)
+            try:
+                resources = collect_project(project_id)
+                all_resources.extend(resources)
+            except Exception as e:
+                logger.error(f"Failed to collect from project {project_id}: {e}")
+                failed_projects.append({'project_id': project_id, 'error': str(e)})
+                continue
+        
+        if failed_projects:
+            logger.warning(f"Collection failed for {len(failed_projects)} project(s)")
+        
+        # Filter by regions if specified
+        if args.regions:
+            region_filter = {r.strip().lower() for r in args.regions.split(',')}
+            original_count = len(all_resources)
+            all_resources = [r for r in all_resources if r.region and r.region.lower() in region_filter]
+            logger.info(f"Filtered to {len(all_resources)} resources in regions: {', '.join(sorted(region_filter))} (from {original_count} total)")
         
         # Generate run ID and timestamp
         run_id = generate_run_id()

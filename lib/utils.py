@@ -1,12 +1,25 @@
 """
 Utility functions for CCA CloudShell collectors.
+
+Logging Level Standards:
+------------------------
+- ERROR: Collection function failures that stop an entire resource type
+         "Failed to collect VMs: {e}"
+- WARNING: Partial failures (nested loops), missing optional dependencies
+           "Failed to assume role in account {id}: {e}"
+           "azure-mgmt-redis not installed. Skipping Redis..."
+- INFO: Progress messages, resource counts
+        "Found 42 EC2 instances"
+        "Collecting resources from subscription..."
+- DEBUG: Per-item failures that don't affect overall collection
+         "Failed to process item {id}: {e}"
 """
 import json
 import csv
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Callable, TypeVar
+from typing import List, Dict, Any, Callable, TypeVar, Optional
 import uuid
 from functools import wraps
 
@@ -167,6 +180,11 @@ def write_json(data: Any, filepath: str) -> None:
         write_to_blob(data, filepath)
         return
     
+    # Handle GCS paths
+    if filepath.startswith("gs://"):
+        write_to_gcs(data, filepath)
+        return
+    
     # Local file
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=2, default=str)
@@ -189,6 +207,26 @@ def write_csv(data: List[Dict], filepath: str, fieldnames: List[str] = None) -> 
         writer.writeheader()
         writer.writerows(data)
         write_to_s3(output.getvalue(), filepath, content_type="text/csv")
+        return
+    
+    # Handle Azure blob paths
+    if filepath.startswith("https://") and ".blob.core.windows.net" in filepath:
+        import io
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
+        write_to_blob(output.getvalue(), filepath)
+        return
+    
+    # Handle GCS paths
+    if filepath.startswith("gs://"):
+        import io
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
+        write_to_gcs(output.getvalue(), filepath, content_type="text/csv")
         return
     
     # Local file
@@ -243,6 +281,185 @@ def write_to_blob(data: Any, blob_url: str) -> None:
     except ImportError:
         print("ERROR: azure-storage-blob not installed. Install with: pip install azure-storage-blob")
         raise
+
+
+def write_to_gcs(data: Any, gcs_path: str, content_type: str = "application/json") -> None:
+    """Write data to Google Cloud Storage."""
+    try:
+        from google.cloud import storage
+        
+        # Parse GCS path: gs://bucket/key
+        parts = gcs_path.replace("gs://", "").split("/", 1)
+        bucket_name = parts[0]
+        blob_name = parts[1] if len(parts) > 1 else "output.json"
+        
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        
+        if isinstance(data, str):
+            body = data
+        else:
+            body = json.dumps(data, indent=2, default=str)
+        
+        blob.upload_from_string(body, content_type=content_type)
+        print(f"Wrote gs://{bucket_name}/{blob_name}")
+    except ImportError:
+        print("ERROR: google-cloud-storage not installed. Install with: pip install google-cloud-storage")
+        raise
+
+
+# =============================================================================
+# Permission Pre-Check Functions
+# =============================================================================
+
+def check_aws_permissions(session) -> Dict[str, Any]:
+    """
+    Check AWS permissions before starting collection.
+    
+    Returns dict with 'success' bool and 'errors' list.
+    """
+    results = {'success': True, 'errors': [], 'warnings': []}
+    
+    try:
+        # Test STS (required for account ID)
+        sts = session.client('sts')
+        sts.get_caller_identity()
+    except Exception as e:
+        results['success'] = False
+        results['errors'].append(f"STS access denied: {e}")
+        return results  # Fatal - can't proceed without this
+    
+    # Test EC2 (describe regions - basic permission)
+    try:
+        ec2 = session.client('ec2', region_name='us-east-1')
+        ec2.describe_regions(MaxResults=1)
+    except Exception as e:
+        results['warnings'].append(f"EC2 describe_regions failed (may limit region discovery): {e}")
+    
+    # Test S3 list buckets
+    try:
+        s3 = session.client('s3')
+        s3.list_buckets()
+    except Exception as e:
+        results['warnings'].append(f"S3 list_buckets failed: {e}")
+    
+    return results
+
+
+def check_azure_permissions(credential, subscription_id: str) -> Dict[str, Any]:
+    """
+    Check Azure permissions before starting collection.
+    
+    Returns dict with 'success' bool and 'errors' list.
+    """
+    results = {'success': True, 'errors': [], 'warnings': []}
+    
+    try:
+        from azure.mgmt.compute import ComputeManagementClient
+        
+        # Test Compute access
+        compute_client = ComputeManagementClient(credential, subscription_id)
+        # Just create the iterator, don't actually list
+        list(compute_client.virtual_machines.list_all())[:1]
+    except ImportError:
+        results['errors'].append("azure-mgmt-compute not installed")
+        results['success'] = False
+    except Exception as e:
+        error_msg = str(e)
+        if 'AuthorizationFailed' in error_msg or 'AuthenticationFailed' in error_msg:
+            results['errors'].append(f"Compute access denied: {e}")
+            results['success'] = False
+        else:
+            results['warnings'].append(f"Compute check failed (may be transient): {e}")
+    
+    return results
+
+
+def check_gcp_permissions(project_id: str) -> Dict[str, Any]:
+    """
+    Check GCP permissions before starting collection.
+    
+    Returns dict with 'success' bool and 'errors' list.
+    """
+    results = {'success': True, 'errors': [], 'warnings': []}
+    
+    try:
+        from google.cloud import compute_v1
+        
+        # Test Compute access with a simple zones list
+        client = compute_v1.ZonesClient()
+        list(client.list(project=project_id))[:1]
+    except ImportError:
+        results['errors'].append("google-cloud-compute not installed")
+        results['success'] = False
+    except Exception as e:
+        error_msg = str(e)
+        if '403' in error_msg or 'Permission' in error_msg:
+            results['errors'].append(f"Compute access denied: {e}")
+            results['success'] = False
+        else:
+            results['warnings'].append(f"Compute check failed (may be transient): {e}")
+    
+    return results
+
+
+def check_m365_permissions(graph_client, tenant_id: str) -> Dict[str, Any]:
+    """
+    Check M365 Graph API permissions before starting collection.
+    
+    Returns dict with 'success' bool and 'errors' list.
+    """
+    results = {'success': True, 'errors': [], 'warnings': []}
+    
+    # Test Users.Read.All
+    try:
+        response = graph_client.users.get()
+        if not response:
+            results['warnings'].append("Users API returned empty response")
+    except Exception as e:
+        error_msg = str(e)
+        if 'Authorization' in error_msg or '403' in error_msg:
+            results['errors'].append(f"Users.Read.All permission missing or denied: {e}")
+            results['success'] = False
+        else:
+            results['warnings'].append(f"Users check failed: {e}")
+    
+    # Test Sites.Read.All
+    try:
+        response = graph_client.sites.get()
+        if not response:
+            results['warnings'].append("Sites API returned empty response")
+    except Exception as e:
+        error_msg = str(e)
+        if 'Authorization' in error_msg or '403' in error_msg:
+            results['warnings'].append(f"Sites.Read.All may be missing: {e}")
+        # Not fatal - SharePoint might just be empty
+    
+    return results
+
+
+def print_permission_check_results(results: Dict[str, Any], cloud: str) -> bool:
+    """Print permission check results and return True if collection should proceed."""
+    if results['errors']:
+        print(f"\n{'='*60}")
+        print(f"{cloud.upper()} PERMISSION CHECK FAILED")
+        print('='*60)
+        for error in results['errors']:
+            print(f"  ERROR: {error}")
+        print()
+        return False
+    
+    if results['warnings']:
+        print(f"\n{'='*60}")
+        print(f"{cloud.upper()} PERMISSION WARNINGS")
+        print('='*60)
+        for warning in results['warnings']:
+            print(f"  WARNING: {warning}")
+        print("  Collection will continue but some resources may be missed.")
+        print()
+    
+    return True
 
 
 def print_summary_table(summaries: List[Dict]) -> None:

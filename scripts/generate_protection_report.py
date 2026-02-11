@@ -89,6 +89,101 @@ def get_protected_resources(resources: List[Dict]) -> List[Dict]:
     return [r for r in resources if r['resource_type'] == 'aws:backup:protected-resource']
 
 
+def get_cloud_provider(resource_type: str) -> str:
+    """Extract cloud provider from resource type prefix."""
+    if resource_type.startswith('aws:'):
+        return 'AWS'
+    elif resource_type.startswith('azure:'):
+        return 'Azure'
+    elif resource_type.startswith('gcp:'):
+        return 'GCP'
+    elif resource_type.startswith('m365:'):
+        return 'Microsoft 365'
+    return 'Unknown'
+
+
+def get_resource_category(resource_type: str) -> str:
+    """Categorize resource types into logical groups."""
+    # Compute resources
+    compute_types = ['aws:ec2:instance', 'azure:vm', 'gcp:compute:instance']
+    if resource_type in compute_types:
+        return 'Compute'
+    
+    # Storage/Disk resources
+    disk_types = ['aws:ec2:volume', 'azure:disk', 'gcp:compute:disk']
+    if resource_type in disk_types:
+        return 'Storage/Disk'
+    
+    # Snapshot resources
+    snapshot_types = ['aws:ec2:snapshot', 'aws:rds:snapshot', 'aws:rds:cluster-snapshot', 
+                      'azure:snapshot', 'gcp:compute:snapshot']
+    if resource_type in snapshot_types:
+        return 'Snapshots'
+    
+    # Database resources
+    db_types = ['aws:rds:instance', 'aws:rds:cluster', 'azure:sql:database', 
+                'azure:cosmosdb:account', 'gcp:sql:instance']
+    if resource_type in db_types:
+        return 'Database'
+    
+    # Object storage
+    object_storage = ['aws:s3:bucket', 'azure:storage:account', 'gcp:storage:bucket']
+    if resource_type in object_storage:
+        return 'Object Storage'
+    
+    # Backup/Recovery resources
+    backup_types = ['aws:backup:plan', 'aws:backup:vault', 'aws:backup:selection',
+                    'aws:backup:protected-resource', 'azure:recovery:vault', 
+                    'azure:backup:policy']
+    if resource_type in backup_types:
+        return 'Backup/Recovery'
+    
+    # Container/Kubernetes
+    container_types = ['azure:aks:cluster', 'gcp:container:cluster', 'aws:eks:cluster']
+    if resource_type in container_types:
+        return 'Container/K8s'
+    
+    # Serverless/Functions
+    function_types = ['azure:function:app', 'aws:lambda:function', 'gcp:functions:function']
+    if resource_type in function_types:
+        return 'Serverless'
+    
+    # M365 resources
+    if resource_type.startswith('m365:'):
+        if 'mailbox' in resource_type:
+            return 'M365 Mail'
+        elif 'onedrive' in resource_type:
+            return 'M365 OneDrive'
+        elif 'sharepoint' in resource_type:
+            return 'M365 SharePoint'
+        elif 'teams' in resource_type:
+            return 'M365 Teams'
+        return 'M365 Other'
+    
+    return 'Other'
+
+
+def count_resources_by_provider_and_type(resources: List[Dict]) -> Dict[str, Dict[str, int]]:
+    """Count resources grouped by cloud provider and resource type."""
+    counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for r in resources:
+        resource_type = r.get('resource_type', 'unknown')
+        provider = get_cloud_provider(resource_type)
+        counts[provider][resource_type] += 1
+    return {k: dict(v) for k, v in counts.items()}
+
+
+def count_resources_by_category(resources: List[Dict]) -> Dict[str, Dict[str, Any]]:
+    """Count resources and sizes by category."""
+    counts: Dict[str, Dict[str, Any]] = defaultdict(lambda: {'count': 0, 'size_gb': 0})
+    for r in resources:
+        resource_type = r.get('resource_type', 'unknown')
+        category = get_resource_category(resource_type)
+        counts[category]['count'] += 1
+        counts[category]['size_gb'] += r.get('size_gb', 0) or 0
+    return dict(counts)
+
+
 def build_backup_selection_index(selections: List[Dict]) -> Dict[str, List[str]]:
     """
     Build index of resource ARN patterns to backup plan names.
@@ -605,6 +700,62 @@ def generate_report(inventory_path: str, output_path: str):
     ws_summary.column_dimensions['C'].width = 15
     ws_summary.column_dimensions['D'].width = 30
     
+    # --- Multi-Cloud Resource Overview Section ---
+    provider_counts = count_resources_by_provider_and_type(resources)
+    category_counts = count_resources_by_category(resources)
+    
+    current_row = 29  # Start after AWS-specific sections
+    
+    ws_summary.cell(row=current_row, column=1, value="Multi-Cloud Resource Overview").font = section_font
+    current_row += 1
+    ws_summary.cell(row=current_row, column=1, value="(Summary of all resources by cloud provider)")
+    current_row += 2
+    
+    # Resources by Category
+    ws_summary.cell(row=current_row, column=1, value="Resources by Category").font = section_font
+    current_row += 1
+    
+    category_headers = ["Category", "Count", "Size (GB)"]
+    for col_idx, header in enumerate(category_headers, start=1):
+        cell = ws_summary.cell(row=current_row, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font_white
+        cell.border = thin_border
+    current_row += 1
+    
+    for category in sorted(category_counts.keys()):
+        data = category_counts[category]
+        cell_cat = ws_summary.cell(row=current_row, column=1, value=category)
+        cell_cnt = ws_summary.cell(row=current_row, column=2, value=data['count'])
+        cell_size = ws_summary.cell(row=current_row, column=3, value=round(data['size_gb'], 1) if data['size_gb'] else "")
+        for cell in [cell_cat, cell_cnt, cell_size]:
+            cell.border = thin_border
+        current_row += 1
+    
+    current_row += 1
+    
+    # Resources by Provider
+    ws_summary.cell(row=current_row, column=1, value="Resources by Cloud Provider").font = section_font
+    current_row += 1
+    
+    provider_headers = ["Provider", "Resource Type", "Count"]
+    for col_idx, header in enumerate(provider_headers, start=1):
+        cell = ws_summary.cell(row=current_row, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font_white
+        cell.border = thin_border
+    current_row += 1
+    
+    for provider in sorted(provider_counts.keys()):
+        type_counts = provider_counts[provider]
+        for resource_type in sorted(type_counts.keys()):
+            cell_prov = ws_summary.cell(row=current_row, column=1, value=provider)
+            cell_type = ws_summary.cell(row=current_row, column=2, value=resource_type)
+            cell_cnt = ws_summary.cell(row=current_row, column=3, value=type_counts[resource_type])
+            for cell in [cell_prov, cell_type, cell_cnt]:
+                cell.border = thin_border
+            current_row += 1
+    
     # --- Protection Report Sheet ---
     ws_report = wb.create_sheet(title="Protection Report")
     
@@ -797,25 +948,118 @@ def generate_report(inventory_path: str, output_path: str):
         ws_selections.freeze_panes = 'A2'
         ws_selections.auto_filter.ref = f"A1:H{len(backup_selections) + 1}"
     
+    # --- All Resources Sheet (Multi-Cloud Overview) ---
+    ws_all = wb.create_sheet(title="All Resources")
+    
+    all_resources_headers = [
+        'Cloud Provider', 'Resource Type', 'Category', 'Resource ID', 
+        'Name', 'Region', 'Size (GB)', 'Created/Modified', 'Tags'
+    ]
+    
+    # Header row
+    for col_idx, header in enumerate(all_resources_headers, start=1):
+        cell = ws_all.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font_white
+        cell.border = thin_border
+    
+    # Provider colors for visual distinction
+    provider_colors = {
+        'AWS': PatternFill(start_color="FF9900", end_color="FF9900", fill_type="solid"),  # AWS Orange
+        'Azure': PatternFill(start_color="0078D4", end_color="0078D4", fill_type="solid"),  # Azure Blue
+        'GCP': PatternFill(start_color="4285F4", end_color="4285F4", fill_type="solid"),  # Google Blue
+        'Microsoft 365': PatternFill(start_color="D83B01", end_color="D83B01", fill_type="solid"),  # M365 Orange-Red
+    }
+    provider_text_color = Font(color="FFFFFF")
+    
+    # Data rows - sorted by provider, then resource type
+    sorted_resources = sorted(resources, key=lambda r: (get_cloud_provider(r.get('resource_type', '')), r.get('resource_type', ''), r.get('name', '')))
+    
+    for row_idx, resource in enumerate(sorted_resources, start=2):
+        resource_type = resource.get('resource_type', '')
+        provider = get_cloud_provider(resource_type)
+        category = get_resource_category(resource_type)
+        
+        # Get created/modified date from metadata
+        metadata = resource.get('metadata', {})
+        created = metadata.get('created_time', '') or metadata.get('start_time', '') or metadata.get('creation_time', '')
+        
+        row_data = [
+            provider,
+            resource_type,
+            category,
+            resource.get('resource_id', ''),
+            resource.get('name', ''),
+            resource.get('region', ''),
+            resource.get('size_gb', ''),
+            created,
+            format_tags(resource.get('tags', {}))
+        ]
+        
+        for col_idx, value in enumerate(row_data, start=1):
+            cell = ws_all.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            
+            # Color the provider column
+            if col_idx == 1 and provider in provider_colors:
+                cell.fill = provider_colors[provider]
+                cell.font = provider_text_color
+            
+            # Wrap text for tags column
+            if col_idx == 9:
+                cell.alignment = Alignment(wrap_text=True, vertical='top')
+    
+    # Adjust column widths
+    all_resources_column_widths = {
+        'A': 15, 'B': 30, 'C': 18, 'D': 60,
+        'E': 40, 'F': 15, 'G': 12, 'H': 25, 'I': 50
+    }
+    for col, width in all_resources_column_widths.items():
+        ws_all.column_dimensions[col].width = width
+    
+    ws_all.freeze_panes = 'A2'
+    if sorted_resources:
+        ws_all.auto_filter.ref = f"A1:I{len(sorted_resources) + 1}"
+    
     # Save workbook
     wb.save(output_path)
     
-    # Print summary to console
+    # Print summary to console - include multi-cloud summary
     print(f"Protection Report Generated: {output_path}")
     print(f"=" * 60)
-    print(f"EC2 Instances: {len(ec2_instances)}")
-    print(f"EBS Volumes: {len(ebs_volumes)} ({total_volume_size:,.1f} GB)")
-    print(f"  - Attached: {len(ebs_volumes) - len(orphan_volumes)} ({attached_volume_size:,.1f} GB)")
-    print(f"  - Orphan: {len(orphan_volumes)} ({orphan_volume_size:,.1f} GB)")
-    print(f"EBS Snapshots: {len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot'])} ({total_snapshot_size:,.1f} GB)")
-    print(f"RDS Databases: {len(rds_instances)} ({total_rds_size:,.1f} GB)")
-    print(f"RDS Snapshots: {len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']])} ({total_rds_snapshot_size:,.1f} GB)")
-    print(f"Backup Plans: {len(plans_only)}")
-    print(f"Backup Selections: {len(backup_selections)}")
-    print(f"Protected Resources: {len(protected_resources)}")
+    
+    # Multi-cloud summary first
+    total_resources = len(resources)
+    print(f"TOTAL RESOURCES: {total_resources}")
     print(f"-" * 60)
-    print(f"Protected Volume Size: {protected_volume_size:,.1f} GB ({protected_volume_size/total_volume_size*100:.1f}%)" if total_volume_size else "Protected Volume Size: 0 GB")
-    print(f"Unprotected Volume Size: {unprotected_volume_size:,.1f} GB ({unprotected_volume_size/total_volume_size*100:.1f}%)" if total_volume_size else "Unprotected Volume Size: 0 GB")
+    print("Resources by Cloud Provider:")
+    for provider in sorted(provider_counts.keys()):
+        provider_total = sum(provider_counts[provider].values())
+        print(f"  {provider}: {provider_total}")
+    print(f"-" * 60)
+    print("Resources by Category:")
+    for category in sorted(category_counts.keys()):
+        cat_data = category_counts[category]
+        size_str = f" ({cat_data['size_gb']:,.1f} GB)" if cat_data['size_gb'] else ""
+        print(f"  {category}: {cat_data['count']}{size_str}")
+    print(f"-" * 60)
+    
+    # AWS-specific details (if AWS resources exist)
+    if ec2_instances or ebs_volumes or rds_instances:
+        print("AWS Resource Details:")
+        print(f"  EC2 Instances: {len(ec2_instances)}")
+        print(f"  EBS Volumes: {len(ebs_volumes)} ({total_volume_size:,.1f} GB)")
+        print(f"    - Attached: {len(ebs_volumes) - len(orphan_volumes)} ({attached_volume_size:,.1f} GB)")
+        print(f"    - Orphan: {len(orphan_volumes)} ({orphan_volume_size:,.1f} GB)")
+        print(f"  EBS Snapshots: {len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot'])} ({total_snapshot_size:,.1f} GB)")
+        print(f"  RDS Databases: {len(rds_instances)} ({total_rds_size:,.1f} GB)")
+        print(f"  RDS Snapshots: {len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']])} ({total_rds_snapshot_size:,.1f} GB)")
+        print(f"  Backup Plans: {len(plans_only)}")
+        print(f"  Backup Selections: {len(backup_selections)}")
+        print(f"  Protected Resources: {len(protected_resources)}")
+        if total_volume_size:
+            print(f"  Protected Volume Size: {protected_volume_size:,.1f} GB ({protected_volume_size/total_volume_size*100:.1f}%)")
+            print(f"  Unprotected Volume Size: {unprotected_volume_size:,.1f} GB ({unprotected_volume_size/total_volume_size*100:.1f}%)")
 
 
 if __name__ == '__main__':

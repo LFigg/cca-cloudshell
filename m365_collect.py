@@ -40,12 +40,14 @@ try:
     from msgraph.graph_service_client import GraphServiceClient
     from azure.identity import ClientSecretCredential
 except ImportError:
-    print("Required packages not found. Installing...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", 
-                          "msgraph-sdk", "azure-identity"])
-    from msgraph.graph_service_client import GraphServiceClient
-    from azure.identity import ClientSecretCredential
+    print("ERROR: Required packages not found.")
+    print("")
+    print("Please install the required packages manually:")
+    print("    pip install msgraph-sdk azure-identity")
+    print("")
+    print("Or if using a virtual environment:")
+    print("    python -m pip install msgraph-sdk azure-identity")
+    sys.exit(1)
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +64,7 @@ logger = logging.getLogger(__name__)
 # Add lib to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.models import CloudResource
+from lib.utils import write_json as _write_json_to_path
 
 
 # =============================================================================
@@ -404,18 +407,21 @@ def collect_entra_groups(graph_client: GraphServiceClient, tenant_id: str) -> Li
 
 
 # =============================================================================
-# Output Utilities
+# Output Utilities (M365-specific helpers)
 # =============================================================================
 
-def write_json(data: Any, filename: str, output_dir: str) -> str:
-    """Write data to JSON file."""
+def write_json_file(data: Any, filename: str, output_dir: str) -> str:
+    """Write data to JSON file and return filepath.
+    
+    This is a thin wrapper around lib/utils.write_json that handles
+    filename + output_dir separately for convenience.
+    """
     filepath = os.path.join(output_dir, filename)
-    with open(filepath, 'w') as f:
-        json.dump(data, f, indent=2, default=str)
+    _write_json_to_path(data, filepath)
     return filepath
 
 
-def aggregate_sizing(resources: List[CloudResource]) -> Dict[str, Any]:
+def aggregate_m365_sizing(resources: List[CloudResource]) -> Dict[str, Any]:
     """Aggregate sizing information from resources."""
     summary = {
         'total_resources': len(resources),
@@ -446,8 +452,8 @@ def aggregate_sizing(resources: List[CloudResource]) -> Dict[str, Any]:
     return summary
 
 
-def print_summary_table(resources: List[CloudResource]):
-    """Print summary table to console."""
+def print_m365_summary_table(resources: List[CloudResource]):
+    """Print M365-specific summary table to console."""
     by_type = {}
     for r in resources:
         if r.resource_type not in by_type:
@@ -591,7 +597,7 @@ Security Note:
         all_resources.extend(collect_entra_groups(graph_client, args.tenant_id))
     
     # Print summary
-    print_summary_table(all_resources)
+    print_m365_summary_table(all_resources)
     
     if not all_resources:
         print("No resources collected. Check permissions and tenant configuration.")
@@ -604,14 +610,14 @@ Security Note:
     inventory = [asdict(r) for r in all_resources]
     # Use HHMMSS format for timestamp in filenames
     file_ts = datetime.now().strftime('%H%M%S')
-    inventory_file = write_json(inventory, f'cca_m365_inv_{file_ts}.json', args.output_dir)
+    inventory_file = write_json_file(inventory, f'cca_m365_inv_{file_ts}.json', args.output_dir)
     print(f"Inventory saved: {inventory_file}")
     
     # Sizing summary
-    sizing = aggregate_sizing(all_resources)
+    sizing = aggregate_m365_sizing(all_resources)
     sizing['tenant_id'] = args.tenant_id
     sizing['collection_timestamp'] = timestamp
-    sizing_file = write_json(sizing, f'cca_m365_sum_{file_ts}.json', args.output_dir)
+    sizing_file = write_json_file(sizing, f'cca_m365_sum_{file_ts}.json', args.output_dir)
     print(f"Sizing summary saved: {sizing_file}")
     
     # Executive summary
@@ -629,7 +635,7 @@ Security Note:
             'entra_groups': len([r for r in all_resources if r.resource_type == 'entraid:group'])
         }
     }
-    exec_file = write_json(exec_summary, f'executive_summary_{timestamp}.json', args.output_dir)
+    exec_file = write_json_file(exec_summary, f'executive_summary_{timestamp}.json', args.output_dir)
     print(f"Executive summary saved: {exec_file}")
     
     print("\n" + "="*70)

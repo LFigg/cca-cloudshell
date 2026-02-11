@@ -84,7 +84,29 @@ echo "Generating Cost Reports"
 echo "========================================"
 echo ""
 
-# Find all cost inventory files and generate cost reports
+# Generate per-cloud cost reports from fixtures (typical customer workflow)
+for CLOUD in aws azure gcp; do
+    if [ -f "tests/fixtures/${CLOUD}/cca_cost_inv_sample.json" ] && [ -f "tests/fixtures/${CLOUD}/cca_cost_sum_sample.json" ]; then
+        echo "Processing: tests/fixtures/${CLOUD}/ (${CLOUD^^} cost data)"
+        $PYTHON scripts/generate_cost_report.py \
+            --inventory "tests/fixtures/${CLOUD}/cca_cost_inv_sample.json" \
+            --summary "tests/fixtures/${CLOUD}/cca_cost_sum_sample.json" \
+            --output "tests/fixtures/${CLOUD}/cost_report.xlsx" || true
+        echo ""
+    fi
+done
+
+# Generate combined multi-cloud cost report (optional - all clouds)
+if [ -f "tests/fixtures/cca_cost_inv_sample.json" ] && [ -f "tests/fixtures/cca_cost_sum_sample.json" ]; then
+    echo "Processing: tests/fixtures/ (Multi-cloud combined data)"
+    $PYTHON scripts/generate_cost_report.py \
+        --inventory "tests/fixtures/cca_cost_inv_sample.json" \
+        --summary "tests/fixtures/cca_cost_sum_sample.json" \
+        --output "tests/fixtures/cost_report_combined.xlsx" || true
+    echo ""
+fi
+
+# Check for any generated cost files from test runs
 for COST_INV_FILE in $(ls -t tests/large_scale_output/*/cca_cost_inv_*.json tests/sample_output/cca_cost_inv_*.json 2>/dev/null); do
     if [ -f "$COST_INV_FILE" ]; then
         echo "Processing: $COST_INV_FILE"
@@ -122,4 +144,18 @@ if [ -d "tests/sample_output" ]; then
     echo ""
     echo "=== sample_output ==="
     ls -la tests/sample_output/*.xlsx tests/sample_output/*.json tests/sample_output/*.csv 2>/dev/null || echo "  (no files)"
+fi
+
+# Show fixtures cost reports (per-cloud)
+if [ -d "tests/fixtures" ]; then
+    echo ""
+    echo "=== fixtures (cost reports) ==="
+    for CLOUD in aws azure gcp; do
+        if [ -d "tests/fixtures/${CLOUD}" ]; then
+            echo "  --- ${CLOUD} ---"
+            ls -la tests/fixtures/${CLOUD}/*.xlsx tests/fixtures/${CLOUD}/*.json 2>/dev/null | sed 's/^/  /' || echo "    (no files)"
+        fi
+    done
+    echo "  --- combined (multi-cloud) ---"
+    ls -la tests/fixtures/*.xlsx tests/fixtures/*.json 2>/dev/null | sed 's/^/  /' || echo "    (no files)"
 fi

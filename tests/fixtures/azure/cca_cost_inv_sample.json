@@ -1,0 +1,31 @@
+{
+  "run_id": "cost_azure_211420",
+  "timestamp": "2026-02-11T21:14:20Z",
+  "period": {"start": "2025-11-01", "end": "2026-01-31"},
+  "providers": ["azure"],
+  "total_cost": 26628.83,
+  "total_records": 21,
+  "records": [
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 2123.45, "period_start": "2025-11-01", "region": "eastus", "usage_quantity": 21234.5, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 2298.76, "period_start": "2025-12-01", "region": "eastus", "usage_quantity": 22987.6, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 2456.78, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 24567.8, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 1098.76, "period_start": "2025-11-01", "region": "westus2", "usage_quantity": 10987.6, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 1165.43, "period_start": "2025-12-01", "region": "westus2", "usage_quantity": 11654.3, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "disk_snapshot", "service": "Azure Managed Disk Snapshots", "cost": 1234.56, "period_start": "2026-01-01", "region": "westus2", "usage_quantity": 12345.6, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - VM", "cost": 1654.32, "period_start": "2025-11-01", "region": "eastus", "usage_quantity": 180, "usage_unit": "VMs"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - VM", "cost": 1765.43, "period_start": "2025-12-01", "region": "eastus", "usage_quantity": 190, "usage_unit": "VMs"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - VM", "cost": 1876.54, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 200, "usage_unit": "VMs"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - Recovery Vault Storage", "cost": 2098.76, "period_start": "2025-11-01", "region": "eastus", "usage_quantity": 41975.2, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - Recovery Vault Storage", "cost": 2234.56, "period_start": "2025-12-01", "region": "eastus", "usage_quantity": 44691.2, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "backup_storage", "service": "Azure Backup - Recovery Vault Storage", "cost": 2345.67, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 46913.4, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Hot", "cost": 698.76, "period_start": "2025-11-01", "region": "eastus", "usage_quantity": 30185.6, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Hot", "cost": 732.10, "period_start": "2025-12-01", "region": "eastus", "usage_quantity": 31620.4, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Hot", "cost": 765.43, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 33062.4, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Archive", "cost": 108.76, "period_start": "2025-11-01", "region": "eastus", "usage_quantity": 54380.0, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Archive", "cost": 115.43, "period_start": "2025-12-01", "region": "eastus", "usage_quantity": 57715.0, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "blob_storage", "service": "Azure Blob Storage - Archive", "cost": 123.45, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 61725.0, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "sql_backup", "service": "Azure SQL Database Backup", "cost": 543.21, "period_start": "2025-11-01", "region": "eastus", "usage_quantity": 5432.1, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "sql_backup", "service": "Azure SQL Database Backup", "cost": 576.54, "period_start": "2025-12-01", "region": "eastus", "usage_quantity": 5765.4, "usage_unit": "GB-Month"},
+    {"provider": "azure", "category": "sql_backup", "service": "Azure SQL Database Backup", "cost": 612.34, "period_start": "2026-01-01", "region": "eastus", "usage_quantity": 6123.4, "usage_unit": "GB-Month"}
+  ]
+}
