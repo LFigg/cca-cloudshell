@@ -6,8 +6,88 @@ import csv
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, TypeVar
 import uuid
+from functools import wraps
+
+# Retry decorator for API calls
+try:
+    from tenacity import (
+        retry,
+        stop_after_attempt,
+        wait_exponential,
+        retry_if_exception_type,
+        before_sleep_log,
+    )
+    TENACITY_AVAILABLE = True
+except ImportError:
+    TENACITY_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+# Type variable for generic function decorator
+F = TypeVar('F', bound=Callable[..., Any])
+
+
+def retry_with_backoff(
+    max_attempts: int = 3,
+    min_wait: float = 1,
+    max_wait: float = 60,
+    exceptions: tuple = (Exception,)
+) -> Callable[[F], F]:
+    """
+    Decorator for retrying functions with exponential backoff.
+    
+    Args:
+        max_attempts: Maximum number of retry attempts (default: 3)
+        min_wait: Minimum wait time between retries in seconds (default: 1)
+        max_wait: Maximum wait time between retries in seconds (default: 60)
+        exceptions: Tuple of exception types to retry on (default: all Exceptions)
+    
+    Returns:
+        Decorated function with retry logic
+    
+    Example:
+        @retry_with_backoff(max_attempts=5, exceptions=(ConnectionError, TimeoutError))
+        def call_api():
+            ...
+    """
+    if TENACITY_AVAILABLE:
+        def decorator(func: F) -> F:
+            return retry(
+                stop=stop_after_attempt(max_attempts),
+                wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
+                retry=retry_if_exception_type(exceptions),
+                before_sleep=before_sleep_log(logger, logging.WARNING),
+                reraise=True
+            )(func)
+        return decorator
+    else:
+        # Fallback implementation without tenacity
+        def decorator(func: F) -> F:
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                last_exception = None
+                wait_time = min_wait
+                
+                for attempt in range(max_attempts):
+                    try:
+                        return func(*args, **kwargs)
+                    except exceptions as e:
+                        last_exception = e
+                        if attempt < max_attempts - 1:
+                            logger.warning(
+                                f"Retry {attempt + 1}/{max_attempts} for {func.__name__} "
+                                f"after {wait_time}s due to: {e}"
+                            )
+                            import time
+                            time.sleep(wait_time)
+                            wait_time = min(wait_time * 2, max_wait)
+                        else:
+                            raise
+                raise last_exception
+            return wrapper  # type: ignore
+        return decorator
 
 
 def generate_run_id() -> str:

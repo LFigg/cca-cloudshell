@@ -11,7 +11,7 @@ Requirements:
   - TeamSettings.Read.All (Teams details)
   
 Usage:
-    # Set environment variables
+    # Set environment variables (client secret MUST be env var for security)
     export MS365_TENANT_ID="your-tenant-id"
     export MS365_CLIENT_ID="your-client-id"
     export MS365_CLIENT_SECRET="your-client-secret"
@@ -19,8 +19,8 @@ Usage:
     # Run collector
     python m365_collect.py
     
-    # Or pass credentials as arguments
-    python m365_collect.py --tenant-id xxx --client-id xxx --client-secret xxx
+    # Override tenant/client IDs via CLI (secret must be env var)
+    python m365_collect.py --tenant-id xxx --client-id xxx
     
     # Include Entra ID collection
     python m365_collect.py --include-entra
@@ -59,19 +59,9 @@ logger = logging.getLogger(__name__)
 # Data Models
 # =============================================================================
 
-@dataclass
-class CloudResource:
-    """Represents a cloud resource for assessment."""
-    provider: str
-    subscription_id: str
-    region: str
-    resource_type: str
-    service_family: str
-    resource_id: str
-    name: str
-    tags: Dict[str, str] = field(default_factory=dict)
-    size_gb: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+# Add lib to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib.models import CloudResource
 
 
 # =============================================================================
@@ -493,14 +483,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Using environment variables
+    # Using environment variables (client secret MUST be env var)
     export MS365_TENANT_ID="your-tenant-id"
     export MS365_CLIENT_ID="your-client-id"
     export MS365_CLIENT_SECRET="your-client-secret"
     python m365_collect.py
     
-    # Using command-line arguments
-    python m365_collect.py --tenant-id xxx --client-id xxx --client-secret xxx
+    # Override tenant/client IDs via CLI
+    python m365_collect.py --tenant-id xxx --client-id xxx
     
     # Include Entra ID collection
     python m365_collect.py --include-entra
@@ -510,6 +500,10 @@ Required Azure AD App Permissions (Application type):
     - User.Read.All (Users, OneDrive, Exchange)
     - Group.Read.All (Groups, Teams)
     - TeamSettings.Read.All (Teams details)
+
+Security Note:
+    Client secrets must be provided via MS365_CLIENT_SECRET environment
+    variable to avoid exposing secrets in shell history or process listings.
         """
     )
     
@@ -519,9 +513,7 @@ Required Azure AD App Permissions (Application type):
     parser.add_argument('--client-id',
                         default=os.environ.get('MS365_CLIENT_ID'),
                         help='Azure AD application (client) ID (or set MS365_CLIENT_ID env var)')
-    parser.add_argument('--client-secret',
-                        default=os.environ.get('MS365_CLIENT_SECRET'),
-                        help='Azure AD client secret (or set MS365_CLIENT_SECRET env var)')
+    # Client secret is env-var only for security (no CLI arg to avoid shell history exposure)
     parser.add_argument('--output-dir', '-o',
                         default='./cca_m365_output',
                         help='Output directory (default: ./cca_m365_output)')
@@ -543,12 +535,17 @@ Required Azure AD App Permissions (Application type):
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
+    # Get client secret from environment only (security: not from CLI args)
+    client_secret = os.environ.get('MS365_CLIENT_SECRET')
+    
     # Validate credentials
-    if not args.tenant_id or not args.client_id or not args.client_secret:
+    if not args.tenant_id or not args.client_id or not client_secret:
         print("ERROR: Missing credentials. Please provide:")
         print("  --tenant-id or MS365_TENANT_ID environment variable")
         print("  --client-id or MS365_CLIENT_ID environment variable")
-        print("  --client-secret or MS365_CLIENT_SECRET environment variable")
+        print("  MS365_CLIENT_SECRET environment variable (required for security)")
+        print("\nNote: Client secret must be set via environment variable,")
+        print("      not CLI argument, to avoid exposing secrets in shell history.")
         print("\nRun with --help for more information.")
         sys.exit(1)
     
@@ -568,7 +565,7 @@ Required Azure AD App Permissions (Application type):
         graph_client = get_graph_client(
             args.tenant_id,
             args.client_id,
-            args.client_secret
+            client_secret
         )
     except Exception as e:
         print(f"ERROR: Failed to initialize Graph client: {e}")

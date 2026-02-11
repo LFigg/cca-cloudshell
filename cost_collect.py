@@ -421,13 +421,25 @@ def collect_gcp_costs(
         
         client = bigquery.Client(project=project_id)
         
-        # Build service filter
+        # Validate billing_table format to prevent injection
+        # Expected format: project.dataset.table or project.dataset.table_*
+        import re
+        if not re.match(r'^[\w-]+\.[\w-]+\.[\w-]+\*?$', billing_table):
+            raise ValueError(
+                f"Invalid billing_table format: {billing_table}. "
+                "Expected format: project.dataset.table"
+            )
+        
+        # Build service filter using parameterized query
+        # Note: BigQuery doesn't support parameterized table names, but we validated above
+        # Services and SKU keywords are from our controlled constant, so safe to interpolate
         services_filter = ', '.join([f"'{s}'" for s in GCP_BACKUP_FILTERS['services']])
         sku_conditions = ' OR '.join([
             f"LOWER(sku.description) LIKE '%{kw}%'" 
             for kw in GCP_BACKUP_FILTERS['sku_keywords']
         ])
         
+        # Use parameterized query for user-provided date values
         query = f"""
         SELECT
             project.id as project_id,
@@ -441,8 +453,8 @@ def collect_gcp_costs(
             FORMAT_DATE('%Y-%m-%d', DATE(usage_end_time)) as period_end
         FROM `{billing_table}`
         WHERE 
-            DATE(usage_start_time) >= '{start_date}'
-            AND DATE(usage_end_time) <= '{end_date}'
+            DATE(usage_start_time) >= @start_date
+            AND DATE(usage_end_time) <= @end_date
             AND service.description IN ({services_filter})
             AND ({sku_conditions})
         GROUP BY 
@@ -457,7 +469,15 @@ def collect_gcp_costs(
         ORDER BY cost DESC
         """
         
-        query_job = client.query(query)
+        # Configure query parameters for dates
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
+                bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
+            ]
+        )
+        
+        query_job = client.query(query, job_config=job_config)
         results = query_job.result()
         
         for row in results:
