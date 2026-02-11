@@ -256,52 +256,69 @@ def collect_azure_costs(
     
     try:
         from azure.mgmt.costmanagement import CostManagementClient
+        from azure.mgmt.costmanagement.models import (
+            QueryDefinition,
+            QueryTimePeriod,
+            QueryDataset,
+            QueryAggregation,
+            QueryGrouping,
+            QueryFilter,
+            QueryComparisonExpression,
+        )
         
         client = CostManagementClient(credential, subscription_id)
         scope = f"/subscriptions/{subscription_id}"
         
-        # Query for backup-related costs
-        query = {
-            "type": "ActualCost",
-            "timeframe": "Custom",
-            "timePeriod": {
-                "from": f"{start_date}T00:00:00Z",
-                "to": f"{end_date}T23:59:59Z"
-            },
-            "dataset": {
-                "granularity": "Monthly",
-                "aggregation": {
-                    "totalCost": {"name": "Cost", "function": "Sum"},
-                    "totalQuantity": {"name": "Quantity", "function": "Sum"}
+        # Parse dates to datetime objects for the SDK
+        from_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        to_date = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        
+        # Query for backup-related costs using the proper models
+        query = QueryDefinition(
+            type="ActualCost",
+            timeframe="Custom",
+            time_period=QueryTimePeriod(
+                from_property=from_date,
+                to=to_date
+            ),
+            dataset=QueryDataset(
+                granularity="Monthly",
+                aggregation={
+                    "totalCost": QueryAggregation(name="Cost", function="Sum"),
+                    "totalQuantity": QueryAggregation(name="Quantity", function="Sum")
                 },
-                "grouping": [
-                    {"type": "Dimension", "name": "ServiceName"},
-                    {"type": "Dimension", "name": "MeterCategory"}
+                grouping=[
+                    QueryGrouping(type="Dimension", name="ServiceName"),
+                    QueryGrouping(type="Dimension", name="MeterCategory")
                 ],
-                "filter": {
-                    "or": [
-                        {
-                            "dimensions": {
-                                "name": "ServiceName",
-                                "operator": "In",
-                                "values": AZURE_BACKUP_FILTERS['service_names']
-                            }
-                        },
-                        {
-                            "dimensions": {
-                                "name": "MeterCategory", 
-                                "operator": "In",
-                                "values": AZURE_BACKUP_FILTERS['meter_categories']
-                            }
-                        }
+                filter=QueryFilter(
+                    or_property=[
+                        QueryFilter(
+                            dimensions=QueryComparisonExpression(
+                                name="ServiceName",
+                                operator="In",
+                                values=AZURE_BACKUP_FILTERS['service_names']
+                            )
+                        ),
+                        QueryFilter(
+                            dimensions=QueryComparisonExpression(
+                                name="MeterCategory",
+                                operator="In",
+                                values=AZURE_BACKUP_FILTERS['meter_categories']
+                            )
+                        )
                     ]
-                }
-            }
-        }
+                )
+            )
+        )
         
         result = client.query.usage(scope=scope, parameters=query)
         
-        # Parse results
+        # Parse results (with null checks)
+        if result is None or result.columns is None or result.rows is None:
+            logger.warning("No cost data returned from Azure")
+            return records
+            
         columns = [col.name for col in result.columns]
         
         for row in result.rows:

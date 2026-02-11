@@ -16,6 +16,7 @@ azure-mgmt-resource>=23.0.0
 azure-mgmt-recoveryservices>=2.0.0
 azure-mgmt-recoveryservicesbackup>=6.0.0
 azure-mgmt-redis>=14.0.0
+azure-mgmt-costmanagement>=4.0.0
 
 # Microsoft 365 / Graph API
 msgraph-sdk>=1.0.0
@@ -30,6 +31,7 @@ google-cloud-filestore>=1.7.0
 google-cloud-redis>=2.13.0
 google-cloud-resource-manager>=1.10.0
 google-cloud-backupdr>=0.1.0
+google-cloud-bigquery>=3.0.0
 
 # Reporting
 openpyxl>=3.1.0
@@ -37,3 +39,7 @@ openpyxl>=3.1.0
 # Testing
 pytest>=7.0.0
 moto[all]>=5.0.0
+
+# Type stubs (for IDE/linter support)
+boto3-stubs>=1.26.0
+botocore-stubs>=1.29.0

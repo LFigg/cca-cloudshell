@@ -11,6 +11,7 @@ Covers:
 """
 import pytest
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
+from typing import Optional
 import sys
 import os
 
@@ -59,7 +60,7 @@ def create_mock_instance(
     machine_type: str = "e2-medium",
     status: str = "RUNNING",
     disk_size_gb: int = 100,
-    labels: dict = None,
+    labels: Optional[dict] = None,
     preemptible: bool = False
 ):
     """Create a mock GCP Compute Engine instance."""
@@ -91,8 +92,8 @@ def create_mock_disk(
     size_gb: int = 100,
     disk_type: str = "pd-ssd",
     status: str = "READY",
-    labels: dict = None,
-    attached_to: list = None
+    labels: Optional[dict] = None,
+    attached_to: Optional[list] = None
 ):
     """Create a mock GCP Persistent Disk."""
     disk = Mock()
@@ -119,7 +120,7 @@ def create_mock_snapshot(
     storage_bytes: int = 50 * 1024 * 1024 * 1024,  # 50 GB
     source_disk: str = "disk-001",
     status: str = "READY",
-    labels: dict = None
+    labels: Optional[dict] = None
 ):
     """Create a mock GCP Disk Snapshot."""
     snapshot = Mock()
@@ -141,7 +142,7 @@ def create_mock_bucket(
     location: str = "US-CENTRAL1",
     storage_class: str = "STANDARD",
     versioning_enabled: bool = False,
-    labels: dict = None
+    labels: Optional[dict] = None
 ):
     """Create a mock GCP Cloud Storage Bucket."""
     bucket = Mock()
@@ -165,7 +166,7 @@ def create_mock_sql_instance(
     tier: str = "db-f1-micro",
     state: str = "RUNNABLE",
     storage_size_gb: int = 10,
-    labels: dict = None
+    labels: Optional[dict] = None
 ):
     """Create a mock GCP Cloud SQL Instance."""
     instance = Mock()
@@ -191,8 +192,8 @@ def create_mock_gke_cluster(
     name: str,
     location: str = "us-central1",
     kubernetes_version: str = "1.27.7-gke.1121000",
-    node_pools: list = None,
-    labels: dict = None
+    node_pools: Optional[list] = None,
+    labels: Optional[dict] = None
 ):
     """Create a mock GKE Cluster."""
     cluster = Mock()
@@ -227,7 +228,7 @@ def create_mock_function(
     runtime: str = "python311",
     state: str = "ACTIVE",
     memory: str = "256Mi",
-    labels: dict = None
+    labels: Optional[dict] = None
 ):
     """Create a mock Cloud Function."""
     function = Mock()
