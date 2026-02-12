@@ -12,9 +12,22 @@ This document details the minimum permissions required to run each cloud collect
 
 ## AWS Permissions
 
-### Recommended: Use AWS Managed Policy
+### Quick Setup: CloudFormation Template
 
-The simplest approach is to use the AWS managed policy:
+The easiest way to set up AWS permissions is using our CloudFormation template:
+
+```bash
+aws cloudformation create-stack \
+  --stack-name cca-collector \
+  --template-body file://cloudformation/cca-collector-role.yaml \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+See [cloudformation/README.md](../cloudformation/README.md) for multi-account deployment options.
+
+### Alternative: Use AWS Managed Policy
+
+The simplest manual approach is to use the AWS managed policy:
 ```
 arn:aws:iam::aws:policy/ReadOnlyAccess
 ```
@@ -46,6 +59,7 @@ If you need a least-privilege policy, use the following:
                 
                 "s3:ListAllMyBuckets",
                 "s3:GetBucketLocation",
+                "s3:GetBucketTagging",
                 
                 "elasticfilesystem:DescribeFileSystems",
                 
@@ -57,7 +71,6 @@ If you need a least-privilege policy, use the following:
                 "eks:DescribeNodegroup",
                 
                 "lambda:ListFunctions",
-                "lambda:GetFunction",
                 
                 "dynamodb:ListTables",
                 "dynamodb:DescribeTable",
@@ -158,6 +171,7 @@ This permission is only needed in the management account (or delegated admin).
 | | `rds:DescribeDBClusterSnapshots` | List Aurora snapshots |
 | **S3** | `s3:ListAllMyBuckets` | List S3 buckets |
 | | `s3:GetBucketLocation` | Get bucket region |
+| | `s3:GetBucketTagging` | Get bucket tags |
 | **EFS** | `elasticfilesystem:DescribeFileSystems` | List EFS file systems |
 | **FSx** | `fsx:DescribeFileSystems` | List FSx file systems |
 | **EKS** | `eks:ListClusters` | List EKS clusters |
@@ -165,7 +179,6 @@ This permission is only needed in the management account (or delegated admin).
 | | `eks:ListNodegroups` | List node groups |
 | | `eks:DescribeNodegroup` | Get node group details |
 | **Lambda** | `lambda:ListFunctions` | List Lambda functions |
-| | `lambda:GetFunction` | Get function details |
 | **DynamoDB** | `dynamodb:ListTables` | List DynamoDB tables |
 | | `dynamodb:DescribeTable` | Get table details |
 | **ElastiCache** | `elasticache:DescribeCacheClusters` | List ElastiCache clusters |

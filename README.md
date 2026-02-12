@@ -93,6 +93,19 @@ Verify your environment has the required dependencies:
 python3 tests/test_cloudshell_compat.py
 ```
 
+## AWS IAM Setup (CloudFormation)
+
+Deploy the IAM role with required permissions:
+
+```bash
+aws cloudformation create-stack \
+  --stack-name cca-collector \
+  --template-body file://cloudformation/cca-collector-role.yaml \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+See [cloudformation/README.md](cloudformation/README.md) for multi-account and StackSet deployment.
+
 ## Project Structure
 
 ```
@@ -102,6 +115,7 @@ cca-cloudshell/
 ├── cost_collect.py         # Cost analyzer
 ├── gcp_collect.py          # GCP collector
 ├── m365_collect.py         # M365 collector
+├── cloudformation/         # AWS CloudFormation templates
 ├── lib/                    # Shared models and utilities
 ├── scripts/                # Report generators
 ├── docs/                   # Documentation

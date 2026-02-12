@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  CCA CloudShell - IAM Role for AWS Resource Collection
+  
+  This template creates an IAM role with read-only permissions needed to run
+  the CCA AWS collector. Deploy this in each account you want to collect from.
+  
+  For single-account use: Deploy once, use with aws_collect.py
+  For multi-account use: Deploy to each member account, then use --org-role or --role-arns
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Role Configuration
+        Parameters:
+          - RoleName
+          - ExternalId
+      - Label:
+          default: Cross-Account Access (Optional)
+        Parameters:
+          - TrustedAccountId
+          - TrustedRoleArn
+      - Label:
+          default: Organizations Support (Optional)
+        Parameters:
+          - EnableOrganizationsAccess
+
+Parameters:
+  RoleName:
+    Type: String
+    Default: CCACollectorRole
+    Description: Name for the IAM role
+    AllowedPattern: '[a-zA-Z0-9+=,.@_-]+'
+    ConstraintDescription: Role name must be alphanumeric with +=,.@_- characters
+
+  ExternalId:
+    Type: String
+    Default: ''
+    Description: (Optional) External ID for additional security when assuming role cross-account
+
+  TrustedAccountId:
+    Type: String
+    Default: ''
+    Description: (Optional) AWS Account ID allowed to assume this role for cross-account collection
+
+  TrustedRoleArn:
+    Type: String
+    Default: ''
+    Description: (Optional) Specific IAM Role ARN allowed to assume this role (more restrictive than account-level trust)
+
+  EnableOrganizationsAccess:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable Organizations API access (only needed in management account for --org-role)
+
+  EnableCostExplorerAccess:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable Cost Explorer API access (needed for cost_collect.py)
+
+Conditions:
+  HasExternalId: !Not [!Equals [!Ref ExternalId, '']]
+  HasTrustedAccount: !Not [!Equals [!Ref TrustedAccountId, '']]
+  HasTrustedRole: !Not [!Equals [!Ref TrustedRoleArn, '']]
+  EnableOrgAccess: !Equals [!Ref EnableOrganizationsAccess, 'true']
+  EnableCostAccess: !Equals [!Ref EnableCostExplorerAccess, 'true']
+  # Cross-account trust: use role ARN if provided, otherwise account ID
+  UseTrustedRole: !And [!Condition HasTrustedRole, !Condition HasTrustedAccount]
+  UseTrustedAccount: !And [!Condition HasTrustedAccount, !Not [!Condition HasTrustedRole]]
+
+Resources:
+  # IAM Policy with read-only permissions for CCA collector
+  CCACollectorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${RoleName}-Policy'
+      Description: Read-only permissions for CCA CloudShell AWS collector
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CCAReadOnlyCore
+            Effect: Allow
+            Action:
+              # STS
+              - sts:GetCallerIdentity
+              
+              # EC2
+              - ec2:DescribeRegions
+              - ec2:DescribeInstances
+              - ec2:DescribeVolumes
+              - ec2:DescribeSnapshots
+              
+              # RDS
+              - rds:DescribeDBInstances
+              - rds:DescribeDBClusters
+              - rds:DescribeDBSnapshots
+              - rds:DescribeDBClusterSnapshots
+              
+              # S3
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+              - s3:GetBucketTagging
+              
+              # EFS
+              - elasticfilesystem:DescribeFileSystems
+              
+              # FSx
+              - fsx:DescribeFileSystems
+              
+              # EKS
+              - eks:ListClusters
+              - eks:DescribeCluster
+              - eks:ListNodegroups
+              - eks:DescribeNodegroup
+              
+              # Lambda
+              - lambda:ListFunctions
+              
+              # DynamoDB
+              - dynamodb:ListTables
+              - dynamodb:DescribeTable
+              
+              # ElastiCache
+              - elasticache:DescribeCacheClusters
+              
+              # AWS Backup
+              - backup:ListBackupVaults
+              - backup:ListRecoveryPointsByBackupVault
+              - backup:ListBackupPlans
+              - backup:GetBackupPlan
+              - backup:ListBackupSelections
+              - backup:GetBackupSelection
+              - backup:ListProtectedResources
+            Resource: '*'
+
+          # Organizations permissions (conditional)
+          - !If
+            - EnableOrgAccess
+            - Sid: CCAOrganizationsAccess
+              Effect: Allow
+              Action:
+                - organizations:ListAccounts
+                - organizations:DescribeOrganization
+                - organizations:DescribeAccount
+              Resource: '*'
+            - !Ref AWS::NoValue
+
+          # Cost Explorer permissions (conditional)
+          - !If
+            - EnableCostAccess
+            - Sid: CCACostExplorerAccess
+              Effect: Allow
+              Action:
+                - ce:GetCostAndUsage
+                - ce:GetCostForecast
+              Resource: '*'
+            - !Ref AWS::NoValue
+
+  # IAM Role for CCA Collector
+  CCACollectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: IAM role for CCA CloudShell AWS resource collection
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref CCACollectorPolicy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Allow CloudShell and local AWS CLI users in same account
+          - Sid: AllowSameAccountAssume
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+          
+          # Cross-account trust with specific role ARN (most restrictive)
+          - !If
+            - UseTrustedRole
+            - Sid: AllowCrossAccountRoleAssume
+              Effect: Allow
+              Principal:
+                AWS: !Ref TrustedRoleArn
+              Action: sts:AssumeRole
+              Condition: !If
+                - HasExternalId
+                - StringEquals:
+                    sts:ExternalId: !Ref ExternalId
+                - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+          
+          # Cross-account trust with account ID (less restrictive)
+          - !If
+            - UseTrustedAccount
+            - Sid: AllowCrossAccountAssume
+              Effect: Allow
+              Principal:
+                AWS: !Sub 'arn:aws:iam::${TrustedAccountId}:root'
+              Action: sts:AssumeRole
+              Condition: !If
+                - HasExternalId
+                - StringEquals:
+                    sts:ExternalId: !Ref ExternalId
+                - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+
+      Tags:
+        - Key: Purpose
+          Value: CCA-CloudShell-Collector
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  RoleArn:
+    Description: ARN of the CCA Collector IAM Role
+    Value: !GetAtt CCACollectorRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleArn'
+
+  RoleName:
+    Description: Name of the CCA Collector IAM Role
+    Value: !Ref CCACollectorRole
+
+  PolicyArn:
+    Description: ARN of the CCA Collector IAM Policy
+    Value: !Ref CCACollectorPolicy
+
+  UsageInstructions:
+    Description: How to use this role with the CCA collector
+    Value: !Sub |
+      Single account: python3 aws_collect.py
+      Cross-account:  python3 aws_collect.py --role-arn ${CCACollectorRole.Arn}
+      With external ID: python3 aws_collect.py --role-arn ${CCACollectorRole.Arn} --external-id YOUR_EXTERNAL_ID
