@@ -46,6 +46,7 @@ Each collector generates:
 | Document | Description |
 |----------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation and first run |
+| [Admin Machine Setup](docs/admin-machine-setup.md) | Running from local workstation |
 | [AWS Collector](docs/collectors/aws.md) | Multi-account, regions, options |
 | [Azure Collector](docs/collectors/azure.md) | Subscriptions, resources |
 | [GCP Collector](docs/collectors/gcp.md) | Projects, regions, resources |
