@@ -226,6 +226,7 @@ Or use a custom role with these permissions:
         
         "Microsoft.Storage/storageAccounts/read",
         "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+        "Microsoft.Storage/storageAccounts/fileServices/shares/read",
         
         "Microsoft.Sql/servers/read",
         "Microsoft.Sql/servers/databases/read",
@@ -243,7 +244,11 @@ Or use a custom role with these permissions:
         "Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/protectedItems/recoveryPoints/read",
         "Microsoft.RecoveryServices/vaults/backupPolicies/read",
         
-        "Microsoft.Cache/redis/read"
+        "Microsoft.Cache/redis/read",
+        
+        "Microsoft.NetApp/netAppAccounts/read",
+        "Microsoft.NetApp/netAppAccounts/capacityPools/read",
+        "Microsoft.NetApp/netAppAccounts/capacityPools/volumes/read"
     ],
     "NotActions": [],
     "AssignableScopes": [
@@ -262,6 +267,7 @@ Or use a custom role with these permissions:
 | **Snapshots** | `Microsoft.Compute/snapshots/read` | List snapshots |
 | **Storage Accounts** | `Microsoft.Storage/storageAccounts/read` | List storage accounts |
 | | `Microsoft.Storage/storageAccounts/blobServices/containers/read` | List blob containers |
+| | `Microsoft.Storage/storageAccounts/fileServices/shares/read` | List file shares (Azure Files) |
 | **Azure SQL** | `Microsoft.Sql/servers/read` | List SQL servers |
 | | `Microsoft.Sql/servers/databases/read` | List databases |
 | **SQL Managed Instance** | `Microsoft.Sql/managedInstances/read` | List managed instances |
@@ -272,6 +278,9 @@ Or use a custom role with these permissions:
 | | `Microsoft.RecoveryServices/vaults/backupFabrics/*/read` | List protected items & recovery points |
 | | `Microsoft.RecoveryServices/vaults/backupPolicies/read` | List backup policies |
 | **Redis Cache** | `Microsoft.Cache/redis/read` | List Redis instances |
+| **NetApp Files** | `Microsoft.NetApp/netAppAccounts/read` | List NetApp accounts |
+| | `Microsoft.NetApp/netAppAccounts/capacityPools/read` | List capacity pools |
+| | `Microsoft.NetApp/netAppAccounts/capacityPools/volumes/read` | List volumes |
 
 ---
 
@@ -435,7 +444,20 @@ export MS365_CLIENT_SECRET="your-client-secret"
 
 The cost collector (`cost_collect.py`) requires additional billing/cost permissions.
 
+> **Important:** Cost collection is separate from inventory collection. The inventory collector
+> (`aws_collect.py`) gathers resource data and can run from any account, while the cost collector
+> requires access to billing APIs which have different permission models.
+
 ### AWS Cost Explorer
+
+> **Critical:** AWS Cost Explorer API is only accessible from the **management account**
+> (or a delegated administrator account) in AWS Organizations. Running from a member account
+> will return empty or incomplete results.
+
+**Requirements:**
+1. Must run from the **management account** (the payer account)
+2. Cost Explorer must be enabled (it's enabled by default, but verify in AWS Console → Billing)
+3. For multi-account breakdown, use `--org-costs` flag
 
 Add to your IAM policy:
 
@@ -457,6 +479,25 @@ Add to your IAM policy:
 | `ce:GetCostAndUsage` | Query cost and usage data |
 | `ce:GetCostForecast` | Get cost forecasts (optional) |
 | `ce:GetDimensionValues` | List available filter values |
+
+#### AWS Organizations Considerations
+
+**Single Organization:** Run cost_collect once from the management account:
+```bash
+python3 cost_collect.py --aws --org-costs
+```
+
+**Multiple Separate Organizations:** If you have multiple independent AWS Organizations
+(e.g., from acquisitions), you must run cost_collect separately from each management account:
+```bash
+# From org1 management account
+python3 cost_collect.py --aws --org-costs --profile org1-mgmt -o ./org1/
+
+# From org2 management account  
+python3 cost_collect.py --aws --org-costs --profile org2-mgmt -o ./org2/
+```
+
+Then merge results using `scripts/merge_batch_outputs.py` if needed.
 
 ### Azure Cost Management
 

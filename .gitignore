@@ -1,2 +1,6 @@
 __pycache__/
 .DS_Store
+
+# Customer data output folders
+*_cca_*/
+merged_output/

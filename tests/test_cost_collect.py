@@ -296,10 +296,10 @@ class TestCollectAWSCosts:
                             }
                         },
                         {
-                            'Keys': ['Amazon S3', 'TimedStorage-ByteHrs'],  # Not backup-related
+                            'Keys': ['Amazon S3', 'Requests-Tier1'],  # Not backup-related
                             'Metrics': {
                                 'UnblendedCost': {'Amount': '200.00', 'Unit': 'USD'},
-                                'UsageQuantity': {'Amount': '1000', 'Unit': 'GB-Mo'}
+                                'UsageQuantity': {'Amount': '1000', 'Unit': 'Requests'}
                             }
                         }
                     ]

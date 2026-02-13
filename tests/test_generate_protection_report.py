@@ -233,15 +233,16 @@ class TestBuildBackupSelectionIndex:
     def test_build_index(self, sample_resources):
         """Test building backup selection index."""
         selections = get_backup_selections(sample_resources)
-        index = build_backup_selection_index(selections)
+        index, wildcard_selections = build_backup_selection_index(selections)
         
         assert 'arn:aws:ec2:us-east-1:123:volume/vol-001' in index
         assert 'daily-backup-plan' in index['arn:aws:ec2:us-east-1:123:volume/vol-001']
     
     def test_empty_selections(self):
         """Test building index from empty selections."""
-        index = build_backup_selection_index([])
+        index, wildcard_selections = build_backup_selection_index([])
         assert index == {}
+        assert wildcard_selections == []
 
 
 # =============================================================================
@@ -303,7 +304,7 @@ class TestGetBackupPlanForResource:
     def test_resource_in_selection(self, sample_resources):
         """Test resource found in backup selection."""
         selections = get_backup_selections(sample_resources)
-        selection_index = build_backup_selection_index(selections)
+        selection_index, wildcard_selections = build_backup_selection_index(selections)
         protected = get_protected_resources(sample_resources)
         protected_set = build_protected_resources_set(protected)
         backup_plans = get_backup_plans(sample_resources)
@@ -314,7 +315,7 @@ class TestGetBackupPlanForResource:
         }
         
         plan_name, source = get_backup_plan_for_resource(
-            volume, selection_index, protected_set, backup_plans
+            volume, selection_index, protected_set, backup_plans, wildcard_selections
         )
         
         assert plan_name == 'daily-backup-plan'

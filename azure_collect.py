@@ -874,6 +874,85 @@ def collect_redis_caches(credential, subscription_id: str) -> List[CloudResource
 
 
 # =============================================================================
+# Azure NetApp Files (enterprise file storage similar to AWS FSx)
+# =============================================================================
+
+def collect_netapp_files(credential, subscription_id: str) -> List[CloudResource]:
+    """Collect Azure NetApp Files volumes."""
+    resources = []
+    try:
+        from azure.mgmt.netapp import NetAppManagementClient
+        
+        client = NetAppManagementClient(credential, subscription_id)
+        
+        # List all NetApp accounts
+        for account in client.accounts.list():
+            account_name = account.name
+            rg = account.id.split('/')[4] if account.id else ''
+            location = getattr(account, 'location', '')
+            
+            # List capacity pools in this account
+            try:
+                for pool in client.pools.list(rg, account_name):
+                    pool_name = pool.name.split('/')[-1] if '/' in pool.name else pool.name
+                    pool_size_tib = getattr(pool, 'size', 0) / (1024 ** 4) if pool.size else 0
+                    
+                    # List volumes in this pool
+                    try:
+                        for volume in client.volumes.list(rg, account_name, pool_name):
+                            vol_name = volume.name.split('/')[-1] if '/' in volume.name else volume.name
+                            vol_id = getattr(volume, 'id', '')
+                            
+                            # Volume size in bytes, convert to GB
+                            usage_bytes = getattr(volume, 'usage_threshold', 0) or 0
+                            size_gb = usage_bytes / (1024 ** 3)
+                            
+                            # Get service level (Standard, Premium, Ultra)
+                            service_level = getattr(volume, 'service_level', 'Standard')
+                            
+                            resource = CloudResource(
+                                provider="azure",
+                                subscription_id=subscription_id,
+                                region=location,
+                                resource_type="azure:netapp:volume",
+                                service_family="NetAppFiles",
+                                resource_id=vol_id,
+                                name=vol_name,
+                                tags=getattr(volume, 'tags', None) or {},
+                                size_gb=round(size_gb, 2),
+                                metadata={
+                                    'resource_group': rg,
+                                    'netapp_account': account_name,
+                                    'capacity_pool': pool_name,
+                                    'service_level': service_level,
+                                    'protocol_types': list(getattr(volume, 'protocol_types', []) or []),
+                                    'provisioning_state': getattr(volume, 'provisioning_state', ''),
+                                    'subnet_id': getattr(volume, 'subnet_id', ''),
+                                    'mount_targets': [
+                                        {'ip_address': mt.ip_address} 
+                                        for mt in (getattr(volume, 'mount_targets', []) or [])
+                                        if hasattr(mt, 'ip_address')
+                                    ],
+                                    'snapshot_policy_id': getattr(volume, 'data_protection', {}).get('snapshot', {}).get('snapshot_policy_id') if hasattr(volume, 'data_protection') else None,
+                                    'backup_enabled': bool(getattr(volume, 'data_protection', {}).get('backup')) if hasattr(volume, 'data_protection') else False,
+                                }
+                            )
+                            resources.append(resource)
+                    except Exception as e:
+                        logger.warning(f"Failed to list volumes in pool {pool_name}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to list pools in account {account_name}: {e}")
+        
+        logger.info(f"Found {len(resources)} Azure NetApp Files volumes")
+    except ImportError:
+        logger.debug("Azure NetApp Files SDK not installed, skipping")
+    except Exception as e:
+        logger.error(f"Failed to collect Azure NetApp Files: {e}")
+    
+    return resources
+
+
+# =============================================================================
 # Azure Files (file shares in Storage Accounts)
 # =============================================================================
 
@@ -1074,6 +1153,7 @@ def collect_subscription(credential, subscription_id: str, subscription_name: st
     # Storage
     resources.extend(collect_and_track("Storage accounts", collect_storage_accounts, credential, subscription_id))
     resources.extend(collect_and_track("File shares", collect_file_shares, credential, subscription_id))
+    resources.extend(collect_and_track("NetApp Files volumes", collect_netapp_files, credential, subscription_id))
     
     # Databases
     resources.extend(collect_and_track("SQL servers", collect_sql_servers, credential, subscription_id))

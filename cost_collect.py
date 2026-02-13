@@ -80,25 +80,76 @@ class CostSummary:
 
 
 # =============================================================================
+# Date Helpers
+# =============================================================================
+
+def get_last_full_month() -> tuple:
+    """
+    Return start and end dates for the last complete month.
+    
+    Returns:
+        Tuple of (start_date, end_date) as YYYY-MM-DD strings
+        
+    Example:
+        If today is 2026-02-13, returns ('2026-01-01', '2026-02-01')
+        Note: end_date is exclusive (first day of current month)
+    """
+    today = datetime.now(timezone.utc)
+    # First day of current month
+    first_of_this_month = today.replace(day=1)
+    # Last day of previous month
+    last_of_prev_month = first_of_this_month - timedelta(days=1)
+    # First day of previous month
+    first_of_prev_month = last_of_prev_month.replace(day=1)
+    
+    return (
+        first_of_prev_month.strftime('%Y-%m-%d'),
+        first_of_this_month.strftime('%Y-%m-%d')  # exclusive end date
+    )
+
+
+# =============================================================================
 # AWS Cost Explorer
 # =============================================================================
 
 # Backup and snapshot related usage types
+# Reference: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ce-default-reports.html
 AWS_BACKUP_FILTERS = {
     'services': [
         'AWS Backup',
-        'EC2 - Other',  # Contains snapshot costs
+        'EC2 - Other',  # Contains EBS snapshot costs
         'Amazon Elastic Block Store',
         'Amazon RDS',
         'Amazon S3',  # S3 backup storage
+        'Amazon EFS',  # EFS backup
+        'Amazon FSx',  # FSx backup
+        'Amazon DynamoDB',  # DynamoDB backup
     ],
     'usage_types': [
+        # EBS Snapshots
         'SnapshotUsage',
+        'TimedStorage-Snapshot',
+        # AWS Backup vault storage (warm)
+        'WarmStorage',
+        'BackupStorage',
+        'Storage-ByteHrs',
+        # AWS Backup vault storage (cold) 
+        'ColdStorage',
+        # AWS Backup general
         'Backup',
         'ChargedBackupUsage',
         'BackupUsage',
-        'TimedStorage-Snapshot',
         'VaultStorage',
+        # RDS automated backups
+        'BackupStorage',
+        'ChargedBackup',
+        # EFS backup via AWS Backup
+        'EFS-Backup',
+        'EFS-ByteHrs-Backup',
+        # FSx backup via AWS Backup
+        'FSx-Backup',
+        'FSxBackup',
+        # Catches region-prefixed usage types like "USE1-BackupStorage"
     ]
 }
 
@@ -107,7 +158,8 @@ def collect_aws_costs(
     session,
     start_date: str,
     end_date: str,
-    account_id: str
+    account_id: str,
+    group_by_account: bool = False
 ) -> List[CostRecord]:
     """
     Collect backup and snapshot costs from AWS Cost Explorer.
@@ -116,7 +168,8 @@ def collect_aws_costs(
         session: boto3 session
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
-        account_id: AWS account ID
+        account_id: AWS account ID (management account for orgs)
+        group_by_account: If True, break down costs by LINKED_ACCOUNT (for Organizations)
     
     Returns:
         List of CostRecord objects
@@ -125,6 +178,17 @@ def collect_aws_costs(
     
     try:
         ce = session.client('ce', region_name='us-east-1')  # Cost Explorer is global
+        
+        # Build GroupBy - always include SERVICE and USAGE_TYPE
+        group_by = [
+            {'Type': 'DIMENSION', 'Key': 'SERVICE'},
+            {'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}
+        ]
+        
+        # Add LINKED_ACCOUNT for Organizations breakdown
+        if group_by_account:
+            group_by.insert(0, {'Type': 'DIMENSION', 'Key': 'LINKED_ACCOUNT'})
+            logger.info("Grouping costs by linked account (Organizations mode)")
         
         # Query for backup-related services
         response = ce.get_cost_and_usage(
@@ -140,10 +204,7 @@ def collect_aws_costs(
                 }
             },
             Metrics=['UnblendedCost', 'UsageQuantity'],
-            GroupBy=[
-                {'Type': 'DIMENSION', 'Key': 'SERVICE'},
-                {'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}
-            ]
+            GroupBy=group_by
         )
         
         for result in response.get('ResultsByTime', []):
@@ -152,11 +213,20 @@ def collect_aws_costs(
             
             for group in result.get('Groups', []):
                 keys = group.get('Keys', [])
-                if len(keys) < 2:
-                    continue
-                    
-                service = keys[0]
-                usage_type = keys[1]
+                
+                # Parse keys based on grouping mode
+                if group_by_account:
+                    if len(keys) < 3:
+                        continue
+                    linked_account = keys[0]
+                    service = keys[1]
+                    usage_type = keys[2]
+                else:
+                    if len(keys) < 2:
+                        continue
+                    linked_account = account_id  # Use caller's account
+                    service = keys[0]
+                    usage_type = keys[1]
                 
                 # Filter to backup/snapshot related usage types
                 is_backup_related = any(
@@ -180,7 +250,7 @@ def collect_aws_costs(
                 
                 record = CostRecord(
                     provider='aws',
-                    account_id=account_id,
+                    account_id=linked_account,
                     service=service,
                     category=category,
                     cost=round(cost, 2),
@@ -205,13 +275,18 @@ def collect_aws_costs(
 def categorize_aws_usage(service: str, usage_type: str) -> str:
     """Categorize AWS usage type into backup, snapshot, or storage."""
     usage_lower = usage_type.lower()
+    service_lower = service.lower()
     
     if 'snapshot' in usage_lower:
         return 'snapshot'
     elif 'backup' in usage_lower or 'vault' in usage_lower:
         return 'backup'
-    elif 'aws backup' in service.lower():
+    elif 'aws backup' in service_lower:
         return 'backup'
+    elif 'efs' in service_lower and 'backup' in usage_lower:
+        return 'efs_backup'
+    elif 'fsx' in service_lower and 'backup' in usage_lower:
+        return 'fsx_backup'
     else:
         return 'storage'
 
@@ -225,11 +300,13 @@ AZURE_BACKUP_FILTERS = {
         'Azure Backup',
         'Storage',
         'Azure Site Recovery',
+        'Azure NetApp Files',  # NetApp Files backup/snapshot costs
     ],
     'meter_categories': [
         'Backup',
         'Storage',
         'Site Recovery',
+        'Azure NetApp Files',  # NetApp snapshot/replication costs
     ]
 }
 
@@ -371,6 +448,11 @@ def categorize_azure_cost(service: str, meter_category: str) -> str:
         return 'snapshot'
     elif 'site recovery' in service_lower:
         return 'backup'
+    elif 'netapp' in service_lower or 'netapp' in meter_lower:
+        # NetApp Files has its own backup/snapshot features
+        if 'snapshot' in meter_lower or 'backup' in meter_lower:
+            return 'netapp_backup'
+        return 'netapp_storage'
     else:
         return 'storage'
 
@@ -571,11 +653,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # AWS costs for last month
+  # AWS costs for last full month (default)
   python3 cost_collect.py --aws
 
   # AWS with custom date range
   python3 cost_collect.py --aws --start-date 2026-01-01 --end-date 2026-02-01
+
+  # AWS Organizations - break down costs by member account
+  python3 cost_collect.py --aws --org-costs
 
   # Azure costs
   python3 cost_collect.py --azure --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -594,18 +679,21 @@ Examples:
     parser.add_argument('--gcp', action='store_true', help='Collect GCP costs')
     parser.add_argument('--all', action='store_true', help='Collect from all configured clouds')
     
-    # Date range
-    default_end = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    default_start = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
+    # Date range - default to last full month
+    default_start, default_end = get_last_full_month()
     
     parser.add_argument('--start-date', default=default_start,
-                        help=f'Start date YYYY-MM-DD (default: {default_start})')
+                        help=f'Start date YYYY-MM-DD (default: {default_start} - last full month)')
     parser.add_argument('--end-date', default=default_end,
-                        help=f'End date YYYY-MM-DD (default: {default_end})')
+                        help=f'End date YYYY-MM-DD (default: {default_end} - exclusive)')
+    parser.add_argument('--last-30-days', action='store_true',
+                        help='Use last 30 days instead of last full month')
     
     # AWS options
     parser.add_argument('--profile', help='AWS profile name')
     parser.add_argument('--role-arn', help='AWS role ARN to assume')
+    parser.add_argument('--org-costs', action='store_true',
+                        help='Break down costs by linked account (for AWS Organizations)')
     
     # Azure options
     parser.add_argument('--subscription-id', help='Azure subscription ID')
@@ -620,6 +708,12 @@ Examples:
     
     args = parser.parse_args()
     setup_logging(args.log_level)
+    
+    # Handle --last-30-days override
+    if args.last_30_days:
+        args.end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        args.start_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
+        logger.info(f"Using last 30 days: {args.start_date} to {args.end_date}")
     
     # Validate at least one cloud selected
     if not (args.aws or args.azure or args.gcp or args.all):
@@ -653,7 +747,15 @@ Examples:
             account_id = session.client('sts').get_caller_identity()['Account']
             
             logger.info(f"Collecting AWS costs for account {account_id}")
-            records = collect_aws_costs(session, args.start_date, args.end_date, account_id)
+            logger.info(f"Period: {args.start_date} to {args.end_date}")
+            
+            records = collect_aws_costs(
+                session, 
+                args.start_date, 
+                args.end_date, 
+                account_id,
+                group_by_account=args.org_costs
+            )
             all_records.extend(records)
             collected_providers.append('aws')
             

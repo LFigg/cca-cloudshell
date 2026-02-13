@@ -355,6 +355,190 @@ python3 scripts/generate_protection_report.py \
 
 ---
 
+## Large Environments & Batched Collection
+
+For environments with many accounts (100+), you may need to batch collection to avoid credential timeout issues (AWS SSO tokens expire after 1 hour).
+
+### Automatic Batching (Recommended)
+
+The collector supports automatic batching with checkpoint/resume capability:
+
+```bash
+# Auto-batch 100+ accounts into groups of 25
+python3 aws_collect.py --org-role CCARole --batch-size 25 -o ./collection/
+
+# Output structure:
+# ./collection/
+#   ├── batch01/
+#   │   ├── cca_aws_inv_143052.json
+#   │   └── cca_aws_sum_143052.json
+#   ├── batch02/
+#   │   └── ...
+#   └── checkpoint.json
+```
+
+#### Resume After Failure/Timeout
+
+If collection is interrupted (credential expiry, network issue, etc.), resume from where you left off:
+
+```bash
+# Re-authenticate if needed
+aws sso login --profile my-org
+
+# Resume using the checkpoint file
+python3 aws_collect.py --org-role CCARole --resume ./collection/checkpoint.json
+```
+
+The checkpoint tracks:
+- Completed accounts (skipped on resume)
+- Failed accounts (with suggested retry command)
+- In-progress account (automatically retried)
+
+#### Retry Failed Accounts Only
+
+```bash
+# The checkpoint output shows which accounts failed
+# Re-run just those accounts:
+python3 aws_collect.py --org-role CCARole \
+    --accounts 111111111111,222222222222,333333333333 \
+    -o ./collection/retry/
+```
+
+#### Pause Between Batches (for SSO)
+
+For AWS SSO environments, pause between batches to allow manual credential refresh:
+
+```bash
+# Pause 60 seconds between batches
+python3 aws_collect.py --org-role CCARole \
+    --batch-size 20 \
+    --pause-between-batches 60 \
+    -o ./collection/
+```
+
+### Account List from File
+
+For complex environments, maintain an account list file:
+
+```bash
+# accounts.txt - one account ID per line, supports comments
+# Production accounts
+111111111111
+222222222222
+
+# Development accounts
+333333333333
+444444444444
+
+# Run collection
+python3 aws_collect.py --org-role CCARole --account-file accounts.txt -o ./output/
+```
+
+### Manual Batching (Alternative)
+
+For more control, manually specify account groups:
+
+```bash
+# Batch 1: First 50 accounts
+python3 aws_collect.py --role-arns \
+    arn:aws:iam::111111111111:role/CCARole,\
+    arn:aws:iam::222222222222:role/CCARole \
+    -o ./org1/batch1/
+
+# Batch 2: Next 50 accounts  
+python3 aws_collect.py --role-arns \
+    arn:aws:iam::333333333333:role/CCARole,\
+    arn:aws:iam::444444444444:role/CCARole \
+    -o ./org1/batch2/
+```
+
+### Strategy: Batch by Region
+
+For very large accounts, split by region instead of account:
+
+```bash
+# US regions
+python3 aws_collect.py --org-role CCARole --regions us-east-1,us-west-2 -o ./batch-us/
+
+# EU regions
+python3 aws_collect.py --org-role CCARole --regions eu-west-1,eu-central-1 -o ./batch-eu/
+```
+
+### Merging Batched Outputs
+
+After running batched collections, use the merge script to consolidate:
+
+```bash
+# Merge all batches in an org folder (looks in subfolders)
+python3 scripts/merge_batch_outputs.py ./collection/
+
+# Merge specific batch folders
+python3 scripts/merge_batch_outputs.py ./batch1/ ./batch2/ ./batch3/ -o ./merged/
+
+# Process multiple orgs, one merged output per org
+python3 scripts/merge_batch_outputs.py ./org1/ ./org2/ ./org3/ --per-folder
+
+# Dry run to preview what would be merged
+python3 scripts/merge_batch_outputs.py ./collection/ --dry-run
+```
+
+The merge script:
+- Deduplicates resources by `account_id:resource_id`
+- Re-aggregates summary totals correctly
+- Merges cost data if present
+- Generates a combined sizing CSV
+
+### Recommended Workflow for 100+ Accounts
+
+1. **Initial run with auto-batching:**
+   ```bash
+   python3 aws_collect.py --org-role CCARole --batch-size 25 -o ./myorg/
+   ```
+
+2. **If interrupted, resume:**
+   ```bash
+   aws sso login --profile my-org  # Refresh credentials
+   python3 aws_collect.py --org-role CCARole --resume ./myorg/checkpoint.json
+   ```
+
+3. **Retry any failed accounts:**
+   ```bash
+   python3 aws_collect.py --org-role CCARole --accounts <failed-ids> -o ./myorg/retry/
+   ```
+
+4. **Merge all batches:**
+   ```bash
+   python3 scripts/merge_batch_outputs.py ./myorg/
+   ```
+
+5. **Generate reports:**
+   ```bash
+   python3 scripts/generate_protection_report.py ./myorg/*_merged.json ./myorg/report.xlsx
+   ```
+
+### Recommended Folder Structure for Multi-Org
+
+```
+assessments/
+├── org1-production/
+│   ├── batch1/
+│   │   ├── cca_aws_inv_143052.json
+│   │   └── cca_aws_sum_143052.json
+│   ├── batch2/
+│   │   └── ...
+│   └── cost_collect_output.json
+├── org2-development/
+│   └── ...
+└── merged/
+    ├── org1-production/
+    │   ├── cca_aws_inv_150000_merged.json
+    │   └── cca_aws_sizing_merged.csv
+    └── org2-development/
+        └── ...
+```
+
+---
+
 ## Troubleshooting
 
 ### Verify Dependencies

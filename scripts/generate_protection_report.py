@@ -23,6 +23,25 @@ def load_inventory(filepath: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+def stringify_field(value: Any, max_items: int = 10) -> str:
+    """Convert a field value to a string suitable for Excel cells.
+    
+    Handles lists (from merged multi-account data) by joining them,
+    with truncation for very long lists.
+    """
+    if value is None:
+        return 'N/A'
+    if isinstance(value, list):
+        if len(value) == 0:
+            return 'N/A'
+        if len(value) == 1:
+            return str(value[0])
+        if len(value) <= max_items:
+            return ', '.join(str(v) for v in value)
+        return f"{len(value)} accounts (merged)"
+    return str(value)
+
+
 def build_resource_index(resources: List[Dict]) -> Dict[str, Dict]:
     """Build index of resources by resource_id for quick lookup."""
     return {r['resource_id']: r for r in resources}
@@ -184,20 +203,44 @@ def count_resources_by_category(resources: List[Dict]) -> Dict[str, Dict[str, An
     return dict(counts)
 
 
-def build_backup_selection_index(selections: List[Dict]) -> Dict[str, List[str]]:
+def extract_account_from_arn(arn: str) -> Optional[str]:
+    """Extract AWS account ID from an ARN."""
+    # ARN format: arn:aws:service:region:account:resource
+    if not arn or not arn.startswith('arn:'):
+        return None
+    parts = arn.split(':')
+    if len(parts) >= 5:
+        return parts[4] if parts[4] else None
+    return None
+
+
+def build_backup_selection_index(selections: List[Dict]) -> tuple:
     """
     Build index of resource ARN patterns to backup plan names.
-    Returns dict: resource_arn -> [backup_plan_names]
+    Returns: (direct_index, wildcard_selections)
+    - direct_index: dict of resource_arn -> [backup_plan_names]
+    - wildcard_selections: list of (account, region, plan_name) for * selections
     """
     resource_to_plans: Dict[str, List[str]] = defaultdict(list)
+    wildcard_selections: List[tuple] = []
     
     for selection in selections:
         plan_name = selection.get('metadata', {}).get('backup_plan_name', '')
+        region = selection.get('region', '')
+        
+        # Extract account from IAM role ARN (arn:aws:iam::ACCOUNT:role/...)
+        iam_role_arn = selection.get('metadata', {}).get('iam_role_arn', '')
+        selection_account = extract_account_from_arn(iam_role_arn)
         
         # Direct resource ARNs
-        resource_arns = selection.get('metadata', {}).get('resources', [])
+        resource_arns = selection.get('metadata', {}).get('resources', []) or []
         for arn in resource_arns:
-            resource_to_plans[arn].append(plan_name)
+            if arn == '*':
+                # Wildcard selection - only applies to this account/region
+                if selection_account:
+                    wildcard_selections.append((selection_account, region, plan_name))
+            else:
+                resource_to_plans[arn].append(plan_name)
         
         # Tag-based selections (store the selection for later matching)
         list_of_tags = selection.get('metadata', {}).get('list_of_tags', [])
@@ -206,7 +249,7 @@ def build_backup_selection_index(selections: List[Dict]) -> Dict[str, List[str]]
             selection_key = f"__tag_selection__{selection['resource_id']}"
             resource_to_plans[selection_key] = [plan_name]
     
-    return dict(resource_to_plans)
+    return dict(resource_to_plans), wildcard_selections
 
 
 def build_protected_resources_set(protected_resources: List[Dict]) -> set:
@@ -214,11 +257,58 @@ def build_protected_resources_set(protected_resources: List[Dict]) -> set:
     return {r.get('metadata', {}).get('resource_arn', '') for r in protected_resources}
 
 
+def build_resource_id_to_account_map(protected_resources: List[Dict]) -> Dict[str, str]:
+    """
+    Build a mapping from short resource IDs to account IDs using protected_resources.
+    Protected resources have full ARNs which contain the account ID.
+    """
+    id_to_account: Dict[str, str] = {}
+    for r in protected_resources:
+        arn = r.get('metadata', {}).get('resource_arn', '')
+        if arn:
+            account = extract_account_from_arn(arn)
+            if account:
+                # Extract the short ID from the ARN (e.g., i-xxx, vol-xxx)
+                # ARN format: arn:aws:service:region:account:resource-type/resource-id
+                parts = arn.split('/')
+                if len(parts) >= 2:
+                    short_id = parts[-1]
+                    id_to_account[short_id] = account
+                # Also store the full ARN mapping
+                id_to_account[arn] = account
+    return id_to_account
+
+
+def get_resource_account(resource: Dict, id_to_account: Dict[str, str] = None) -> str:
+    """Get account ID for a resource.
+    
+    Uses account_id field directly from resource (set by collector).
+    Falls back to ARN extraction or mapping lookup if needed.
+    """
+    # First check if resource has account_id field (standard field name)
+    account = resource.get('account_id')
+    if account:
+        return account
+    
+    # Try to extract from resource_id if it's an ARN
+    resource_id = resource.get('resource_id', '')
+    account = extract_account_from_arn(resource_id)
+    if account:
+        return account
+    
+    # Look up in the ID-to-account mapping (fallback)
+    if id_to_account and resource_id in id_to_account:
+        return id_to_account[resource_id]
+    
+    return ''
+
+
 def get_backup_plan_for_resource(
     resource: Dict,
     selection_index: Dict[str, List[str]],
     protected_set: set,
-    backup_plans: List[Dict]
+    backup_plans: List[Dict],
+    wildcard_selections: List[tuple] = None
 ) -> tuple:
     """
     Determine backup plan and protection source for a resource.
@@ -233,12 +323,31 @@ def get_backup_plan_for_resource(
     if resource_arn in selection_index:
         return (', '.join(selection_index[resource_arn]), 'backup_selection')
     
-    # Check for wildcard matches in selections (e.g., arn:aws:ec2:*:*:volume/*)
+    # Check for wildcard matches - must match account (wildcards are account-scoped)
+    if wildcard_selections:
+        resource_account = extract_account_from_arn(resource_arn)
+        resource_region = None
+        # Extract region from ARN (arn:aws:service:REGION:account:resource)
+        if resource_arn and resource_arn.startswith('arn:'):
+            parts = resource_arn.split(':')
+            if len(parts) >= 4:
+                resource_region = parts[3]
+        
+        if resource_account:
+            for sel_account, sel_region, plan_name in wildcard_selections:
+                # Wildcard only matches resources in the SAME account
+                if sel_account == resource_account:
+                    # Optionally also check region if both are specified
+                    if sel_region and resource_region and sel_region != resource_region:
+                        continue
+                    return (plan_name, 'backup_selection')
+    
+    # Check for ARN pattern wildcards (e.g., arn:aws:ec2:*:*:volume/*)
     for pattern, plans in selection_index.items():
         if pattern.startswith('__tag_selection__'):
             continue
-        if '*' in pattern:
-            # Simple wildcard matching
+        if '*' in pattern and pattern != '*':
+            # Simple wildcard matching for ARN patterns
             import re
             regex = pattern.replace('*', '.*')
             if re.match(regex, resource_arn):
@@ -253,18 +362,26 @@ def get_backup_plan_for_resource(
 
 def infer_backup_plan(snapshot: Dict, backup_plans: List[Dict]) -> Optional[str]:
     """Try to infer which backup plan created a snapshot based on tags/metadata."""
-    tags = snapshot.get('tags', {})
-    metadata = snapshot.get('metadata', {})
-    description = metadata.get('description', '')
+    tags = snapshot.get('tags', {}) or {}
+    metadata = snapshot.get('metadata', {}) or {}
+    description = metadata.get('description', '') or ''
     
-    backup_type = tags.get('BackupType', '')
+    # Check multiple tag variations for backup plan info
+    backup_type = tags.get('BackupType', '') or tags.get('backup', '') or ''
     
     for plan in backup_plans:
         plan_name = plan.get('name', '').lower()
         plan_rules = plan.get('metadata', {}).get('rule_names', [])
         
+        # Direct match: backup tag matches plan name exactly
+        if backup_type and backup_type.lower() == plan_name:
+            return plan['name']
+        
+        # Partial match: backup tag contained in plan name or vice versa
         if backup_type:
             if backup_type.lower() in plan_name:
+                return plan['name']
+            if plan_name in backup_type.lower():
                 return plan['name']
             for rule in plan_rules:
                 if backup_type.lower() in rule.lower():
@@ -275,17 +392,110 @@ def infer_backup_plan(snapshot: Dict, backup_plans: List[Dict]) -> Optional[str]
         if 'weekly' in description.lower() and 'weekly' in plan_name:
             return plan['name']
     
-    if backup_type == 'daily':
-        return 'daily-backup-plan (inferred)'
-    elif backup_type == 'weekly':
-        return 'weekly-compliance-plan (inferred)'
+    # Return the backup tag value if it looks like a plan name (even if not found in inventory)
+    if backup_type:
+        return f"{backup_type} (inferred)"
+    
+    # Check if this is an AWS Backup-created snapshot without a specific plan tag
+    # These have description "This snapshot is created by the AWS Backup service."
+    # and/or the aws:backup:source-resource tag
+    if 'aws backup' in description.lower():
+        return "AWS Backup"
+    if 'aws:backup:source-resource' in tags:
+        return "AWS Backup"
     
     return None
+
+
+def is_backup_created_snapshot(snapshot: Dict) -> bool:
+    """Check if a snapshot was created by AWS Backup service.
+    
+    AWS Backup-created snapshots have:
+    - Description containing 'AWS Backup' or 'aws:backup'
+    - Tags like 'aws:backup:source-resource'
+    
+    Excludes:
+    - AMI snapshots (Created by CreateImage...)
+    - Manual snapshots
+    - Other automated snapshots not from AWS Backup
+    """
+    metadata = snapshot.get('metadata', {}) or {}
+    description = (metadata.get('description') or '').lower()
+    tags = snapshot.get('tags', {}) or {}
+    
+    # Check for AWS Backup markers
+    if 'aws backup' in description:
+        return True
+    if 'aws:backup:source-resource' in tags:
+        return True
+    
+    # Check for backup tag that matches known patterns
+    backup_tag = tags.get('BackupType', '') or tags.get('backup', '')
+    if backup_tag and 'aws backup' in description:
+        return True
+    
+    return False
+
+
+def get_protection_status(
+    has_backup_plan: bool,
+    snapshots: List[Dict],
+    suffix: str = ''
+) -> str:
+    """Determine protection status based on backup plan and snapshot analysis.
+    
+    Args:
+        has_backup_plan: Whether resource is in a backup selection/plan
+        snapshots: List of snapshots for this resource
+        suffix: Optional suffix like '(orphan)' to append
+    
+    Returns:
+        Protection status string
+    """
+    suffix_str = f' {suffix}' if suffix else ''
+    
+    if has_backup_plan:
+        return f'Protected{suffix_str}'
+    
+    if snapshots:
+        # Check if any snapshot was created by AWS Backup
+        backup_snapshots = [s for s in snapshots if is_backup_created_snapshot(s)]
+        if backup_snapshots:
+            return f'Protected{suffix_str}'
+        else:
+            return f'Has Snapshots (No Policy){suffix_str}'
+    
+    return f'Unprotected{suffix_str}'
 
 
 def format_tags(tags: Dict) -> str:
     """Format tags as semicolon-separated string."""
     return '; '.join(f"{k}={v}" for k, v in tags.items()) if tags else ''
+
+
+def is_replica_snapshot(snapshot: Dict) -> bool:
+    """Check if a snapshot is a replica/copy from another region or source.
+    
+    Detection methods:
+    - EBS snapshots: Description containing 'Copied from' or 'copied for'
+    - AWS Backup recovery points: has parent_recovery_point_arn or source_backup_vault_arn
+    """
+    metadata = snapshot.get('metadata', {}) or {}
+    description = (metadata.get('description') or '').lower()
+    
+    # EBS snapshot copy detection
+    if 'copied' in description:
+        return True
+    
+    # AWS Backup recovery point copy detection
+    if metadata.get('is_replica'):
+        return True
+    if metadata.get('parent_recovery_point_arn'):
+        return True
+    if metadata.get('source_backup_vault_arn'):
+        return True
+    
+    return False
 
 
 def get_eks_cluster(tags: Dict) -> str:
@@ -336,8 +546,9 @@ def generate_report(inventory_path: str, output_path: str):
     protected_resources = get_protected_resources(resources)
     
     # Build indexes for fast lookup
-    selection_index = build_backup_selection_index(backup_selections)
+    selection_index, wildcard_selections = build_backup_selection_index(backup_selections)
     protected_set = build_protected_resources_set(protected_resources)
+    id_to_account = build_resource_id_to_account_map(protected_resources)
     
     # Filter out AMI snapshots
     user_snapshots = [
@@ -362,6 +573,7 @@ def generate_report(inventory_path: str, output_path: str):
     
     rows = []
     processed_volumes = set()
+    processed_snapshots = set()
     
     # Process EC2 Instances with their volumes and snapshots
     for instance in ec2_instances:
@@ -381,20 +593,26 @@ def generate_report(inventory_path: str, output_path: str):
                 
                 # Check for definitive backup plan assignment (volume or instance level)
                 vol_plan, vol_source = get_backup_plan_for_resource(
-                    volume, selection_index, protected_set, backup_plans
+                    volume, selection_index, protected_set, backup_plans, wildcard_selections
                 )
                 inst_plan, inst_source = get_backup_plan_for_resource(
-                    instance, selection_index, protected_set, backup_plans
+                    instance, selection_index, protected_set, backup_plans, wildcard_selections
                 )
                 
                 if volume_snapshots:
+                    # Determine protection status once for all snapshots of this volume
+                    has_backup_plan = bool(vol_plan or inst_plan)
+                    protection_status = get_protection_status(has_backup_plan, volume_snapshots)
+                    
                     for snap_idx, snap in enumerate(volume_snapshots):
                         # For backup_plan: prefer definitive, then snapshot inference
                         backup_plan = vol_plan or inst_plan or infer_backup_plan(snap, backup_plans) or ''
                         protection_source = vol_source or inst_source or ('inferred' if backup_plan else '')
+                        processed_snapshots.add(snap['resource_id'])
                         
                         rows.append({
                             'service_family': 'EC2',
+                            'account': get_resource_account(instance, id_to_account),
                             'instance_name': instance['name'],
                             'instance_id': instance_id,
                             'instance_type': instance.get('metadata', {}).get('instance_type', ''),
@@ -409,9 +627,10 @@ def generate_report(inventory_path: str, output_path: str):
                             'snapshot_size_gb': snap['size_gb'],
                             'snapshot_created': snap.get('metadata', {}).get('start_time', ''),
                             'snapshot_description': snap.get('metadata', {}).get('description', ''),
+                            'is_replica': 'Yes' if is_replica_snapshot(snap) else '',
                             'backup_plan': backup_plan,
                             'protection_source': protection_source,
-                            'protection_status': 'Protected'
+                            'protection_status': protection_status
                         })
                 else:
                     # Volume has no snapshots - but might still be in a backup plan
@@ -421,6 +640,7 @@ def generate_report(inventory_path: str, output_path: str):
                     
                     rows.append({
                         'service_family': 'EC2',
+                        'account': get_resource_account(instance, id_to_account),
                         'instance_name': instance['name'],
                         'instance_id': instance_id,
                         'instance_type': instance.get('metadata', {}).get('instance_type', ''),
@@ -435,6 +655,7 @@ def generate_report(inventory_path: str, output_path: str):
                         'snapshot_size_gb': '',
                         'snapshot_created': '',
                         'snapshot_description': '',
+                        'is_replica': '',
                         'backup_plan': backup_plan,
                         'protection_source': protection_source,
                         'protection_status': 'In Backup Plan' if has_backup_plan else 'Unprotected'
@@ -442,10 +663,11 @@ def generate_report(inventory_path: str, output_path: str):
         else:
             # Instance has no attached volumes - check if instance itself is in backup
             inst_plan, inst_source = get_backup_plan_for_resource(
-                instance, selection_index, protected_set, backup_plans
+                instance, selection_index, protected_set, backup_plans, wildcard_selections
             )
             rows.append({
                 'service_family': 'EC2',
+                'account': get_resource_account(instance, id_to_account),
                 'instance_name': instance['name'],
                 'instance_id': instance_id,
                 'instance_type': instance.get('metadata', {}).get('instance_type', ''),
@@ -460,6 +682,7 @@ def generate_report(inventory_path: str, output_path: str):
                 'snapshot_size_gb': '',
                 'snapshot_created': '',
                 'snapshot_description': '',
+                'is_replica': '',
                 'backup_plan': inst_plan or '',
                 'protection_source': inst_source or '',
                 'protection_status': 'In Backup Plan' if inst_plan else 'No Storage'
@@ -473,16 +696,22 @@ def generate_report(inventory_path: str, output_path: str):
         
         # Check for definitive backup plan assignment
         vol_plan, vol_source = get_backup_plan_for_resource(
-            volume, selection_index, protected_set, backup_plans
+            volume, selection_index, protected_set, backup_plans, wildcard_selections
         )
         
         if volume_snapshots:
+            # Determine protection status once for all snapshots of this volume
+            has_backup_plan = bool(vol_plan)
+            protection_status = get_protection_status(has_backup_plan, volume_snapshots, suffix='(orphan)')
+            
             for snap_idx, snap in enumerate(volume_snapshots):
                 backup_plan = vol_plan or infer_backup_plan(snap, backup_plans) or ''
                 protection_source = vol_source or ('inferred' if backup_plan else '')
+                processed_snapshots.add(snap['resource_id'])
                 
                 rows.append({
                     'service_family': 'EBS',
+                    'account': get_resource_account(volume, id_to_account),
                     'instance_name': '(orphan volume)',
                     'instance_id': '',
                     'instance_type': '',
@@ -497,15 +726,17 @@ def generate_report(inventory_path: str, output_path: str):
                     'snapshot_size_gb': snap['size_gb'],
                     'snapshot_created': snap.get('metadata', {}).get('start_time', ''),
                     'snapshot_description': snap.get('metadata', {}).get('description', ''),
+                    'is_replica': 'Yes' if is_replica_snapshot(snap) else '',
                     'backup_plan': backup_plan,
                     'protection_source': protection_source,
-                    'protection_status': 'Protected (orphan)'
+                    'protection_status': protection_status
                 })
         else:
             # Orphan volume with no snapshots - check if in backup plan
             has_backup_plan = bool(vol_plan)
             rows.append({
                 'service_family': 'EBS',
+                'account': get_resource_account(volume, id_to_account),
                 'instance_name': '(orphan volume)',
                 'instance_id': '',
                 'instance_type': '',
@@ -520,6 +751,7 @@ def generate_report(inventory_path: str, output_path: str):
                 'snapshot_size_gb': '',
                 'snapshot_created': '',
                 'snapshot_description': '',
+                'is_replica': '',
                 'backup_plan': vol_plan or '',
                 'protection_source': vol_source or '',
                 'protection_status': 'In Backup Plan (orphan)' if has_backup_plan else 'Unprotected (orphan)'
@@ -533,19 +765,25 @@ def generate_report(inventory_path: str, output_path: str):
         
         # Check for definitive backup plan assignment
         rds_plan, rds_source = get_backup_plan_for_resource(
-            rds, selection_index, protected_set, backup_plans
+            rds, selection_index, protected_set, backup_plans, wildcard_selections
         )
         
         # Find snapshots for this RDS
         rds_snaps = [s for s in rds_snapshots if s.get('parent_resource_id') == db_identifier]
         
         if rds_snaps:
+            # Determine protection status once for all snapshots of this RDS
+            has_backup_plan = bool(rds_plan)
+            protection_status = get_protection_status(has_backup_plan, rds_snaps)
+            
             for snap_idx, snap in enumerate(rds_snaps):
                 backup_plan = rds_plan or infer_backup_plan(snap, backup_plans) or ''
                 protection_source = rds_source or ('inferred' if backup_plan else '')
+                processed_snapshots.add(snap['resource_id'])
                 
                 rows.append({
                     'service_family': 'RDS',
+                    'account': get_resource_account(rds, id_to_account),
                     'instance_name': rds['name'],
                     'instance_id': rds_id,
                     'instance_type': rds.get('metadata', {}).get('instance_class', ''),
@@ -560,15 +798,17 @@ def generate_report(inventory_path: str, output_path: str):
                     'snapshot_size_gb': snap['size_gb'],
                     'snapshot_created': snap.get('metadata', {}).get('snapshot_create_time', ''),
                     'snapshot_description': f"{snap.get('metadata', {}).get('snapshot_type', '')} snapshot",
+                    'is_replica': 'Yes' if is_replica_snapshot(snap) else '',
                     'backup_plan': backup_plan,
                     'protection_source': protection_source,
-                    'protection_status': 'Protected'
+                    'protection_status': protection_status
                 })
         else:
             # RDS with no snapshots - check if in backup plan
             has_backup_plan = bool(rds_plan)
             rows.append({
                 'service_family': 'RDS',
+                'account': get_resource_account(rds, id_to_account),
                 'instance_name': rds['name'],
                 'instance_id': rds_id,
                 'instance_type': rds.get('metadata', {}).get('instance_class', ''),
@@ -583,10 +823,50 @@ def generate_report(inventory_path: str, output_path: str):
                 'snapshot_size_gb': '',
                 'snapshot_created': '',
                 'snapshot_description': '',
+                'is_replica': '',
                 'backup_plan': rds_plan or '',
                 'protection_source': rds_source or '',
                 'protection_status': 'In Backup Plan' if has_backup_plan else 'Unprotected'
             })
+    
+    # Process orphan snapshots (no matching volume in account - often cross-region copies)
+    ebs_snapshots = [s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']
+    orphan_snapshots = [s for s in ebs_snapshots if s['resource_id'] not in processed_snapshots]
+    
+    for snap in orphan_snapshots:
+        snap_plan = infer_backup_plan(snap, backup_plans) or ''
+        protection_source = 'inferred' if snap_plan else ''
+        
+        # Check if this snapshot is itself a known backup
+        has_backup = is_backup_created_snapshot(snap)
+        if has_backup and not snap_plan:
+            snap_plan = 'AWS Backup'
+            protection_source = 'inferred'
+        
+        protection_status = 'Protected (orphan snapshot)' if (snap_plan or has_backup) else 'Orphan Snapshot'
+        
+        rows.append({
+            'service_family': 'EBS',
+            'account': snap.get('account_id', ''),
+            'instance_name': '(orphan snapshot)',
+            'instance_id': '',
+            'instance_type': '',
+            'eks_cluster': '',
+            'instance_region': snap['region'],
+            'instance_tags': '',
+            'volume_name': f"(source: {snap.get('parent_resource_id', 'unknown')})",
+            'volume_id': snap.get('parent_resource_id', ''),
+            'volume_size_gb': '',
+            'snapshot_name': snap['name'],
+            'snapshot_id': snap['resource_id'],
+            'snapshot_size_gb': snap['size_gb'],
+            'snapshot_created': snap.get('metadata', {}).get('start_time', ''),
+            'snapshot_description': snap.get('metadata', {}).get('description', ''),
+            'is_replica': 'Yes' if is_replica_snapshot(snap) else '',
+            'backup_plan': snap_plan,
+            'protection_source': protection_source,
+            'protection_status': protection_status
+        })
     
     # Calculate summary statistics
     protected = len([r for r in rows if 'Protected' in r['protection_status'] or 'In Backup Plan' in r['protection_status']])
@@ -603,6 +883,8 @@ def generate_report(inventory_path: str, output_path: str):
     orphan_volume_size = sum(v['size_gb'] for v in orphan_volumes)
     attached_volume_size = total_volume_size - orphan_volume_size
     total_snapshot_size = sum(s['size_gb'] for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot')
+    orphan_snapshot_size = sum(s['size_gb'] for s in orphan_snapshots)
+    linked_snapshot_size = total_snapshot_size - orphan_snapshot_size
     total_rds_size = sum(r['size_gb'] for r in rds_instances)
     total_rds_snapshot_size = sum(s['size_gb'] for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot'])
     
@@ -639,11 +921,11 @@ def generate_report(inventory_path: str, output_path: str):
     
     # Account info
     ws_summary['A3'] = "Account ID:"
-    ws_summary['B3'] = data.get('account_id', 'N/A')
+    ws_summary['B3'] = stringify_field(data.get('account_id', 'N/A'))
     ws_summary['A4'] = "Provider:"
-    ws_summary['B4'] = data.get('provider', 'N/A')
+    ws_summary['B4'] = stringify_field(data.get('provider', 'N/A'))
     ws_summary['A5'] = "Report Generated:"
-    ws_summary['B5'] = data.get('timestamp', 'N/A')
+    ws_summary['B5'] = stringify_field(data.get('timestamp', 'N/A'))
     
     # Resource counts section
     ws_summary['A7'] = "Resource Inventory"
@@ -655,7 +937,9 @@ def generate_report(inventory_path: str, output_path: str):
         ["EBS Volumes (Total)", len(ebs_volumes), round(total_volume_size, 1), ""],
         ["  - Attached Volumes", len(ebs_volumes) - len(orphan_volumes), round(attached_volume_size, 1), ""],
         ["  - Orphan Volumes", len(orphan_volumes), round(orphan_volume_size, 1), "Detached from instances"],
-        ["EBS Snapshots", len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']), round(total_snapshot_size, 1), ""],
+        ["EBS Snapshots (Total)", len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']), round(total_snapshot_size, 1), ""],
+        ["  - Linked Snapshots", len(ebs_snapshots) - len(orphan_snapshots), round(linked_snapshot_size, 1), "Have matching volume"],
+        ["  - Orphan Snapshots", len(orphan_snapshots), round(orphan_snapshot_size, 1), "No matching volume (cross-region copies, etc.)"],
         ["RDS Databases", len(rds_instances), round(total_rds_size, 1), "Allocated storage"],
         ["RDS Snapshots", len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']]), round(total_rds_snapshot_size, 1), ""],
         ["Backup Plans", len([r for r in backup_plans if r['resource_type'] == 'aws:backup:plan']), "", ""],
@@ -760,15 +1044,16 @@ def generate_report(inventory_path: str, output_path: str):
     ws_report = wb.create_sheet(title="Protection Report")
     
     fieldnames = [
-        'service_family', 'instance_name', 'instance_id', 'instance_type', 'eks_cluster', 'instance_region', 'instance_tags',
+        'service_family', 'account', 'instance_name', 'instance_id', 'instance_type', 'eks_cluster', 'instance_region', 'instance_tags',
         'volume_name', 'volume_id', 'volume_size_gb',
         'snapshot_name', 'snapshot_id', 'snapshot_size_gb',
-        'snapshot_created', 'snapshot_description', 'backup_plan', 'protection_source', 'protection_status'
+        'snapshot_created', 'snapshot_description', 'is_replica', 'backup_plan', 'protection_source', 'protection_status'
     ]
     
     # Pretty header mapping
     header_display = {
         'service_family': 'Service',
+        'account': 'Account',
         'instance_name': 'Instance Name',
         'instance_id': 'Instance ID',
         'instance_type': 'Instance Type',
@@ -783,6 +1068,7 @@ def generate_report(inventory_path: str, output_path: str):
         'snapshot_size_gb': 'Snapshot Size (GB)',
         'snapshot_created': 'Snapshot Created',
         'snapshot_description': 'Snapshot Description',
+        'is_replica': 'Replica',
         'backup_plan': 'Backup Plan',
         'protection_source': 'Protection Source',
         'protection_status': 'Protection Status'
@@ -1051,7 +1337,9 @@ def generate_report(inventory_path: str, output_path: str):
         print(f"  EBS Volumes: {len(ebs_volumes)} ({total_volume_size:,.1f} GB)")
         print(f"    - Attached: {len(ebs_volumes) - len(orphan_volumes)} ({attached_volume_size:,.1f} GB)")
         print(f"    - Orphan: {len(orphan_volumes)} ({orphan_volume_size:,.1f} GB)")
-        print(f"  EBS Snapshots: {len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot'])} ({total_snapshot_size:,.1f} GB)")
+        print(f"  EBS Snapshots: {len(ebs_snapshots)} ({total_snapshot_size:,.1f} GB)")
+        print(f"    - Linked: {len(ebs_snapshots) - len(orphan_snapshots)} ({linked_snapshot_size:,.1f} GB)")
+        print(f"    - Orphan: {len(orphan_snapshots)} ({orphan_snapshot_size:,.1f} GB)")
         print(f"  RDS Databases: {len(rds_instances)} ({total_rds_size:,.1f} GB)")
         print(f"  RDS Snapshots: {len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']])} ({total_rds_snapshot_size:,.1f} GB)")
         print(f"  Backup Plans: {len(plans_only)}")

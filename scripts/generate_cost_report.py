@@ -85,6 +85,7 @@ def analyze_costs(inventory: dict[str, Any], summary: dict[str, Any]) -> dict[st
         'by_provider': defaultdict(lambda: {'cost': 0, 'services': defaultdict(float)}),
         'by_category': defaultdict(lambda: {'cost': 0, 'providers': defaultdict(float)}),
         'by_service': defaultdict(lambda: {'cost': 0, 'category': '', 'provider': ''}),
+        'by_account': defaultdict(lambda: {'cost': 0, 'services': defaultdict(float), 'provider': ''}),
         'monthly_trend': defaultdict(lambda: defaultdict(float)),
         'records': records,
     }
@@ -110,6 +111,13 @@ def analyze_costs(inventory: dict[str, Any], summary: dict[str, Any]) -> dict[st
         analysis['by_service'][service]['category'] = category
         analysis['by_service'][service]['provider'] = provider
         
+        # By account (for Organizations/multi-account data)
+        account_id = record.get('account_id', '')
+        if account_id:
+            analysis['by_account'][account_id]['cost'] += cost
+            analysis['by_account'][account_id]['services'][service] += cost
+            analysis['by_account'][account_id]['provider'] = provider
+        
         # Monthly trend
         if period:
             analysis['monthly_trend'][period][provider] += cost
@@ -118,6 +126,7 @@ def analyze_costs(inventory: dict[str, Any], summary: dict[str, Any]) -> dict[st
     analysis['by_provider'] = dict(analysis['by_provider'])
     analysis['by_category'] = dict(analysis['by_category'])
     analysis['by_service'] = dict(analysis['by_service'])
+    analysis['by_account'] = dict(analysis['by_account'])
     analysis['monthly_trend'] = dict(analysis['monthly_trend'])
     
     # Generate optimization recommendations
@@ -494,6 +503,83 @@ def create_service_detail_sheet(wb: Any, analysis: dict[str, Any]) -> None:
     ws.column_dimensions['E'].width = 12
 
 
+def create_account_detail_sheet(wb: Any, analysis: dict[str, Any]) -> None:
+    """Create detailed cost breakdown by account (for Organizations/multi-account)."""
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    subheader_fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
+    warning_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    thin_border = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+    title_font = Font(name="Calibri", size=18, bold=True, color="1F4E79")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    
+    ws = wb.create_sheet("Cost by Account")
+    
+    ws['A1'] = "Cost Analysis by Account"
+    ws['A1'].font = title_font
+    ws.merge_cells('A1:F1')
+    
+    # Summary table at top - accounts sorted by cost descending
+    ws['A3'] = "Account Summary (Top Accounts by Spend)"
+    ws['A3'].font = Font(size=12, bold=True, color="1F4E79")
+    
+    headers = ['Account ID', 'Provider', 'Cost', '% of Total', 'Top Service']
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+    
+    row = 5
+    total = analysis['totals']['total_cost']
+    accounts_sorted = sorted(analysis['by_account'].items(), key=lambda x: x[1]['cost'], reverse=True)
+    
+    # Show top 50 accounts in summary
+    for account_id, data in accounts_sorted[:50]:
+        cost = data['cost']
+        pct = (cost / total * 100) if total > 0 else 0
+        
+        # Find top service for this account
+        top_service = ''
+        if data['services']:
+            top_service = max(data['services'].items(), key=lambda x: x[1])[0]
+        
+        ws.cell(row=row, column=1, value=account_id).border = thin_border
+        ws.cell(row=row, column=2, value=data['provider'].upper()).border = thin_border
+        
+        cost_cell = ws.cell(row=row, column=3, value=cost)
+        cost_cell.number_format = '$#,##0.00'
+        cost_cell.border = thin_border
+        
+        pct_cell = ws.cell(row=row, column=4, value=pct/100)
+        pct_cell.number_format = '0.0%'
+        pct_cell.border = thin_border
+        
+        ws.cell(row=row, column=5, value=top_service).border = thin_border
+        
+        # Highlight high-cost accounts (>10% of total)
+        if pct > 10:
+            for col in range(1, 6):
+                ws.cell(row=row, column=col).fill = warning_fill
+        
+        row += 1
+    
+    # If more than 50 accounts, show count
+    if len(accounts_sorted) > 50:
+        ws.cell(row=row + 1, column=1, value=f"... and {len(accounts_sorted) - 50} more accounts")
+        ws.cell(row=row + 1, column=1).font = Font(italic=True, color="666666")
+    
+    # Column widths
+    ws.column_dimensions['A'].width = 20
+    ws.column_dimensions['B'].width = 12
+    ws.column_dimensions['C'].width = 15
+    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['E'].width = 35
+
+
 def create_monthly_trend_sheet(wb: Any, analysis: dict[str, Any]) -> None:
     """Create monthly trend analysis sheet."""
     header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
@@ -755,6 +841,11 @@ def generate_excel_report(inventory_path: str, summary_path: str, output_path: s
     create_provider_detail_sheet(wb, analysis)
     create_category_detail_sheet(wb, analysis)
     create_service_detail_sheet(wb, analysis)
+    
+    # Only add account sheet if multi-account data exists
+    if len(analysis['by_account']) > 1:
+        create_account_detail_sheet(wb, analysis)
+    
     create_monthly_trend_sheet(wb, analysis)
     create_optimization_sheet(wb, analysis)
     create_raw_data_sheet(wb, analysis)

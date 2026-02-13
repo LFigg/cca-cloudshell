@@ -2,11 +2,18 @@
 
 The cost collector (`cost_collect.py`) gathers backup and snapshot spending data from cloud billing APIs.
 
+> **Important:** Cost collection is separate from inventory collection. Run `aws_collect.py` 
+> to gather resource data, and `cost_collect.py` to gather spending data. They have different
+> permission requirements and should be run independently.
+
 ## Basic Usage
 
 ```bash
-# AWS costs (last 30 days)
+# AWS costs (last full month - default)
 python3 cost_collect.py --aws
+
+# AWS costs with per-account breakdown (Organizations)
+python3 cost_collect.py --aws --org-costs
 
 # Azure costs
 python3 cost_collect.py --azure --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -26,10 +33,12 @@ python3 cost_collect.py --all --subscription-id xxx --billing-table xxx
 | `--azure` | Collect Azure costs |
 | `--gcp` | Collect GCP costs |
 | `--all` | Collect from all configured clouds |
-| `--start-date DATE` | Start date YYYY-MM-DD (default: 30 days ago) |
-| `--end-date DATE` | End date YYYY-MM-DD (default: today) |
+| `--start-date DATE` | Start date YYYY-MM-DD (default: first of last full month) |
+| `--end-date DATE` | End date YYYY-MM-DD (default: first of current month, exclusive) |
+| `--last-30-days` | Use rolling last 30 days instead of last full month |
 | `--profile PROFILE` | AWS CLI profile name |
 | `--role-arn ARN` | AWS role ARN to assume |
+| `--org-costs` | Break down AWS costs by linked account (Organizations) |
 | `--subscription-id ID` | Azure subscription ID |
 | `--project PROJECT` | GCP project ID |
 | `--billing-table TABLE` | GCP BigQuery billing table |
@@ -136,6 +145,14 @@ Output: ./
 
 ### AWS
 
+> **Critical:** AWS Cost Explorer API is only accessible from the **management account**
+> (payer account) in AWS Organizations. Running from a member account will return empty results.
+
+**Requirements:**
+1. Run from the management account (not member accounts)
+2. Use `--org-costs` to get per-account breakdown
+3. Ensure Cost Explorer is enabled (AWS Console → Billing → Cost Explorer)
+
 Add to your IAM policy:
 ```json
 {
@@ -147,6 +164,17 @@ Add to your IAM policy:
     ],
     "Resource": "*"
 }
+```
+
+**AWS Organizations with Multiple Orgs:**
+
+If you have multiple independent AWS Organizations (common after acquisitions),
+you must run cost collection from each management account separately:
+
+```bash
+# From each org's management account
+python3 cost_collect.py --aws --org-costs --profile org1-mgmt -o ./org1/
+python3 cost_collect.py --aws --org-costs --profile org2-mgmt -o ./org2/
 ```
 
 ### Azure
@@ -194,14 +222,29 @@ python3 cost_collect.py --gcp --project my-project \
 
 ## Combining with Resource Collection
 
-For a complete picture, run both collectors:
+Resource collection and cost collection are **independent operations** with different requirements:
+
+| Aspect | Inventory Collector | Cost Collector |
+|--------|-------------------|----------------|
+| Script | `aws_collect.py` | `cost_collect.py` |
+| Can run from | Any account (member or management) | Management account only |
+| Collects | Resources, snapshots, backup configs | Billing/spending data |
+| Multi-account | Via role assumption (--org-role) | Via Cost Explorer API (--org-costs) |
+
+**Recommended workflow:**
 
 ```bash
-# Collect resources
-python3 aws_collect.py -o ./assessment/
+# 1. Collect resources (can run from any account with role assumption)
+python3 aws_collect.py --org-role CCARole -o ./assessment/
 
-# Collect costs
-python3 cost_collect.py --aws --start-date 2026-01-01 -o ./assessment/
+# 2. Collect costs (must run from management account)
+python3 cost_collect.py --aws --org-costs -o ./assessment/
+
+# 3. Generate reports
+python3 scripts/generate_protection_report.py ./assessment/cca_aws_inv_*.json ./assessment/protection_report.xlsx
+python3 scripts/generate_cost_report.py -i ./assessment/cca_cost_inv_*.json -s ./assessment/cca_cost_sum_*.json -o ./assessment/cost_report.xlsx
 ```
 
-This gives you both the inventory (what you have) and the costs (what you're spending).
+**Note:** If running inventory collection via SSO to member accounts, you'll need separate
+management account credentials to collect cost data. These are typically different authentication
+flows and should be run as separate steps.

@@ -19,11 +19,27 @@ Usage:
     # Multi-account via AWS Organizations discovery
     python3 aws_collect.py --org-role CCARole
     python3 aws_collect.py --org-role CCARole --external-id MySecretId
+    
+    # Large environments: auto-batching with checkpoint
+    python3 aws_collect.py --org-role CCARole --batch-size 25 -o ./collection/
+    
+    # Resume from checkpoint after failure/timeout
+    python3 aws_collect.py --org-role CCARole --resume ./collection/checkpoint.json
+    
+    # Collect specific accounts only (retry failed)
+    python3 aws_collect.py --org-role CCARole --accounts 111111111111,222222222222
+    
+    # Load accounts from file
+    python3 aws_collect.py --org-role CCARole --account-file accounts.txt
 """
 import argparse
 import json
 import logging
+import math
+import os
+import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
@@ -149,6 +165,60 @@ def discover_org_accounts(session: boto3.Session, include_suspended: bool = Fals
         else:
             logger.error(f"Failed to list organization accounts: {e}")
         return []
+
+
+# =============================================================================
+# Checkpoint Management (for resume/batching)
+# =============================================================================
+
+def load_checkpoint(checkpoint_file: str) -> Dict[str, Any]:
+    """Load checkpoint data from file."""
+    default = {
+        'completed_accounts': [],
+        'failed_accounts': [],
+        'in_progress': None,
+        'batch_number': 0,
+        'started_at': None
+    }
+    if os.path.exists(checkpoint_file) and os.path.getsize(checkpoint_file) > 0:
+        try:
+            with open(checkpoint_file, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            logger.warning(f"Could not read checkpoint file {checkpoint_file}, starting fresh")
+            return default
+    return default
+
+
+def save_checkpoint(checkpoint_file: str, checkpoint: Dict[str, Any]) -> None:
+    """Save checkpoint data to file."""
+    checkpoint['updated_at'] = get_timestamp()
+    with open(checkpoint_file, 'w') as f:
+        json.dump(checkpoint, f, indent=2)
+    logger.debug(f"Checkpoint saved: {len(checkpoint.get('completed_accounts', []))} completed")
+
+
+def load_account_list(file_path: str) -> List[str]:
+    """
+    Load account IDs from a file (one per line).
+    Supports comments with # and empty lines.
+    """
+    accounts = []
+    with open(file_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            # Skip empty lines and comments
+            if line and not line.startswith('#'):
+                # Handle "account_id,account_name" format
+                account_id = line.split(',')[0].strip()
+                if account_id:
+                    accounts.append(account_id)
+    return accounts
+
+
+def chunk_list(lst: List, chunk_size: int) -> List[List]:
+    """Split a list into chunks of specified size."""
+    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
 
 
 def collect_account(
@@ -948,6 +1018,11 @@ def collect_backup_recovery_points(session: boto3.Session, region: str, account_
                         size_bytes = rp.get('BackupSizeInBytes', 0) or 0
                         size_gb = size_bytes / (1024 ** 3)
                         
+                        # Check if this is a copy/replica
+                        parent_rp_arn = rp.get('ParentRecoveryPointArn', '')
+                        source_vault_arn = rp.get('SourceBackupVaultArn', '')
+                        is_replica = bool(parent_rp_arn or source_vault_arn)
+                        
                         resource = CloudResource(
                             provider="aws",
                             account_id=account_id,
@@ -969,7 +1044,11 @@ def collect_backup_recovery_points(session: boto3.Session, region: str, account_
                                 'lifecycle_delete_after_days': rp.get('Lifecycle', {}).get('DeleteAfterDays'),
                                 'lifecycle_move_to_cold_after_days': rp.get('Lifecycle', {}).get('MoveToColdStorageAfterDays'),
                                 'is_encrypted': rp.get('IsEncrypted', False),
-                                'backup_size_bytes': size_bytes
+                                'backup_size_bytes': size_bytes,
+                                'is_parent': rp.get('IsParent', False),
+                                'parent_recovery_point_arn': parent_rp_arn,
+                                'source_backup_vault_arn': source_vault_arn,
+                                'is_replica': is_replica
                             }
                         )
                         resources.append(resource)
@@ -1161,6 +1240,54 @@ def collect_backup_protected_resources(session: boto3.Session, region: str, acco
     return resources
 
 
+def collect_backup_region_settings(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect AWS Backup region settings (resource type opt-in preferences).
+    
+    This is critical for understanding why resources might not be backed up even
+    when they're in a backup selection - the resource type must be opted-in.
+    """
+    resources = []
+    try:
+        backup = session.client('backup', region_name=region)
+        
+        # Get region settings - which resource types are opted-in for backup
+        region_settings = backup.describe_region_settings()
+        resource_type_opt_in = region_settings.get('ResourceTypeOptInPreference', {})
+        resource_type_management = region_settings.get('ResourceTypeManagementPreference', {})
+        
+        # Create a single resource representing these settings
+        resource = CloudResource(
+            provider="aws",
+            account_id=account_id,
+            region=region,
+            resource_type="aws:backup:region-settings",
+            service_family="Backup",
+            resource_id=f"arn:aws:backup:{region}:{account_id}:region-settings",
+            name=f"backup-region-settings-{region}",
+            tags={},
+            size_gb=0.0,
+            metadata={
+                'resource_type_opt_in': resource_type_opt_in,
+                'resource_type_management': resource_type_management,
+                # Summarize which types are enabled/disabled
+                'opted_in_types': [k for k, v in resource_type_opt_in.items() if v is True],
+                'opted_out_types': [k for k, v in resource_type_opt_in.items() if v is False]
+            }
+        )
+        resources.append(resource)
+        
+        # Log which resource types are opted out (potential issue)
+        opted_out = [k for k, v in resource_type_opt_in.items() if v is False]
+        if opted_out:
+            logger.warning(f"[{region}] Resource types OPTED OUT from backup: {', '.join(opted_out)}")
+        
+        logger.info(f"[{region}] Collected Backup region settings")
+    except Exception as e:
+        logger.error(f"[{region}] Failed to collect Backup region settings: {e}")
+    
+    return resources
+
+
 # =============================================================================
 # Main Collection Logic
 # =============================================================================
@@ -1210,6 +1337,7 @@ def collect_region(session: boto3.Session, region: str, account_id: str, tracker
     resources.extend(collect_and_track("Backup plans", collect_backup_plans, session, region, account_id))
     resources.extend(collect_and_track("Backup selections", collect_backup_selections, session, region, account_id))
     resources.extend(collect_and_track("Backup protected resources", collect_backup_protected_resources, session, region, account_id))
+    resources.extend(collect_and_track("Backup region settings", collect_backup_region_settings, session, region, account_id))
     
     return resources
 
@@ -1237,6 +1365,28 @@ Examples:
 
   # Organization discovery with external ID
   python3 aws_collect.py --org-role CCARole --external-id MySecretId
+
+Large Environment Examples:
+  # Auto-batch 100+ accounts into groups of 25, with checkpoint
+  python3 aws_collect.py --org-role CCARole --batch-size 25 -o ./collection/
+
+  # Resume after credential timeout (uses checkpoint.json)
+  python3 aws_collect.py --org-role CCARole --resume ./collection/checkpoint.json
+
+  # Retry only failed accounts
+  python3 aws_collect.py --org-role CCARole --accounts 111111111111,222222222222
+
+  # Load account list from file
+  python3 aws_collect.py --org-role CCARole --account-file accounts.txt -o ./output/
+
+  # Auto-refresh SSO credentials between batches (recommended for SSO users)
+  python3 aws_collect.py --org-role CCARole --batch-size 20 --sso-refresh
+
+  # Interactive mode: pause and prompt between batches
+  python3 aws_collect.py --org-role CCARole --batch-size 20 --interactive
+
+  # Timed pause between batches (manual refresh)
+  python3 aws_collect.py --org-role CCARole --batch-size 20 --pause-between-batches 60
 """
     )
     
@@ -1269,6 +1419,48 @@ Examples:
         help='Comma-separated list of account IDs to skip (useful with --org-role)'
     )
     
+    # Batching options (for large environments)
+    parser.add_argument(
+        '--accounts',
+        help='Comma-separated list of account IDs to include (only collect these accounts)'
+    )
+    parser.add_argument(
+        '--account-file',
+        help='File containing account IDs to collect (one per line, supports # comments)'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        help='Auto-batch: collect N accounts per batch, output to numbered subfolders. '
+             'Saves checkpoint for resume capability.'
+    )
+    parser.add_argument(
+        '--resume',
+        metavar='CHECKPOINT',
+        help='Resume collection from checkpoint file (created by --batch-size)'
+    )
+    parser.add_argument(
+        '--checkpoint',
+        help='Path for checkpoint file (default: <output>/checkpoint.json)'
+    )
+    parser.add_argument(
+        '--pause-between-batches',
+        type=int,
+        default=0,
+        metavar='SECONDS',
+        help='Pause N seconds between batches (allows manual credential refresh)'
+    )
+    parser.add_argument(
+        '--sso-refresh',
+        action='store_true',
+        help='Run "aws sso login" between batches to refresh SSO credentials'
+    )
+    parser.add_argument(
+        '--interactive',
+        action='store_true',
+        help='Prompt and wait for user input between batches (for manual credential refresh)'
+    )
+    
     args = parser.parse_args()
     setup_logging(args.log_level)
     
@@ -1292,13 +1484,31 @@ Examples:
     if args.regions:
         regions = [r.strip() for r in args.regions.split(',')]
     
-    # Parse skip accounts
+    # Parse account filters
     skip_accounts = set()
     if args.skip_accounts:
         skip_accounts = {a.strip() for a in args.skip_accounts.split(',')}
     
-    # Determine collection mode and build list of (session, account_id) tuples
-    account_sessions: List[tuple] = []
+    include_accounts = None  # None means "all accounts"
+    if args.accounts:
+        include_accounts = {a.strip() for a in args.accounts.split(',')}
+    elif args.account_file:
+        include_accounts = set(load_account_list(args.account_file))
+        logger.info(f"Loaded {len(include_accounts)} accounts from {args.account_file}")
+    
+    # Check for resume mode
+    checkpoint_file = args.checkpoint or os.path.join(args.output.rstrip('/'), 'checkpoint.json')
+    checkpoint: Dict[str, Any] = {'completed_accounts': [], 'failed_accounts': []}
+    
+    if args.resume:
+        checkpoint_file = args.resume
+        checkpoint = load_checkpoint(checkpoint_file)
+        already_done = set(checkpoint.get('completed_accounts', []))
+        logger.info(f"Resuming: {len(already_done)} accounts already completed")
+        skip_accounts = skip_accounts | already_done
+    
+    # Build list of accounts to collect
+    accounts_to_collect: List[Dict[str, Any]] = []
     
     if args.org_role:
         # Organizations discovery mode
@@ -1311,147 +1521,279 @@ Examples:
         
         for account in org_accounts:
             acc_id = account['id']
-            acc_name = account['name']
             
-            if acc_id in skip_accounts:
-                logger.info(f"Skipping account {acc_id} ({acc_name})")
+            # Apply include filter
+            if include_accounts is not None and acc_id not in include_accounts:
                 continue
             
-            # Check if this is the management account (where we're running from)
-            if acc_id == base_account_id:
-                logger.info(f"Using current credentials for management account {acc_id} ({acc_name})")
-                account_sessions.append((base_session, acc_id, acc_name))
-            else:
-                # Assume role in member account
-                role_arn = f"arn:aws:iam::{acc_id}:role/{args.org_role}"
-                try:
-                    assumed_session = assume_role(base_session, role_arn, args.external_id)
-                    logger.info(f"Assumed role in account {acc_id} ({acc_name})")
-                    account_sessions.append((assumed_session, acc_id, acc_name))
-                except Exception as e:
-                    logger.warning(f"Failed to assume role in account {acc_id} ({acc_name}): {e}")
-                    continue
+            # Apply skip filter
+            if acc_id in skip_accounts:
+                logger.info(f"Skipping account {acc_id} ({account['name']})")
+                continue
+            
+            accounts_to_collect.append(account)
     
     elif args.role_arns:
-        # Explicit multi-account role assumption
+        # Explicit multi-account role assumption - extract account IDs from ARNs
         role_arns = [r.strip() for r in args.role_arns.split(',')]
-        
         for role_arn in role_arns:
+            # Extract account ID from ARN format arn:aws:iam::ACCOUNT_ID:role/...
             try:
-                assumed_session = assume_role(base_session, role_arn, args.external_id)
-                acc_id = get_account_id(assumed_session)
-                logger.info(f"Assumed role {role_arn} (account {acc_id})")
-                account_sessions.append((assumed_session, acc_id, None))
-            except Exception as e:
-                logger.warning(f"Failed to assume role {role_arn}: {e}")
-                continue
+                acc_id = role_arn.split(':')[4]
+                if include_accounts is not None and acc_id not in include_accounts:
+                    continue
+                if acc_id in skip_accounts:
+                    continue
+                accounts_to_collect.append({'id': acc_id, 'name': '', 'role_arn': role_arn})
+            except (IndexError, ValueError):
+                logger.warning(f"Could not parse account ID from role ARN: {role_arn}")
+                accounts_to_collect.append({'id': '', 'name': '', 'role_arn': role_arn})
     
     elif args.role_arn:
         # Single role assumption
-        try:
-            assumed_session = assume_role(base_session, args.role_arn, args.external_id)
-            acc_id = get_account_id(assumed_session)
-            logger.info(f"Assumed role {args.role_arn} (account {acc_id})")
-            account_sessions.append((assumed_session, acc_id, None))
-        except Exception as e:
-            logger.error(f"Failed to assume role {args.role_arn}: {e}")
-            sys.exit(1)
+        acc_id = args.role_arn.split(':')[4] if ':' in args.role_arn else ''
+        accounts_to_collect.append({'id': acc_id, 'name': '', 'role_arn': args.role_arn})
     
     else:
         # Single account mode (current credentials)
-        account_sessions.append((base_session, base_account_id, None))
+        accounts_to_collect.append({'id': base_account_id, 'name': '', 'is_base': True})
     
-    if not account_sessions:
-        logger.error("No accounts to collect from")
+    if not accounts_to_collect:
+        logger.error("No accounts to collect from (all filtered out)")
         sys.exit(1)
     
-    # Collect from all accounts
-    all_resources: List[CloudResource] = []
-    collected_accounts: List[Dict[str, Any]] = []
+    # Handle batching
+    batches = [accounts_to_collect]  # Default: single batch with all accounts
     
-    # Determine total regions for progress tracking
-    total_regions = len(regions) if regions else len(get_enabled_regions(base_session))
+    if args.batch_size and len(accounts_to_collect) > args.batch_size:
+        batches = chunk_list(accounts_to_collect, args.batch_size)
+        logger.info(f"Split {len(accounts_to_collect)} accounts into {len(batches)} batches of up to {args.batch_size}")
+        
+        # Initialize checkpoint for batch tracking
+        checkpoint['total_accounts'] = len(accounts_to_collect)
+        checkpoint['batch_size'] = args.batch_size
+        checkpoint['total_batches'] = len(batches)
+        checkpoint['started_at'] = checkpoint.get('started_at') or get_timestamp()
     
-    with ProgressTracker("AWS", total_regions=total_regions * len(account_sessions)) as tracker:
-        for session, account_id, account_name in account_sessions:
-            try:
-                tracker.start_account(account_id, account_name or "")
-                
-                account_resources = collect_account(session, account_id, regions, tracker)
-                all_resources.extend(account_resources)
-                
-                collected_accounts.append({
-                    'account_id': account_id,
-                    'account_name': account_name,
-                    'resource_count': len(account_resources)
-                })
-                
-            except Exception as e:
-                logger.error(f"Failed to collect from account {account_id}: {e}")
-                continue
-    
-    # Generate summaries
-    summaries = aggregate_sizing(all_resources)
-    
-    # Prepare output
-    run_id = generate_run_id()
-    timestamp = get_timestamp()
-    
-    # Determine if multi-account
-    is_multi_account = len(collected_accounts) > 1
-    account_ids = [a['account_id'] for a in collected_accounts]
-    
-    output_data = {
-        'run_id': run_id,
-        'timestamp': timestamp,
-        'provider': 'aws',
-        'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
-        'accounts': collected_accounts if is_multi_account else None,
-        'regions': regions if regions else 'all',
-        'resource_count': len(all_resources),
-        'resources': [r.to_dict() for r in all_resources]
-    }
-    
-    summary_data = {
-        'run_id': run_id,
-        'timestamp': timestamp,
-        'provider': 'aws',
-        'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
-        'accounts': collected_accounts if is_multi_account else None,
-        'total_resources': len(all_resources),
-        'total_capacity_gb': sum(s.total_gb for s in summaries),
-        'summaries': [s.to_dict() for s in summaries]
-    }
-    
-    # Remove None values
-    output_data = {k: v for k, v in output_data.items() if v is not None}
-    summary_data = {k: v for k, v in summary_data.items() if v is not None}
-    
-    # Write outputs
+    # Collect from all batches
+    all_collected_accounts: List[Dict[str, Any]] = []
+    all_summaries = []
     output_base = args.output.rstrip('/')
+    run_id = generate_run_id()  # Initialize here, may be overwritten per batch
     
-    if output_base.startswith('s3://'):
-        output_base = f"{output_base}/{run_id}"
+    for batch_num, batch_accounts in enumerate(batches, 1):
+        # Determine output path for this batch
+        if len(batches) > 1:
+            batch_output = f"{output_base}/batch{batch_num:02d}"
+            os.makedirs(batch_output, exist_ok=True)
+            print(f"\n{'='*60}")
+            print(f"BATCH {batch_num}/{len(batches)}: {len(batch_accounts)} accounts")
+            print(f"{'='*60}")
+        else:
+            batch_output = output_base
+        
+        # Build sessions for this batch
+        account_sessions: List[tuple] = []
+        
+        for account in batch_accounts:
+            acc_id = account['id']
+            acc_name = account.get('name', '')
+            
+            if account.get('is_base'):
+                # Use current credentials
+                account_sessions.append((base_session, acc_id, acc_name))
+            elif account.get('role_arn'):
+                # Explicit role ARN provided
+                try:
+                    assumed_session = assume_role(base_session, account['role_arn'], args.external_id)
+                    if not acc_id:
+                        acc_id = get_account_id(assumed_session)
+                    logger.info(f"Assumed role in account {acc_id}")
+                    account_sessions.append((assumed_session, acc_id, acc_name))
+                except Exception as e:
+                    logger.warning(f"Failed to assume role {account['role_arn']}: {e}")
+                    checkpoint['failed_accounts'].append(acc_id)
+                    continue
+            else:
+                # Org discovery mode - construct role ARN
+                if acc_id == base_account_id:
+                    logger.info(f"Using current credentials for management account {acc_id} ({acc_name})")
+                    account_sessions.append((base_session, acc_id, acc_name))
+                else:
+                    role_arn = f"arn:aws:iam::{acc_id}:role/{args.org_role}"
+                    try:
+                        assumed_session = assume_role(base_session, role_arn, args.external_id)
+                        logger.info(f"Assumed role in account {acc_id} ({acc_name})")
+                        account_sessions.append((assumed_session, acc_id, acc_name))
+                    except Exception as e:
+                        logger.warning(f"Failed to assume role in account {acc_id} ({acc_name}): {e}")
+                        checkpoint['failed_accounts'].append(acc_id)
+                        continue
+        
+        if not account_sessions:
+            logger.warning(f"No valid sessions for batch {batch_num}, skipping")
+            continue
+        
+        # Collect from all accounts in this batch
+        batch_resources: List[CloudResource] = []
+        batch_collected: List[Dict[str, Any]] = []
+        
+        total_regions = len(regions) if regions else len(get_enabled_regions(base_session))
+        
+        with ProgressTracker("AWS", total_regions=total_regions * len(account_sessions)) as tracker:
+            for session, account_id, account_name in account_sessions:
+                try:
+                    # Update checkpoint: mark in progress
+                    checkpoint['in_progress'] = account_id
+                    if args.batch_size:
+                        save_checkpoint(checkpoint_file, checkpoint)
+                    
+                    tracker.start_account(account_id, account_name or "")
+                    
+                    account_resources = collect_account(session, account_id, regions, tracker)
+                    batch_resources.extend(account_resources)
+                    
+                    batch_collected.append({
+                        'account_id': account_id,
+                        'account_name': account_name,
+                        'resource_count': len(account_resources)
+                    })
+                    
+                    # Update checkpoint: mark completed
+                    checkpoint['completed_accounts'].append(account_id)
+                    checkpoint['in_progress'] = None
+                    if args.batch_size:
+                        save_checkpoint(checkpoint_file, checkpoint)
+                    
+                except Exception as e:
+                    logger.error(f"Failed to collect from account {account_id}: {e}")
+                    checkpoint['failed_accounts'].append(account_id)
+                    checkpoint['in_progress'] = None
+                    if args.batch_size:
+                        save_checkpoint(checkpoint_file, checkpoint)
+                    continue
+        
+        # Generate summaries for this batch
+        batch_summaries = aggregate_sizing(batch_resources)
+        
+        # Write batch outputs
+        run_id = generate_run_id()
+        timestamp = get_timestamp()
+        
+        is_multi_account = len(batch_collected) > 1
+        account_ids = [a['account_id'] for a in batch_collected]
+        
+        output_data = {
+            'run_id': run_id,
+            'timestamp': timestamp,
+            'provider': 'aws',
+            'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
+            'accounts': batch_collected if is_multi_account else None,
+            'regions': regions if regions else 'all',
+            'resource_count': len(batch_resources),
+            'resources': [r.to_dict() for r in batch_resources]
+        }
+        
+        summary_data = {
+            'run_id': run_id,
+            'timestamp': timestamp,
+            'provider': 'aws',
+            'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
+            'accounts': batch_collected if is_multi_account else None,
+            'total_resources': len(batch_resources),
+            'total_capacity_gb': sum(s.total_gb for s in batch_summaries),
+            'summaries': [s.to_dict() for s in batch_summaries]
+        }
+        
+        # Remove None values
+        output_data = {k: v for k, v in output_data.items() if v is not None}
+        summary_data = {k: v for k, v in summary_data.items() if v is not None}
+        
+        # Handle S3 output
+        if batch_output.startswith('s3://'):
+            batch_output = f"{batch_output}/{run_id}"
+        
+        # Write outputs
+        file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
+        write_json(output_data, f"{batch_output}/cca_aws_inv_{file_ts}.json")
+        write_json(summary_data, f"{batch_output}/cca_aws_sum_{file_ts}.json")
+        
+        csv_data = [s.to_dict() for s in batch_summaries]
+        write_csv(csv_data, f"{batch_output}/cca_aws_sizing.csv")
+        
+        # Track for final summary
+        all_collected_accounts.extend(batch_collected)
+        all_summaries.extend(batch_summaries)
+        
+        # Print batch results
+        if len(batches) > 1:
+            print(f"\nBatch {batch_num} complete: {len(batch_collected)} accounts, {len(batch_resources)} resources")
+            print(f"Output: {batch_output}/")
+        
+        # Handle credential refresh between batches
+        if batch_num < len(batches):
+            if args.sso_refresh:
+                print(f"\n{'='*60}")
+                print(f"Refreshing SSO credentials before batch {batch_num + 1}...")
+                print(f"{'='*60}")
+                sso_cmd = ['aws', 'sso', 'login']
+                if args.profile:
+                    sso_cmd.extend(['--profile', args.profile])
+                try:
+                    subprocess.run(sso_cmd, check=True)
+                    print("SSO login successful, continuing...")
+                    # Recreate base session with refreshed credentials
+                    base_session = get_session(args.profile)
+                except subprocess.CalledProcessError as e:
+                    print(f"SSO login failed (exit code {e.returncode})")
+                    print("You can resume later with: --resume " + checkpoint_file)
+                    sys.exit(1)
+                except FileNotFoundError:
+                    print("Error: 'aws' CLI not found. Install AWS CLI or use --interactive instead.")
+                    sys.exit(1)
+            
+            elif args.interactive:
+                print(f"\n{'='*60}")
+                print(f"BATCH {batch_num}/{len(batches)} COMPLETE")
+                print(f"{'='*60}")
+                print(f"Refresh your credentials now if needed.")
+                print(f"  - AWS SSO: aws sso login" + (f" --profile {args.profile}" if args.profile else ""))
+                print(f"  - IAM User: update ~/.aws/credentials")
+                print(f"Progress saved to: {checkpoint_file}")
+                input("\nPress ENTER to continue to batch " + str(batch_num + 1) + "...")
+                # Recreate base session with potentially refreshed credentials
+                base_session = get_session(args.profile)
+            
+            elif args.pause_between_batches:
+                print(f"\nPausing {args.pause_between_batches} seconds before next batch...")
+                print("(Refresh credentials now if using SSO)")
+                time.sleep(args.pause_between_batches)
     
-    # Short timestamp for filenames (HHMMSS) - keeps filename < 20 chars
-    file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
-    write_json(output_data, f"{output_base}/cca_aws_inv_{file_ts}.json")
-    write_json(summary_data, f"{output_base}/cca_aws_sum_{file_ts}.json")
+    # Final checkpoint update
+    if args.batch_size:
+        checkpoint['completed_at'] = get_timestamp()
+        save_checkpoint(checkpoint_file, checkpoint)
+        print(f"\nCheckpoint saved: {checkpoint_file}")
+        if checkpoint['failed_accounts']:
+            print(f"Failed accounts ({len(checkpoint['failed_accounts'])}): {', '.join(checkpoint['failed_accounts'])}")
+            print(f"Re-run with: --accounts {','.join(checkpoint['failed_accounts'])}")
     
-    # Write CSV for spreadsheet use
-    csv_data = [s.to_dict() for s in summaries]
-    write_csv(csv_data, f"{output_base}/cca_aws_sizing.csv")
-    
-    # Print detailed results (ProgressTracker already showed collection summary)
-    if is_multi_account:
-        print(f"\nAccounts collected:")
-        for acc in collected_accounts:
+    # Print final summary
+    if len(all_collected_accounts) > 1:
+        print(f"\n{'='*60}")
+        print(f"COLLECTION COMPLETE")
+        print(f"{'='*60}")
+        print(f"Total accounts: {len(all_collected_accounts)}")
+        for acc in all_collected_accounts:
             name_str = f" ({acc['account_name']})" if acc.get('account_name') else ""
             print(f"  - {acc['account_id']}{name_str}: {acc['resource_count']} resources")
     
     print(f"\nRun ID: {run_id}")
-    print_summary_table([s.to_dict() for s in summaries])
+    print_summary_table([s.to_dict() for s in all_summaries])
     print(f"Output: {output_base}/")
+    
+    if len(batches) > 1:
+        print(f"\nTo merge batches: python3 scripts/merge_batch_outputs.py {output_base}/")
 
 
 if __name__ == '__main__':

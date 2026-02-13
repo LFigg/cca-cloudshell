@@ -24,7 +24,7 @@ python3 aws_collect.py      # AWS
 python3 azure_collect.py    # Azure
 python3 gcp_collect.py      # GCP
 python3 m365_collect.py     # Microsoft 365
-python3 cost_collect.py --aws  # Backup/snapshot costs
+python3 cost_collect.py --aws  # Backup/snapshot costs (run from management account)
 ```
 
 ## Output
@@ -74,7 +74,8 @@ python3 gcp_collect.py --all-projects
 # Custom output directory
 python3 aws_collect.py -o ./my_output/
 
-# Analyze backup/snapshot costs
+# Analyze backup/snapshot costs (requires management account for AWS Organizations)
+python3 cost_collect.py --aws --org-costs  # Break down by linked account
 python3 cost_collect.py --aws --start-date 2026-01-01
 ```
 
