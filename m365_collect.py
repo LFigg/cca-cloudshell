@@ -269,7 +269,8 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
                     # Get team details
                     try:
                         team = graph_client.teams.by_team_id(group.id).get()
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Could not fetch team details for {group.id}: {e}")
                         team = None
                     
                     resource = CloudResource(
@@ -368,7 +369,8 @@ def collect_entra_groups(graph_client: GraphServiceClient, tenant_id: str) -> Li
                     try:
                         members = graph_client.groups.by_group_id(group.id).members.get()
                         member_count = len(members.value) if members and members.value else 0
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Could not fetch member count for group {group.id}: {e}")
                         pass
                     
                     resource = CloudResource(

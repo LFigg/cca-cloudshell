@@ -463,27 +463,35 @@ def write_csv(data: List[Dict], filepath: str, fieldnames: Optional[List[str]] =
 
 def write_to_s3(data: Any, s3_path: str, content_type: str = "application/json") -> None:
     """Write data to S3 bucket."""
-    import boto3
+    try:
+        import boto3
+    except ImportError:
+        print("ERROR: boto3 not installed. Install with: pip install boto3")
+        raise
     
     # Parse S3 path: s3://bucket/key
     parts = s3_path.replace("s3://", "").split("/", 1)
     bucket = parts[0]
     key = parts[1] if len(parts) > 1 else "output.json"
     
-    s3 = boto3.client('s3')
-    
-    if isinstance(data, str):
-        body = data
-    else:
-        body = json.dumps(data, indent=2, default=str)
-    
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=body,
-        ContentType=content_type
-    )
-    print(f"Wrote s3://{bucket}/{key}")
+    try:
+        s3 = boto3.client('s3')
+        
+        if isinstance(data, str):
+            body = data
+        else:
+            body = json.dumps(data, indent=2, default=str)
+        
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType=content_type
+        )
+        print(f"Wrote s3://{bucket}/{key}")
+    except Exception as e:
+        print(f"ERROR: Failed to write to S3 ({s3_path}): {e}")
+        raise
 
 
 def write_to_blob(data: Any, blob_url: str) -> None:
@@ -491,7 +499,11 @@ def write_to_blob(data: Any, blob_url: str) -> None:
     try:
         from azure.storage.blob import BlobClient  # type: ignore[import-not-found]
         from azure.identity import DefaultAzureCredential  # type: ignore[import-not-found]
-        
+    except ImportError:
+        print("ERROR: azure-storage-blob not installed. Install with: pip install azure-storage-blob azure-identity")
+        raise
+    
+    try:
         credential = DefaultAzureCredential()
         blob_client = BlobClient.from_blob_url(blob_url, credential=credential)
         
@@ -502,8 +514,8 @@ def write_to_blob(data: Any, blob_url: str) -> None:
         
         blob_client.upload_blob(body, overwrite=True)
         print(f"Wrote {blob_url}")
-    except ImportError:
-        print("ERROR: azure-storage-blob not installed. Install with: pip install azure-storage-blob")
+    except Exception as e:
+        print(f"ERROR: Failed to write to Azure Blob ({blob_url}): {e}")
         raise
 
 
@@ -511,12 +523,16 @@ def write_to_gcs(data: Any, gcs_path: str, content_type: str = "application/json
     """Write data to Google Cloud Storage."""
     try:
         from google.cloud import storage  # type: ignore[import-not-found]
-        
-        # Parse GCS path: gs://bucket/key
-        parts = gcs_path.replace("gs://", "").split("/", 1)
-        bucket_name = parts[0]
-        blob_name = parts[1] if len(parts) > 1 else "output.json"
-        
+    except ImportError:
+        print("ERROR: google-cloud-storage not installed. Install with: pip install google-cloud-storage")
+        raise
+    
+    # Parse GCS path: gs://bucket/key
+    parts = gcs_path.replace("gs://", "").split("/", 1)
+    bucket_name = parts[0]
+    blob_name = parts[1] if len(parts) > 1 else "output.json"
+    
+    try:
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
@@ -528,8 +544,8 @@ def write_to_gcs(data: Any, gcs_path: str, content_type: str = "application/json
         
         blob.upload_from_string(body, content_type=content_type)
         print(f"Wrote gs://{bucket_name}/{blob_name}")
-    except ImportError:
-        print("ERROR: google-cloud-storage not installed. Install with: pip install google-cloud-storage")
+    except Exception as e:
+        print(f"ERROR: Failed to write to GCS ({gcs_path}): {e}")
         raise
 
 

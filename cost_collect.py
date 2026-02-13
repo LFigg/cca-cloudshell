@@ -514,10 +514,14 @@ def collect_gcp_costs(
         
         # Build service filter using parameterized query
         # Note: BigQuery doesn't support parameterized table names, but we validated above
-        # Services and SKU keywords are from our controlled constant, so safe to interpolate
+        # Services and SKU keywords are from our controlled constant
+        # Escape special LIKE characters (%, _, \) in keywords for safety
+        def escape_like_pattern(s: str) -> str:
+            return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        
         services_filter = ', '.join([f"'{s}'" for s in GCP_BACKUP_FILTERS['services']])
         sku_conditions = ' OR '.join([
-            f"LOWER(sku.description) LIKE '%{kw}%'" 
+            f"LOWER(sku.description) LIKE '%{escape_like_pattern(kw)}%'" 
             for kw in GCP_BACKUP_FILTERS['sku_keywords']
         ])
         
