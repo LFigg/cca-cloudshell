@@ -107,6 +107,23 @@ python3 cost_collect.py --aws --org-costs  # Break down by linked account
 python3 cost_collect.py --aws --start-date 2026-01-01
 ```
 
+## Config Files
+
+Use YAML config files for repeated runs or complex configurations:
+
+```bash
+# Generate a sample config
+python3 collect.py --generate-config aws > cca-config.yaml
+
+# Edit the config, then run with it
+python3 collect.py --config cca-config.yaml
+
+# Config is auto-discovered if named cca-config.yaml in current directory
+```
+
+Config files support environment variable substitution (`${VAR}` or `${VAR:-default}`).
+See [config-examples/](config-examples/) for samples.
+
 ## Protection Report
 
 Generate an Excel report with protection status analysis:

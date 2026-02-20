@@ -39,7 +39,29 @@ pip install google-cloud-compute google-cloud-storage  # GCP (partial)
 pip install msgraph-sdk azure-identity  # M365
 ```
 
+## Quick Start
+
+The easiest way to run collection is using the unified entry point:
+
+```bash
+# Interactive - select cloud and verify permissions
+python3 collect.py
+
+# Specify cloud directly
+python3 collect.py --cloud aws
+python3 collect.py --cloud azure
+python3 collect.py --cloud gcp
+python3 collect.py --cloud m365
+```
+
+The unified collector will:
+1. Verify your credentials and permissions
+2. Show you what access is available
+3. Run the appropriate collector
+
 ## Quick Start by Cloud
+
+You can also run collectors directly:
 
 ### AWS
 
@@ -85,6 +107,44 @@ export MS365_CLIENT_SECRET="your-client-secret"
 python3 m365_collect.py
 ```
 
+## Using Config Files
+
+For repeated runs or complex configurations, use a YAML config file:
+
+```bash
+# Generate a sample config
+python3 collect.py --generate-config aws > cca-config.yaml
+
+# Edit cca-config.yaml, then run with it
+python3 collect.py --config cca-config.yaml
+```
+
+See [config-examples/](../config-examples/) for sample configurations.
+
+Config files support environment variable substitution:
+```yaml
+aws:
+  role_arn: ${CCA_ROLE_ARN}              # Required
+  external_id: ${CCA_EXTERNAL_ID:-}      # Optional with default
+```
+
+## Setting Up Permissions
+
+Use the setup scripts in `setup/` to configure permissions:
+
+```bash
+# AWS - Deploy IAM role via CloudFormation
+./setup/setup-aws-permissions.sh
+
+# Azure - Assign Reader role to subscriptions
+./setup/setup-azure-permissions.sh
+
+# GCP - Grant Viewer role to projects
+./setup/setup-gcp-permissions.sh
+```
+
+See [Required Permissions](PERMISSIONS.md) for details on what access is needed.
+
 ## Output
 
 Each collector generates:
@@ -107,9 +167,11 @@ When output is piped (non-TTY), plain text progress messages are shown instead.
 
 ## Next Steps
 
+- [Config Examples](../config-examples/README.md) - Sample YAML configurations
 - [AWS Collector](collectors/aws.md) - Multi-account, regions, all options
 - [Azure Collector](collectors/azure.md) - Subscriptions, resource types
 - [GCP Collector](collectors/gcp.md) - Projects, regions, resources
 - [M365 Collector](collectors/m365.md) - App registration, permissions
 - [Output Formats](output-formats.md) - JSON schema, CSV fields
 - [Required Permissions](PERMISSIONS.md) - IAM policies for each cloud
+- [Setup Scripts](../setup/README.md) - Automated permission configuration
