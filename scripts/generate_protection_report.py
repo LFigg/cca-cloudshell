@@ -19,6 +19,60 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side  # type: 
 from openpyxl.utils.dataframe import dataframe_to_rows  # type: ignore[import-untyped]
 
 
+class InventoryValidationError(Exception):
+    """Raised when inventory data fails validation."""
+    pass
+
+
+def validate_inventory(data: Any, filepath: str = "inventory") -> None:
+    """Validate inventory data has required structure.
+    
+    Args:
+        data: The loaded inventory data to validate
+        filepath: Path to file for error messages
+        
+    Raises:
+        InventoryValidationError: If data is invalid with helpful message
+    """
+    if data is None:
+        raise InventoryValidationError(f"Inventory file is empty or null: {filepath}")
+    
+    if not isinstance(data, dict):
+        raise InventoryValidationError(
+            f"Invalid inventory format: expected JSON object, got {type(data).__name__}. "
+            f"File: {filepath}"
+        )
+    
+    if 'resources' not in data:
+        available_keys = list(data.keys())[:5]  # Show first 5 keys
+        raise InventoryValidationError(
+            f"Missing 'resources' key in inventory. "
+            f"Available keys: {available_keys}. File: {filepath}"
+        )
+    
+    if not isinstance(data['resources'], list):
+        raise InventoryValidationError(
+            f"Invalid 'resources' field: expected list, got {type(data['resources']).__name__}. "
+            f"File: {filepath}"
+        )
+    
+    # Validate first resource has expected structure (if any resources exist)
+    if data['resources']:
+        first = data['resources'][0]
+        if not isinstance(first, dict):
+            raise InventoryValidationError(
+                f"Invalid resource format: expected objects, got {type(first).__name__}. "
+                f"File: {filepath}"
+            )
+        required_keys = {'resource_id', 'resource_type'}
+        missing = required_keys - set(first.keys())
+        if missing:
+            raise InventoryValidationError(
+                f"Invalid resource format: missing required keys {missing}. "
+                f"File: {filepath}"
+            )
+
+
 def load_inventory(filepath: str) -> Dict[str, Any]:
     """Load inventory JSON file."""
     with open(filepath) as f:
@@ -47,6 +101,29 @@ def stringify_field(value: Any, max_items: int = 10) -> str:
 def build_resource_index(resources: List[Dict]) -> Dict[str, Dict]:
     """Build index of resources by resource_id for quick lookup."""
     return {r['resource_id']: r for r in resources}
+
+
+def build_volume_index(resources: List[Dict]) -> Dict[str, Dict]:
+    """Build index of EBS volumes by volume ID for cross-account lookup.
+    
+    This enables finding a volume's source even if the snapshot was copied
+    to a different account. Volume IDs are globally unique within AWS.
+    
+    Returns:
+        Dict mapping volume_id (e.g., 'vol-xxx') to the volume resource
+    """
+    index = {}
+    for r in resources:
+        if r['resource_type'] == 'aws:ec2:volume':
+            vol_id = r['resource_id']
+            # Handle both ARN and raw volume ID formats
+            if vol_id.startswith('arn:'):
+                # Extract vol-xxx from ARN
+                parts = vol_id.split('/')
+                if len(parts) > 1:
+                    vol_id = parts[-1]
+            index[vol_id] = r
+    return index
 
 
 def get_ec2_instances(resources: List[Dict]) -> List[Dict]:
@@ -567,13 +644,27 @@ def get_eks_cluster(tags: Dict) -> str:
     return ''
 
 
-def generate_report(inventory_path: str, output_path: str):
-    """Generate the protection report CSV with full hierarchy."""
-    data = load_inventory(inventory_path)
+def generate_report(inventory_path: str, output_path: str, preloaded_data: Optional[Dict[str, Any]] = None):
+    """Generate the protection report CSV with full hierarchy.
+    
+    Args:
+        inventory_path: Path to inventory JSON file
+        output_path: Path to output Excel file
+        preloaded_data: Optional pre-loaded inventory data to avoid double file load
+        
+    Raises:
+        InventoryValidationError: If inventory data is invalid or corrupted
+    """
+    data = preloaded_data if preloaded_data else load_inventory(inventory_path)
+    
+    # Validate inventory structure before processing
+    validate_inventory(data, inventory_path)
+    
     resources = data['resources']
     
     # Build indexes
     resource_index = build_resource_index(resources)
+    volume_index = build_volume_index(resources)  # Cross-account volume lookup
     
     # Categorize resources
     ec2_instances = get_ec2_instances(resources)
@@ -870,7 +961,7 @@ def generate_report(inventory_path: str, output_path: str):
                 'protection_status': 'In Backup Plan' if has_backup_plan else 'Unprotected'
             })
     
-    # Process orphan snapshots (no matching volume in account - often cross-region copies)
+    # Process orphan snapshots (no matching volume in same account - may be cross-account copies)
     ebs_snapshots = [s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']
     orphan_snapshots = [s for s in ebs_snapshots if s['resource_id'] not in processed_snapshots]
     
@@ -884,20 +975,41 @@ def generate_report(inventory_path: str, output_path: str):
             snap_plan = 'AWS Backup'
             protection_source = 'inferred'
         
-        protection_status = 'Protected (orphan snapshot)' if (snap_plan or has_backup) else 'Orphan Snapshot'
+        # Try cross-account volume lookup
+        parent_vol_id = snap.get('parent_resource_id', '')
+        source_volume = volume_index.get(parent_vol_id)
+        snap_account = snap.get('account_id', '')
+        
+        is_cross_account = False
+        source_account = ''
+        volume_name = f"(source: {parent_vol_id or 'unknown'})"
+        
+        if source_volume:
+            source_account = source_volume.get('account_id', '')
+            if source_account and source_account != snap_account:
+                is_cross_account = True
+                volume_name = source_volume.get('name', parent_vol_id)
+        
+        # Determine protection status
+        if is_cross_account:
+            protection_status = f"Cross-Account Copy (from {source_account[:12]}...)" if (snap_plan or has_backup) else f"Cross-Account Copy (from {source_account[:12]}...)"
+        else:
+            protection_status = 'Protected (orphan snapshot)' if (snap_plan or has_backup) else 'Orphan Snapshot'
+        
+        instance_name = '(cross-account copy)' if is_cross_account else '(orphan snapshot)'
         
         rows.append({
             'service_family': 'EBS',
-            'account': snap.get('account_id', ''),
-            'instance_name': '(orphan snapshot)',
+            'account': snap_account,
+            'instance_name': instance_name,
             'instance_id': '',
             'instance_type': '',
             'eks_cluster': '',
             'instance_region': snap['region'],
             'instance_tags': '',
-            'volume_name': f"(source: {snap.get('parent_resource_id', 'unknown')})",
-            'volume_id': snap.get('parent_resource_id', ''),
-            'volume_size_gb': '',
+            'volume_name': volume_name,
+            'volume_id': parent_vol_id,
+            'volume_size_gb': source_volume.get('size_gb', '') if source_volume else '',
             'snapshot_name': snap['name'],
             'snapshot_id': snap['resource_id'],
             'snapshot_size_gb': snap['size_gb'],
@@ -905,7 +1017,7 @@ def generate_report(inventory_path: str, output_path: str):
             'snapshot_description': snap.get('metadata', {}).get('description', ''),
             'is_replica': 'Yes' if is_replica_snapshot(snap) else '',
             'backup_plan': snap_plan,
-            'protection_source': protection_source,
+            'protection_source': f"cross-account from {source_account}" if is_cross_account else protection_source,
             'protection_status': protection_status
         })
     
@@ -1474,13 +1586,14 @@ def generate_output_filename(inventory_path: str, data: Dict[str, Any]) -> str:
 if __name__ == '__main__':
     inventory_path = sys.argv[1] if len(sys.argv) > 1 else 'tests/sample_output/cca_inv_162849.json'
     
+    # Load inventory once for both filename generation and report
+    with open(inventory_path) as f:
+        inventory_data = json.load(f)
+    
     # If output path not provided, auto-generate based on inventory data
     if len(sys.argv) > 2:
         output_path = sys.argv[2]
     else:
-        # Load inventory to extract identifiers for filename
-        with open(inventory_path) as f:
-            temp_data = json.load(f)
-        output_path = generate_output_filename(inventory_path, temp_data)
+        output_path = generate_output_filename(inventory_path, inventory_data)
     
-    generate_report(inventory_path, output_path)
+    generate_report(inventory_path, output_path, preloaded_data=inventory_data)

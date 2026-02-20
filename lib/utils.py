@@ -17,6 +17,7 @@ Logging Level Standards:
 import json
 import csv
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Callable, TypeVar, Optional, TYPE_CHECKING
@@ -393,7 +394,7 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
 
 
 def write_json(data: Any, filepath: str) -> None:
-    """Write data to JSON file."""
+    """Write data to JSON file with secure permissions."""
     # Handle S3 paths
     if filepath.startswith("s3://"):
         write_to_s3(data, filepath)
@@ -409,9 +410,15 @@ def write_json(data: Any, filepath: str) -> None:
         write_to_gcs(data, filepath)
         return
     
-    # Local file
-    with open(filepath, 'w') as f:
-        json.dump(data, f, indent=2, default=str)
+    # Local file - create with restrictive permissions (owner read/write only)
+    # This protects inventory data which may contain sensitive resource metadata
+    fd = os.open(filepath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception:
+        os.close(fd)
+        raise
     print(f"Wrote {filepath}")
 
 

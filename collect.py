@@ -345,7 +345,12 @@ def verify_permissions(cloud: str) -> bool:
         print(color(f"Unknown cloud: {cloud}", Colors.RED))
         return False
     
-    success, message, details = checker()
+    try:
+        success, message, details = checker()
+    except Exception as e:
+        print(color(f"  ✗ Permission check failed: {e}", Colors.RED))
+        print(color(f"\n    This could indicate missing credentials or SDK issues.", Colors.YELLOW))
+        return False
     
     if success:
         print(color(f"  ✓ {message}", Colors.GREEN))

@@ -18,7 +18,10 @@ Usage:
     
     # Multi-account via AWS Organizations discovery
     python3 aws_collect.py --org-role CCARole
-    python3 aws_collect.py --org-role CCARole --external-id MySecretId
+    
+    # With external ID (use env var to avoid shell history exposure)
+    export CCA_EXTERNAL_ID="your-secret-external-id"
+    python3 aws_collect.py --org-role CCARole
     
     # Large environments: auto-batching with checkpoint
     python3 aws_collect.py --org-role CCARole --batch-size 25 -o ./collection/
@@ -39,6 +42,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
@@ -192,11 +196,25 @@ def load_checkpoint(checkpoint_file: str) -> Dict[str, Any]:
 
 
 def save_checkpoint(checkpoint_file: str, checkpoint: Dict[str, Any]) -> None:
-    """Save checkpoint data to file."""
+    """Save checkpoint data to file atomically.
+    
+    Uses write-to-temp-then-rename pattern to prevent data loss if process
+    is killed during write.
+    """
     checkpoint['updated_at'] = get_timestamp()
-    with open(checkpoint_file, 'w') as f:
-        json.dump(checkpoint, f, indent=2)
-    logger.debug(f"Checkpoint saved: {len(checkpoint.get('completed_accounts', []))} completed")
+    dir_name = os.path.dirname(checkpoint_file) or '.'
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=dir_name, delete=False, suffix='.tmp') as f:
+            json.dump(checkpoint, f, indent=2)
+            temp_path = f.name
+        os.replace(temp_path, checkpoint_file)  # Atomic on POSIX
+        logger.debug(f"Checkpoint saved: {len(checkpoint.get('completed_accounts', []))} completed")
+    except Exception:
+        # Clean up temp file on failure
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
 
 
 def load_account_list(file_path: str) -> List[str]:
@@ -257,6 +275,20 @@ def collect_account(
     resources.extend(s3_resources)
     if tracker:
         tracker.add_resources(len(s3_resources), sum(r.size_gb for r in s3_resources))
+    
+    # Backup region settings are account-level (same across all regions), collect once
+    if tracker:
+        tracker.update_task("Collecting Backup region settings...")
+    # Use first region to make the API call, but treat as account-level resource
+    backup_region = regions[0] if regions else 'us-east-1'
+    backup_settings = collect_backup_region_settings(session, backup_region, account_id)
+    # Change region to 'global' since settings apply account-wide
+    for resource in backup_settings:
+        resource.region = 'global'
+        resource.resource_id = f"arn:aws:backup:{account_id}:region-settings"
+    resources.extend(backup_settings)
+    if tracker and backup_settings:
+        tracker.add_resources(len(backup_settings), 0)
     
     # Regional resources
     for region in regions:
@@ -1379,6 +1411,9 @@ def collect_backup_region_settings(session: boto3.Session, region: str, account_
     
     This is critical for understanding why resources might not be backed up even
     when they're in a backup selection - the resource type must be opted-in.
+    
+    Note: These settings are actually account-level (same across all regions).
+    Collected once per account in collect_account() and marked as 'global' region.
     """
     resources = []
     try:
@@ -1471,7 +1506,7 @@ def collect_region(session: boto3.Session, region: str, account_id: str, tracker
     resources.extend(collect_and_track("Backup plans", collect_backup_plans, session, region, account_id))
     resources.extend(collect_and_track("Backup selections", collect_backup_selections, session, region, account_id))
     resources.extend(collect_and_track("Backup protected resources", collect_backup_protected_resources, session, region, account_id))
-    resources.extend(collect_and_track("Backup region settings", collect_backup_region_settings, session, region, account_id))
+    # Note: Backup region settings collected once per account in collect_account(), not per region
     
     return resources
 
@@ -1560,7 +1595,9 @@ Large Environment Examples:
     )
     parser.add_argument(
         '--external-id',
-        help='External ID for role assumption (applies to all role assumptions)'
+        default=os.environ.get('CCA_EXTERNAL_ID'),
+        help='External ID for role assumption (applies to all role assumptions). '
+             'Can also be set via CCA_EXTERNAL_ID env var to avoid shell history exposure.'
     )
     parser.add_argument(
         '--skip-accounts',
@@ -1968,6 +2005,11 @@ Large Environment Examples:
     
     if len(batches) > 1:
         print(f"\nTo merge batches: python3 scripts/merge_batch_outputs.py {output_base}/")
+    
+    # Exit with error if all accounts failed
+    if not all_collected_accounts and checkpoint.get('failed_accounts'):
+        print(f"\nERROR: All {len(checkpoint['failed_accounts'])} account(s) failed to collect.")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

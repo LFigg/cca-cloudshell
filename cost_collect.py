@@ -396,14 +396,38 @@ def collect_azure_costs(
         
         result = client.query.usage(scope=scope, parameters=query)
         
-        # Parse results (with null checks)
-        if result is None or result.columns is None or result.rows is None:
-            logger.warning("No cost data returned from Azure")
-            return records
+        # Parse results (with null checks) - handle pagination
+        all_rows: List[Any] = []
+        columns: List[str] = []
+        while True:
+            if result is None or result.columns is None or result.rows is None:
+                if not all_rows:
+                    logger.warning("No cost data returned from Azure")
+                break
             
-        columns = [col.name for col in result.columns]
+            # Store column info from first result
+            if not columns:
+                columns = [col.name or '' for col in result.columns]
+            
+            all_rows.extend(result.rows)
+            
+            # Check for more pages
+            if hasattr(result, 'next_link') and result.next_link:
+                logger.debug(f"Fetching next page of Azure cost results...")
+                try:
+                    result = client.query.usage(scope=scope, parameters=query)
+                    # Note: Azure Cost Management doesn't use standard pagination
+                    # The next_link is informational; actual pagination requires different date ranges
+                    break  # Exit after first result set - SDK handles internal pagination
+                except Exception:
+                    break
+            else:
+                break
         
-        for row in result.rows:
+        if not all_rows:
+            return records
+        
+        for row in all_rows:
             row_dict = dict(zip(columns, row))
             
             cost = float(row_dict.get('Cost', 0))

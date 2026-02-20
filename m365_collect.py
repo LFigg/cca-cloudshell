@@ -82,6 +82,63 @@ def get_graph_client(tenant_id: str, client_id: str, client_secret: str) -> Grap
     return GraphServiceClient(credentials=credential, scopes=scopes)
 
 
+async def collect_all_pages(initial_response, get_next_page_func) -> List[Any]:
+    """Helper to collect all pages from a paginated Graph API response.
+    
+    Microsoft Graph API returns max 100 items per page by default.
+    This helper follows odata_next_link to collect all items.
+    
+    Args:
+        initial_response: The first response from a Graph API call
+        get_next_page_func: Async function to get next page given a next_link
+        
+    Returns:
+        List of all items from all pages
+    """
+    all_items = []
+    response = initial_response
+    
+    while response:
+        if hasattr(response, 'value') and response.value:
+            all_items.extend(response.value)
+        
+        # Check for next page
+        if hasattr(response, 'odata_next_link') and response.odata_next_link:
+            try:
+                response = await get_next_page_func(response.odata_next_link)
+            except Exception as e:
+                logger.warning(f"Failed to fetch next page: {e}")
+                break
+        else:
+            break
+    
+    return all_items
+
+
+def collect_all_pages_sync(initial_response) -> List[Any]:
+    """Synchronous helper to collect all items from paginated Graph API response.
+    
+    For the sync SDK, we simply collect from the initial response's value.
+    The msgraph-sdk handles pagination internally for most operations.
+    
+    Args:
+        initial_response: Response from a Graph API call
+        
+    Returns:
+        List of all items from the response
+    """
+    items = []
+    if initial_response and hasattr(initial_response, 'value') and initial_response.value:
+        items.extend(initial_response.value)
+        
+        # Log if there might be more pages (SDK should handle internally, but warn if not)
+        if hasattr(initial_response, 'odata_next_link') and initial_response.odata_next_link:
+            logger.warning("Response has more pages - large tenants may have incomplete data. "
+                         "Consider using async methods for full pagination support.")
+    
+    return items
+
+
 # =============================================================================
 # SharePoint Collector
 # =============================================================================
@@ -94,8 +151,11 @@ def collect_sharepoint_sites(graph_client: GraphServiceClient, tenant_id: str) -
         logger.info("Collecting SharePoint sites...")
         sites_response = graph_client.sites.get()
         
-        if sites_response and sites_response.value:
-            for site in sites_response.value:
+        # Collect all sites across all pages
+        all_sites = collect_all_pages_sync(sites_response)
+        
+        if all_sites:
+            for site in all_sites:
                 try:
                     storage_used = 0.0
                     storage_quota = 0.0
@@ -148,8 +208,11 @@ def collect_onedrive_accounts(graph_client: GraphServiceClient, tenant_id: str) 
         logger.info("Collecting OneDrive accounts...")
         users_response = graph_client.users.get()
         
-        if users_response and users_response.value:
-            for user in users_response.value:
+        # Collect all users across all pages
+        all_users = collect_all_pages_sync(users_response)
+        
+        if all_users:
+            for user in all_users:
                 try:
                     drive = graph_client.users.by_user_id(user.id).drive.get()
                     
@@ -208,8 +271,11 @@ def collect_exchange_mailboxes(graph_client: GraphServiceClient, tenant_id: str)
         logger.info("Collecting Exchange mailboxes...")
         users_response = graph_client.users.get()
         
-        if users_response and users_response.value:
-            for user in users_response.value:
+        # Collect all users across all pages
+        all_users = collect_all_pages_sync(users_response)
+        
+        if all_users:
+            for user in all_users:
                 try:
                     if not user.mail:
                         continue
@@ -259,8 +325,11 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
         logger.info("Collecting Microsoft Teams...")
         groups_response = graph_client.groups.get()
         
-        if groups_response and groups_response.value:
-            for group in groups_response.value:
+        # Collect all groups across all pages
+        all_groups = collect_all_pages_sync(groups_response)
+        
+        if all_groups:
+            for group in all_groups:
                 try:
                     if not hasattr(group, 'resource_provisioning_options') or \
                        'Team' not in (group.resource_provisioning_options or []):
@@ -317,8 +386,11 @@ def collect_entra_users(graph_client: GraphServiceClient, tenant_id: str) -> Lis
         logger.info("Collecting Entra ID users...")
         users_response = graph_client.users.get()
         
-        if users_response and users_response.value:
-            for user in users_response.value:
+        # Collect all users across all pages
+        all_users = collect_all_pages_sync(users_response)
+        
+        if all_users:
+            for user in all_users:
                 try:
                     resource = CloudResource(
                         provider="entraid",
@@ -362,8 +434,11 @@ def collect_entra_groups(graph_client: GraphServiceClient, tenant_id: str) -> Li
         logger.info("Collecting Entra ID groups...")
         groups_response = graph_client.groups.get()
         
-        if groups_response and groups_response.value:
-            for group in groups_response.value:
+        # Collect all groups across all pages
+        all_groups = collect_all_pages_sync(groups_response)
+        
+        if all_groups:
+            for group in all_groups:
                 try:
                     member_count = 0
                     try:

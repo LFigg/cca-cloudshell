@@ -138,7 +138,7 @@ def create_large_ec2_environment(region: str, num_instances: int, vpc_id: str, s
             if random.choice(states) == "stopped":
                 try:
                     ec2.stop_instances(InstanceIds=[instance_id])
-                except:
+                except Exception:
                     pass
         except Exception as e:
             print(f"Failed to create instance: {e}")
@@ -271,7 +271,7 @@ def create_rds_environment(region: str, num_instances: int, num_clusters: int):
                         DBSnapshotIdentifier=snap_identifier,
                         DBInstanceIdentifier=identifier,
                     )
-                except:
+                except Exception:
                     pass
         except Exception as e:
             pass
@@ -298,7 +298,7 @@ def create_rds_environment(region: str, num_instances: int, num_clusters: int):
                         DBClusterSnapshotIdentifier=f"{cluster_id}-snap",
                         DBClusterIdentifier=cluster_id,
                     )
-                except:
+                except Exception:
                     pass
         except Exception as e:
             pass
@@ -379,7 +379,7 @@ def create_lambda_environment(region: str, num_functions: int):
             AssumeRolePolicyDocument=json.dumps(assume_role_policy),
         )
         role_arn = role["Role"]["Arn"]
-    except:
+    except Exception:
         role_arn = f"arn:aws:iam::123456789012:role/lambda-role-{region}"
     
     runtimes = ["python3.9", "python3.10", "python3.11", "nodejs18.x", "nodejs20.x", "java17", "go1.x"]
@@ -464,7 +464,7 @@ def create_eks_environment(region: str, num_clusters: int, subnet_id: str) -> li
                 "Statement": [{"Effect": "Allow", "Principal": {"Service": "eks.amazonaws.com"}, "Action": "sts:AssumeRole"}]
             }),
         )
-    except:
+    except Exception:
         pass  # Role may already exist
     
     role_arn = f"arn:aws:iam::123456789012:role/eks-cluster-role"
@@ -502,7 +502,7 @@ def create_backup_environment(region: str):
     for vault_name in vault_names:
         try:
             backup.create_backup_vault(BackupVaultName=f"{vault_name}-{region.replace('-', '')}")
-        except:
+        except Exception:
             pass
     
     # Create backup plans
@@ -559,7 +559,7 @@ def create_backup_environment(region: str):
                     "Rules": plan["rules"],
                 }
             )
-        except:
+        except Exception:
             pass
 
 
