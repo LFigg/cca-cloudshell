@@ -1,0 +1,22 @@
+# CCA CloudShell - Azure Configuration
+#
+# Use this config when collecting from Azure subscriptions.
+# Works automatically in Azure Cloud Shell or with 'az login'.
+#
+# Usage:
+#   python collect.py --cloud azure --config config-examples/azure.yaml
+
+org_name: "acme-corp"
+output: "./collections"
+log_level: INFO
+
+azure:
+  # Specific subscription (comment out to collect ALL accessible subscriptions)
+  # subscription: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  
+  # Filter to specific regions (optional)
+  # regions:
+  #   - eastus
+  #   - westus2
+  #   - westeurope
+  #   - northeurope

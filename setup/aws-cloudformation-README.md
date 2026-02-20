@@ -6,7 +6,7 @@ This directory contains CloudFormation templates for setting up AWS permissions 
 
 | Template | Purpose |
 |----------|---------|
-| [cca-collector-role.yaml](cca-collector-role.yaml) | IAM role with read-only permissions for collection |
+| [aws-iam-role.yaml](aws-iam-role.yaml) | IAM role with read-only permissions for collection |
 
 ---
 
@@ -19,7 +19,7 @@ Deploy the stack in your AWS account:
 ```bash
 aws cloudformation create-stack \
   --stack-name cca-collector \
-  --template-body file://cloudformation/cca-collector-role.yaml \
+  --template-body file://setup/aws-iam-role.yaml \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -38,7 +38,7 @@ Deploy with Organizations access enabled:
 ```bash
 aws cloudformation create-stack \
   --stack-name cca-collector \
-  --template-body file://cloudformation/cca-collector-role.yaml \
+  --template-body file://setup/aws-iam-role.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameters \
     ParameterKey=EnableOrganizationsAccess,ParameterValue=true
@@ -55,7 +55,7 @@ MGMT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 # Deploy to member account (using profile or assumed role)
 aws cloudformation create-stack \
   --stack-name cca-collector \
-  --template-body file://cloudformation/cca-collector-role.yaml \
+  --template-body file://setup/aws-iam-role.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameters \
     ParameterKey=TrustedAccountId,ParameterValue=$MGMT_ACCOUNT \
@@ -97,7 +97,7 @@ For organizations with many accounts, use CloudFormation StackSets:
 # Create StackSet (from management account)
 aws cloudformation create-stack-set \
   --stack-set-name cca-collector-roles \
-  --template-body file://cloudformation/cca-collector-role.yaml \
+  --template-body file://setup/aws-iam-role.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --permission-model SERVICE_MANAGED \
   --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \

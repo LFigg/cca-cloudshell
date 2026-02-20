@@ -1,0 +1,21 @@
+# CCA CloudShell - AWS Single Account Configuration
+# 
+# Use this config when collecting from a single AWS account using 
+# direct credentials (e.g., running in AWS CloudShell or with aws configure).
+#
+# Usage:
+#   python collect.py --cloud aws --config config-examples/aws-single-account.yaml
+
+org_name: "acme-corp"
+output: "./collections"
+log_level: INFO
+
+aws:
+  # Specific regions to collect (comment out for all enabled regions)
+  regions:
+    - us-east-1
+    - us-west-2
+    - eu-west-1
+  
+  # Include S3 bucket sizes (adds CloudWatch API calls, slower but accurate)
+  include_storage_sizes: false

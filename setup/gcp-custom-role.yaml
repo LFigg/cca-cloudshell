@@ -1,0 +1,97 @@
+# CCA CloudShell - GCP Custom Role
+# 
+# This custom role provides read-only permissions needed by the CCA collector.
+# Use this instead of roles/viewer for least-privilege access.
+#
+# Deploy with:
+#   gcloud iam roles create CCACloudShellReader \
+#     --project=PROJECT_ID \
+#     --file=setup/gcp-custom-role.yaml
+#
+# Or at organization level:
+#   gcloud iam roles create CCACloudShellReader \
+#     --organization=ORG_ID \
+#     --file=setup/gcp-custom-role.yaml
+
+title: "CCA CloudShell Reader"
+description: "Read-only access for CCA CloudShell cloud assessment collector"
+stage: "GA"
+includedPermissions:
+  # Resource Manager
+  - resourcemanager.projects.get
+  - resourcemanager.projects.list
+  
+  # Compute Engine - Instances
+  - compute.instances.list
+  - compute.instances.get
+  - compute.zones.list
+  - compute.regions.list
+  
+  # Compute Engine - Disks
+  - compute.disks.list
+  - compute.disks.get
+  
+  # Compute Engine - Snapshots
+  - compute.snapshots.list
+  - compute.snapshots.get
+  
+  # Cloud Storage
+  - storage.buckets.list
+  - storage.buckets.get
+  
+  # Cloud SQL
+  - cloudsql.instances.list
+  - cloudsql.instances.get
+  - cloudsql.backupRuns.list
+  - cloudsql.backupRuns.get
+  
+  # Cloud Spanner
+  - spanner.instances.list
+  - spanner.instances.get
+  - spanner.databases.list
+  - spanner.databases.get
+  
+  # GKE (Google Kubernetes Engine)
+  - container.clusters.list
+  - container.clusters.get
+  - container.nodes.list
+  - container.nodes.get
+  
+  # Cloud Functions
+  - cloudfunctions.functions.list
+  - cloudfunctions.functions.get
+  
+  # Cloud Run
+  - run.services.list
+  - run.services.get
+  
+  # Filestore
+  - file.instances.list
+  - file.instances.get
+  
+  # Memorystore (Redis)
+  - redis.instances.list
+  - redis.instances.get
+  
+  # Memorystore (Memcached)
+  - memcache.instances.list
+  - memcache.instances.get
+  
+  # BigQuery
+  - bigquery.datasets.get
+  - bigquery.tables.get
+  - bigquery.tables.list
+  
+  # Firestore / Datastore
+  - datastore.databases.list
+  - datastore.databases.get
+  
+  # Backup and DR (if using Google Cloud Backup)
+  - backupdr.backupVaults.list
+  - backupdr.backupVaults.get
+  - backupdr.backupPlans.list
+  - backupdr.backupPlans.get
+  - backupdr.dataSources.list
+  - backupdr.dataSources.get
+  - backupdr.backups.list
+  - backupdr.backups.get

@@ -9,12 +9,14 @@ Creates an Excel workbook with:
 - Backup Selections tab: Resources assigned to backup plans (if any)
 """
 import json
+import os
+import re
 import sys
 from collections import defaultdict
 from typing import Dict, List, Any, Optional
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl import Workbook  # type: ignore[import-untyped]
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side  # type: ignore[import-untyped]
+from openpyxl.utils.dataframe import dataframe_to_rows  # type: ignore[import-untyped]
 
 
 def load_inventory(filepath: str) -> Dict[str, Any]:
@@ -150,6 +152,12 @@ def get_resource_category(resource_type: str) -> str:
     if resource_type in object_storage:
         return 'Object Storage'
     
+    # File storage (EFS, FSx, Azure Files, etc.)
+    file_storage = ['aws:efs:filesystem', 'aws:fsx:filesystem', 'azure:files:share', 
+                    'gcp:filestore:instance']
+    if resource_type in file_storage:
+        return 'File Storage'
+    
     # Backup/Recovery resources
     backup_types = ['aws:backup:plan', 'aws:backup:vault', 'aws:backup:selection',
                     'aws:backup:protected-resource', 'azure:recovery:vault', 
@@ -279,7 +287,7 @@ def build_resource_id_to_account_map(protected_resources: List[Dict]) -> Dict[st
     return id_to_account
 
 
-def get_resource_account(resource: Dict, id_to_account: Dict[str, str] = None) -> str:
+def get_resource_account(resource: Dict, id_to_account: Optional[Dict[str, str]] = None) -> str:
     """Get account ID for a resource.
     
     Uses account_id field directly from resource (set by collector).
@@ -308,7 +316,7 @@ def get_backup_plan_for_resource(
     selection_index: Dict[str, List[str]],
     protected_set: set,
     backup_plans: List[Dict],
-    wildcard_selections: List[tuple] = None
+    wildcard_selections: Optional[List[tuple]] = None
 ) -> tuple:
     """
     Determine backup plan and protection source for a resource.
@@ -498,6 +506,40 @@ def is_replica_snapshot(snapshot: Dict) -> bool:
     return False
 
 
+def is_ami_snapshot(snapshot: Dict) -> bool:
+    """Check if a snapshot was created as part of AMI generation.
+    
+    AMI-created snapshots are artifacts of machine image creation, not backups.
+    They should not be counted as protection coverage.
+    
+    Detection patterns:
+    - Description: "Created by CreateImage(i-xxxxx) for ami-xxxxx"
+    - Description: "Auto-created snapshot for AMI"
+    - Description: "Copied for DestinationAmi ami-xxxxx"
+    - Tags: aws:backup:source-resource pointing to an AMI
+    """
+    metadata = snapshot.get('metadata', {}) or {}
+    description = (metadata.get('description') or '').lower()
+    tags = snapshot.get('tags', {}) or {}
+    
+    # Check description patterns
+    if 'createimage' in description:
+        return True
+    if 'auto-created snapshot for ami' in description:
+        return True
+    if 'for ami-' in description or 'for ami ' in description:
+        return True
+    if 'destinationami' in description:
+        return True
+    
+    # Check if source resource tag points to an AMI
+    source_resource = tags.get('aws:backup:source-resource', '')
+    if ':image/' in source_resource or source_resource.startswith('ami-'):
+        return True
+    
+    return False
+
+
 def get_eks_cluster(tags: Dict) -> str:
     """Detect EKS cluster membership from instance tags.
     
@@ -550,11 +592,10 @@ def generate_report(inventory_path: str, output_path: str):
     protected_set = build_protected_resources_set(protected_resources)
     id_to_account = build_resource_id_to_account_map(protected_resources)
     
-    # Filter out AMI snapshots
-    user_snapshots = [
-        s for s in snapshots 
-        if 'Auto-created snapshot for AMI' not in s.get('metadata', {}).get('description', '')
-    ]
+    # Separate AMI snapshots from user/backup snapshots
+    # AMI snapshots are artifacts of machine image creation, not backups
+    user_snapshots = [s for s in snapshots if not is_ami_snapshot(s)]
+    ami_snapshots = [s for s in snapshots if is_ami_snapshot(s)]
     
     # Build volume-to-instance mapping
     volume_to_instance = {}
@@ -868,10 +909,38 @@ def generate_report(inventory_path: str, output_path: str):
             'protection_status': protection_status
         })
     
+    # Process AMI snapshots separately - these are artifacts, not backups
+    ebs_ami_snapshots = [s for s in ami_snapshots if s['resource_type'] == 'aws:ec2:snapshot']
+    
+    for snap in ebs_ami_snapshots:
+        rows.append({
+            'service_family': 'EBS',
+            'account': snap.get('account_id', ''),
+            'instance_name': '(AMI artifact)',
+            'instance_id': '',
+            'instance_type': '',
+            'eks_cluster': '',
+            'instance_region': snap['region'],
+            'instance_tags': '',
+            'volume_name': f"(source: {snap.get('parent_resource_id', 'unknown')})",
+            'volume_id': snap.get('parent_resource_id', ''),
+            'volume_size_gb': '',
+            'snapshot_name': snap['name'],
+            'snapshot_id': snap['resource_id'],
+            'snapshot_size_gb': snap['size_gb'],
+            'snapshot_created': snap.get('metadata', {}).get('start_time', ''),
+            'snapshot_description': snap.get('metadata', {}).get('description', ''),
+            'is_replica': 'Yes' if is_replica_snapshot(snap) else '',
+            'backup_plan': '',
+            'protection_source': '',
+            'protection_status': 'AMI Artifact'
+        })
+    
     # Calculate summary statistics
     protected = len([r for r in rows if 'Protected' in r['protection_status'] or 'In Backup Plan' in r['protection_status']])
     unprotected = len([r for r in rows if 'Unprotected' in r['protection_status']])
     in_backup_plan = len([r for r in rows if 'In Backup Plan' in r['protection_status']])
+    ami_artifacts = len([r for r in rows if r['protection_status'] == 'AMI Artifact'])
     rows_with_snapshots = len([r for r in rows if r['snapshot_id']])
     
     unique_instances = len(set(r['instance_id'] for r in rows if r['instance_id']))
@@ -887,6 +956,7 @@ def generate_report(inventory_path: str, output_path: str):
     linked_snapshot_size = total_snapshot_size - orphan_snapshot_size
     total_rds_size = sum(r['size_gb'] for r in rds_instances)
     total_rds_snapshot_size = sum(s['size_gb'] for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot'])
+    ami_snapshot_size = sum(s['size_gb'] for s in ami_snapshots if s['resource_type'] == 'aws:ec2:snapshot')
     
     # Calculate protected vs unprotected sizes
     protected_volume_ids = set(r['volume_id'] for r in rows if r['volume_id'] and 'Protected' in r['protection_status'])
@@ -937,9 +1007,10 @@ def generate_report(inventory_path: str, output_path: str):
         ["EBS Volumes (Total)", len(ebs_volumes), round(total_volume_size, 1), ""],
         ["  - Attached Volumes", len(ebs_volumes) - len(orphan_volumes), round(attached_volume_size, 1), ""],
         ["  - Orphan Volumes", len(orphan_volumes), round(orphan_volume_size, 1), "Detached from instances"],
-        ["EBS Snapshots (Total)", len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']), round(total_snapshot_size, 1), ""],
+        ["EBS Snapshots (Total)", len([s for s in user_snapshots if s['resource_type'] == 'aws:ec2:snapshot']), round(total_snapshot_size, 1), "Excludes AMI artifacts"],
         ["  - Linked Snapshots", len(ebs_snapshots) - len(orphan_snapshots), round(linked_snapshot_size, 1), "Have matching volume"],
         ["  - Orphan Snapshots", len(orphan_snapshots), round(orphan_snapshot_size, 1), "No matching volume (cross-region copies, etc.)"],
+        ["AMI Snapshots", len(ebs_ami_snapshots), round(ami_snapshot_size, 1), "Created by AMI generation, not backups"],
         ["RDS Databases", len(rds_instances), round(total_rds_size, 1), "Allocated storage"],
         ["RDS Snapshots", len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']]), round(total_rds_snapshot_size, 1), ""],
         ["Backup Plans", len([r for r in backup_plans if r['resource_type'] == 'aws:backup:plan']), "", ""],
@@ -1350,8 +1421,66 @@ def generate_report(inventory_path: str, output_path: str):
             print(f"  Unprotected Volume Size: {unprotected_volume_size:,.1f} GB ({unprotected_volume_size/total_volume_size*100:.1f}%)")
 
 
+def generate_output_filename(inventory_path: str, data: Dict[str, Any]) -> str:
+    """Generate a unique output filename based on inventory data.
+    
+    Priority for identifier:
+    1. org_name field (if set by user/collector)
+    2. First account_id (shortened to last 4 digits for readability)
+    3. Fallback to 'unknown'
+    
+    Also includes run_id timestamp for uniqueness.
+    
+    Args:
+        inventory_path: Path to the inventory file
+        data: Loaded inventory data
+    
+    Returns:
+        Output path like 'protection_report_acme-corp_162849.xlsx'
+    """
+    # Get identifier - prefer org_name, fallback to account_id
+    identifier = data.get('org_name', '')
+    
+    if not identifier:
+        account_id = data.get('account_id', '')
+        if isinstance(account_id, list):
+            account_id = account_id[0] if account_id else ''
+        # Use last 4 digits of account ID for brevity
+        identifier = account_id[-4:] if account_id else 'unknown'
+    
+    # Sanitize identifier for filename (remove special chars)
+    identifier = re.sub(r'[^\w\-]', '_', str(identifier))
+    
+    # Extract timestamp from run_id (format: YYYYMMDD-HHMMSS-uuid)
+    run_id = data.get('run_id', '')
+    timestamp = ''
+    if run_id:
+        # Extract the HHMMSS part
+        parts = run_id.split('-')
+        if len(parts) >= 2:
+            timestamp = parts[1]  # HHMMSS
+    
+    # Build filename
+    if timestamp:
+        filename = f"protection_report_{identifier}_{timestamp}.xlsx"
+    else:
+        filename = f"protection_report_{identifier}.xlsx"
+    
+    # Put output in same directory as input
+    input_dir = os.path.dirname(inventory_path)
+    return os.path.join(input_dir, filename) if input_dir else filename
+
+
 if __name__ == '__main__':
-    inventory_path = sys.argv[1] if len(sys.argv) > 1 else 'tests/sample_output/inventory.json'
-    output_path = sys.argv[2] if len(sys.argv) > 2 else 'tests/sample_output/protection_report.xlsx'
+    inventory_path = sys.argv[1] if len(sys.argv) > 1 else 'tests/sample_output/cca_inv_162849.json'
+    
+    # If output path not provided, auto-generate based on inventory data
+    if len(sys.argv) > 2:
+        output_path = sys.argv[2]
+    else:
+        # Load inventory to extract identifiers for filename
+        with open(inventory_path) as f:
+            temp_data = json.load(f)
+        output_path = generate_output_filename(inventory_path, temp_data)
     
     generate_report(inventory_path, output_path)

@@ -1,0 +1,47 @@
+# CCA CloudShell - AWS Multi-Account (Organizations) Configuration
+#
+# Use this config when collecting across an AWS Organization.
+# Run from the management account or a delegated administrator account.
+#
+# Prerequisites:
+#   1. Deploy the CCACollectorRole to all member accounts:
+#      aws cloudformation create-stack-set \
+#        --stack-set-name cca-collector \
+#        --template-body file://setup/aws-iam-role.yaml \
+#        --capabilities CAPABILITY_NAMED_IAM \
+#        --permission-model SERVICE_MANAGED \
+#        --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false
+#
+#   2. Set the CCA_EXTERNAL_ID environment variable:
+#      export CCA_EXTERNAL_ID="your-secret-external-id"
+#
+# Usage:
+#   python collect.py --cloud aws --config config-examples/aws-organization.yaml
+
+org_name: "acme-corp"
+output: "./collections"
+log_level: INFO
+
+aws:
+  # IAM role name deployed to all member accounts
+  org_role: CCACollectorRole
+  
+  # External ID for secure role assumption (use env var!)
+  external_id: ${CCA_EXTERNAL_ID}
+  
+  # Regions to collect (comment out for all enabled regions)
+  # regions:
+  #   - us-east-1
+  #   - us-west-2
+  
+  # Skip specific accounts (sandbox, security, etc.)
+  skip_accounts:
+    - "999999999999"  # sandbox
+    # - "888888888888"  # security
+  
+  # Batch size for checkpointing (useful for large organizations)
+  # Creates checkpoint files allowing resume if interrupted
+  batch_size: 25
+  
+  # Include S3 bucket sizes via CloudWatch
+  include_storage_sizes: false

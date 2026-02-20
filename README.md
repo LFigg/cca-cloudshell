@@ -19,12 +19,38 @@ Collects cloud resource inventory including:
 curl -sL https://github.com/LFigg/cca-cloudshell/archive/refs/heads/main.tar.gz | tar xz
 cd cca-cloudshell-main && ./setup.sh
 
-# Run in your cloud shell (credentials automatic)
+# Run the unified collector (recommended)
+python3 collect.py              # Interactive mode - guides you through cloud selection
+python3 collect.py --cloud aws  # Direct mode - specify cloud upfront
+
+# Or run individual collectors directly
 python3 aws_collect.py      # AWS
 python3 azure_collect.py    # Azure
 python3 gcp_collect.py      # GCP
 python3 m365_collect.py     # Microsoft 365
 python3 cost_collect.py --aws  # Backup/snapshot costs (run from management account)
+```
+
+## Unified Collector
+
+The `collect.py` entry point provides:
+- **Cloud Selection**: Choose AWS, Azure, GCP, or M365
+- **Permission Verification**: Validates credentials before collection
+- **Guided Experience**: Interactive prompts for first-time users
+
+```bash
+# Interactive mode
+python3 collect.py
+
+# Direct mode (for scripts/CI)
+python3 collect.py --cloud aws
+python3 collect.py --cloud azure --skip-check  # Skip permission verification
+
+# Pass arguments to underlying collector
+python3 collect.py --cloud aws -- --org-role CCARole --regions us-east-1
+
+# Show collector-specific help
+python3 collect.py --cloud aws --help-collector
 ```
 
 ## Output
@@ -53,6 +79,8 @@ Each collector generates:
 | [M365 Collector](docs/collectors/m365.md) | App registration, Graph API |
 | [Cost Collector](docs/collectors/cost.md) | Backup/snapshot spending |
 | [Required Permissions](docs/PERMISSIONS.md) | IAM policies for each cloud |
+| [Permission Setup Scripts](setup/README.md) | Setup scripts for Azure/GCP |
+| [Config Examples](config-examples/README.md) | YAML config file examples |
 | [Output Formats](docs/output-formats.md) | JSON schema, CSV fields |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and solutions |
 
@@ -102,22 +130,24 @@ Deploy the IAM role with required permissions:
 ```bash
 aws cloudformation create-stack \
   --stack-name cca-collector \
-  --template-body file://cloudformation/cca-collector-role.yaml \
+  --template-body file://setup/aws-iam-role.yaml \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-See [cloudformation/README.md](cloudformation/README.md) for multi-account and StackSet deployment.
+See [setup/](setup/) for multi-account StackSet deployment and Azure/GCP setup scripts.
 
 ## Project Structure
 
 ```
 cca-cloudshell/
+├── collect.py              # Unified collector entry point
 ├── aws_collect.py          # AWS collector
 ├── azure_collect.py        # Azure collector
 ├── cost_collect.py         # Cost analyzer
 ├── gcp_collect.py          # GCP collector
 ├── m365_collect.py         # M365 collector
-├── cloudformation/         # AWS CloudFormation templates
+├── setup/                  # IAM/permission setup scripts
+├── config-examples/        # YAML config file examples
 ├── lib/                    # Shared models and utilities
 ├── scripts/                # Report generators
 ├── docs/                   # Documentation

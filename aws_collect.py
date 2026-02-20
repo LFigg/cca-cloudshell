@@ -40,7 +40,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 
 # boto3 is pre-installed in AWS CloudShell
@@ -55,6 +55,7 @@ from lib.utils import (
     get_name_from_tags, write_json, write_csv, setup_logging, print_summary_table,
     retry_with_backoff, ProgressTracker
 )
+from lib.config import load_config, generate_sample_config
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +226,8 @@ def collect_account(
     session: boto3.Session,
     account_id: str,
     regions: Optional[List[str]] = None,
-    tracker: Optional[ProgressTracker] = None
+    tracker: Optional[ProgressTracker] = None,
+    include_storage_sizes: bool = False
 ) -> List[CloudResource]:
     """
     Collect all resources from a single AWS account.
@@ -235,6 +237,7 @@ def collect_account(
         account_id: AWS account ID
         regions: List of regions to collect from (None = all enabled)
         tracker: Optional progress tracker for UI feedback
+        include_storage_sizes: If True, query CloudWatch for S3 bucket sizes
     
     Returns:
         List of CloudResource objects
@@ -250,7 +253,7 @@ def collect_account(
     # S3 is global
     if tracker:
         tracker.update_task("Collecting S3 buckets...")
-    s3_resources = collect_s3_buckets(session, account_id)
+    s3_resources = collect_s3_buckets(session, account_id, include_sizes=include_storage_sizes)
     resources.extend(s3_resources)
     if tracker:
         tracker.add_resources(len(s3_resources), sum(r.size_gb for r in s3_resources))
@@ -443,6 +446,49 @@ def collect_rds_instances(session: boto3.Session, region: str, account_id: str) 
     return resources
 
 
+def get_aurora_cluster_storage(session: boto3.Session, region: str, cluster_id: str) -> float:
+    """Get actual storage used by an Aurora cluster from CloudWatch metrics.
+    
+    Aurora clusters report AllocatedStorage as 1 in the RDS API, but the actual
+    storage can be retrieved from CloudWatch's VolumeBytesUsed metric.
+    
+    Args:
+        session: boto3 session
+        region: AWS region
+        cluster_id: Aurora cluster identifier (not ARN)
+    
+    Returns:
+        Storage in GB, or 0.0 if metric unavailable
+    """
+    try:
+        cloudwatch = session.client('cloudwatch', region_name=region)
+        
+        # Get the most recent VolumeBytesUsed metric (last 24 hours)
+        response = cloudwatch.get_metric_statistics(
+            Namespace='AWS/RDS',
+            MetricName='VolumeBytesUsed',
+            Dimensions=[
+                {'Name': 'DBClusterIdentifier', 'Value': cluster_id}
+            ],
+            StartTime=datetime.now(timezone.utc) - timedelta(hours=24),
+            EndTime=datetime.now(timezone.utc),
+            Period=3600,  # 1 hour granularity
+            Statistics=['Average']
+        )
+        
+        datapoints = response.get('Datapoints', [])
+        if datapoints:
+            # Get the most recent datapoint
+            latest = max(datapoints, key=lambda x: x['Timestamp'])
+            bytes_used = latest.get('Average', 0)
+            # Convert bytes to GB
+            return round(bytes_used / (1024 ** 3), 2)
+    except Exception as e:
+        logger.debug(f"[{region}] Could not get CloudWatch storage for Aurora cluster {cluster_id}: {e}")
+    
+    return 0.0
+
+
 def collect_rds_clusters(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
     """Collect RDS Aurora clusters."""
     resources = []
@@ -452,6 +498,14 @@ def collect_rds_clusters(session: boto3.Session, region: str, account_id: str) -
         
         for page in paginator.paginate():
             for cluster in page['DBClusters']:
+                cluster_id = cluster.get('DBClusterIdentifier', '')
+                
+                # Aurora clusters report AllocatedStorage as 1, get actual from CloudWatch
+                api_storage = float(cluster.get('AllocatedStorage', 0))
+                cloudwatch_storage = get_aurora_cluster_storage(session, region, cluster_id)
+                # Use CloudWatch value if available and API reports placeholder value
+                actual_storage = cloudwatch_storage if cloudwatch_storage > 0 and api_storage <= 1 else api_storage
+                
                 resource = CloudResource(
                     provider="aws",
                     account_id=account_id,
@@ -459,15 +513,16 @@ def collect_rds_clusters(session: boto3.Session, region: str, account_id: str) -
                     resource_type="aws:rds:cluster",
                     service_family="RDS",
                     resource_id=cluster.get('DBClusterArn', ''),
-                    name=cluster.get('DBClusterIdentifier', ''),
+                    name=cluster_id,
                     tags={},
-                    size_gb=float(cluster.get('AllocatedStorage', 0)),
+                    size_gb=actual_storage,
                     metadata={
                         'engine': cluster.get('Engine'),
                         'engine_version': cluster.get('EngineVersion'),
                         'status': cluster.get('Status'),
                         'multi_az': cluster.get('MultiAZ', False),
-                        'encrypted': cluster.get('StorageEncrypted', False)
+                        'encrypted': cluster.get('StorageEncrypted', False),
+                        'storage_source': 'cloudwatch' if cloudwatch_storage > 0 and api_storage <= 1 else 'api'
                     }
                 )
                 resources.append(resource)
@@ -563,14 +618,62 @@ def collect_rds_cluster_snapshots(session: boto3.Session, region: str, account_i
 # S3 Collector
 # =============================================================================
 
+def get_s3_bucket_size_from_cloudwatch(session: boto3.Session, bucket_name: str, region: str) -> float:
+    """Get S3 bucket size from CloudWatch metrics.
+    
+    Returns size in GB, or 0.0 if metrics unavailable.
+    """
+    try:
+        # CloudWatch metrics for S3 are stored in the bucket's region
+        cw_region = region if region != 'unknown' else 'us-east-1'
+        cloudwatch = session.client('cloudwatch', region_name=cw_region)
+        
+        # Query BucketSizeBytes metric (updated daily by S3)
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(days=3)  # Look back 3 days for latest metric
+        
+        response = cloudwatch.get_metric_statistics(
+            Namespace='AWS/S3',
+            MetricName='BucketSizeBytes',
+            Dimensions=[
+                {'Name': 'BucketName', 'Value': bucket_name},
+                {'Name': 'StorageType', 'Value': 'StandardStorage'}
+            ],
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=86400,  # Daily
+            Statistics=['Average']
+        )
+        
+        datapoints = response.get('Datapoints', [])
+        if datapoints:
+            # Get the most recent datapoint
+            latest = max(datapoints, key=lambda x: x['Timestamp'])
+            size_bytes = latest.get('Average', 0)
+            return size_bytes / (1024 ** 3)  # Convert to GB
+        
+        return 0.0
+    except Exception as e:
+        logger.debug(f"Could not get CloudWatch size for bucket {bucket_name}: {e}")
+        return 0.0
+
+
 @retry_with_backoff(max_attempts=3, exceptions=(ClientError,))
-def collect_s3_buckets(session: boto3.Session, account_id: str) -> List[CloudResource]:
-    """Collect S3 buckets (global service)."""
+def collect_s3_buckets(session: boto3.Session, account_id: str, include_sizes: bool = False) -> List[CloudResource]:
+    """Collect S3 buckets (global service).
+    
+    Args:
+        session: boto3 session
+        account_id: AWS account ID
+        include_sizes: If True, query CloudWatch for bucket sizes (slower but accurate)
+    """
     resources = []
     try:
         s3 = session.client('s3')
         response = s3.list_buckets()
         
+        # First pass: collect bucket info and regions
+        bucket_info = []
         for bucket in response.get('Buckets', []):
             bucket_name = bucket.get('Name', '')
             if not bucket_name:
@@ -592,24 +695,55 @@ def collect_s3_buckets(session: boto3.Session, account_id: str) -> List[CloudRes
             except ClientError:
                 pass
             
+            bucket_info.append({
+                'name': bucket_name,
+                'region': region,
+                'tags': tags,
+                'creation_date': str(bucket.get('CreationDate', ''))
+            })
+        
+        # Second pass: get sizes from CloudWatch if requested
+        total_size_gb = 0.0
+        
+        if include_sizes:
+            logger.info(f"Fetching S3 bucket sizes from CloudWatch ({len(bucket_info)} buckets)...")
+            buckets_by_region: Dict[str, List[Dict]] = {}
+            for info in bucket_info:
+                region = info['region']
+                if region not in buckets_by_region:
+                    buckets_by_region[region] = []
+                buckets_by_region[region].append(info)
+            
+            for region, region_buckets in buckets_by_region.items():
+                for info in region_buckets:
+                    size_gb = get_s3_bucket_size_from_cloudwatch(session, info['name'], region)
+                    info['size_gb'] = size_gb
+                    total_size_gb += size_gb
+        else:
+            for info in bucket_info:
+                info['size_gb'] = 0.0
+        
+        # Create resources
+        for info in bucket_info:
             resource = CloudResource(
                 provider="aws",
                 account_id=account_id,
-                region=region,
+                region=info['region'],
                 resource_type="aws:s3:bucket",
                 service_family="S3",
-                resource_id=f"arn:aws:s3:::{bucket_name}",
-                name=bucket_name,
-                tags=tags,
-                size_gb=0.0,  # S3 size requires CloudWatch metrics
+                resource_id=f"arn:aws:s3:::{info['name']}",
+                name=info['name'],
+                tags=info['tags'],
+                size_gb=info['size_gb'],
                 metadata={
-                    'creation_date': str(bucket.get('CreationDate', '')),
-                    'size_note': 'Use CloudWatch metrics for accurate size'
+                    'creation_date': info['creation_date'],
+                    'size_note': 'Use --include-storage-sizes for accurate sizing' if not include_sizes else None
                 }
             )
             resources.append(resource)
         
-        logger.info(f"Found {len(resources)} S3 buckets")
+        size_note = f" ({total_size_gb:.1f} GB)" if include_sizes else " (sizes not collected)"
+        logger.info(f"Found {len(resources)} S3 buckets{size_note}")
     except Exception as e:
         logger.error(f"Failed to collect S3 buckets: {e}")
     
@@ -1391,10 +1525,24 @@ Large Environment Examples:
     )
     
     # Basic options
+    parser.add_argument('--config', '-c', help='Path to YAML config file')
+    parser.add_argument('--generate-config', action='store_true', 
+                        help='Generate a sample config file and exit')
     parser.add_argument('--profile', help='AWS profile name (optional in CloudShell)')
     parser.add_argument('--regions', help='Comma-separated list of regions (default: all enabled)')
     parser.add_argument('--output', '-o', help='Output directory or S3 path', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
+    parser.add_argument(
+        '--org-name',
+        help='Organization name to include in output (used for report filenames)'
+    )
+    
+    # Data collection options
+    parser.add_argument(
+        '--include-storage-sizes',
+        action='store_true',
+        help='Query CloudWatch for S3 bucket sizes (slower but accurate)'
+    )
     
     # Multi-account options
     parser.add_argument(
@@ -1462,7 +1610,28 @@ Large Environment Examples:
     )
     
     args = parser.parse_args()
+    
+    # Handle --generate-config
+    if args.generate_config:
+        print(generate_sample_config())
+        sys.exit(0)
+    
     setup_logging(args.log_level)
+    
+    # Load configuration from file/env/args
+    try:
+        config = load_config(args)
+        if config:
+            logger.debug(f"Loaded configuration: {list(config.keys())}")
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        logger.warning(f"Could not load config file: {e}")
+    
+    # Ensure include_storage_sizes has a default
+    if not hasattr(args, 'include_storage_sizes'):
+        args.include_storage_sizes = False
     
     # Create base session
     try:
@@ -1650,7 +1819,10 @@ Large Environment Examples:
                     
                     tracker.start_account(account_id, account_name or "")
                     
-                    account_resources = collect_account(session, account_id, regions, tracker)
+                    account_resources = collect_account(
+                        session, account_id, regions, tracker,
+                        include_storage_sizes=args.include_storage_sizes
+                    )
                     batch_resources.extend(account_resources)
                     
                     batch_collected.append({
@@ -1687,6 +1859,7 @@ Large Environment Examples:
             'run_id': run_id,
             'timestamp': timestamp,
             'provider': 'aws',
+            'org_name': args.org_name if args.org_name else None,
             'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
             'accounts': batch_collected if is_multi_account else None,
             'regions': regions if regions else 'all',
@@ -1698,6 +1871,7 @@ Large Environment Examples:
             'run_id': run_id,
             'timestamp': timestamp,
             'provider': 'aws',
+            'org_name': args.org_name if args.org_name else None,
             'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
             'accounts': batch_collected if is_multi_account else None,
             'total_resources': len(batch_resources),

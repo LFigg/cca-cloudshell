@@ -179,16 +179,20 @@ def collect_aws_costs(
     try:
         ce = session.client('ce', region_name='us-east-1')  # Cost Explorer is global
         
-        # Build GroupBy - always include SERVICE and USAGE_TYPE
-        group_by = [
-            {'Type': 'DIMENSION', 'Key': 'SERVICE'},
-            {'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}
-        ]
-        
-        # Add LINKED_ACCOUNT for Organizations breakdown
+        # AWS Cost Explorer only allows 2 GroupBy dimensions
+        # When grouping by account, we use LINKED_ACCOUNT + SERVICE
+        # Otherwise, we use SERVICE + USAGE_TYPE for more granular filtering
         if group_by_account:
-            group_by.insert(0, {'Type': 'DIMENSION', 'Key': 'LINKED_ACCOUNT'})
+            group_by = [
+                {'Type': 'DIMENSION', 'Key': 'LINKED_ACCOUNT'},
+                {'Type': 'DIMENSION', 'Key': 'SERVICE'}
+            ]
             logger.info("Grouping costs by linked account (Organizations mode)")
+        else:
+            group_by = [
+                {'Type': 'DIMENSION', 'Key': 'SERVICE'},
+                {'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}
+            ]
         
         # Query for backup-related services
         response = ce.get_cost_and_usage(
@@ -216,11 +220,11 @@ def collect_aws_costs(
                 
                 # Parse keys based on grouping mode
                 if group_by_account:
-                    if len(keys) < 3:
+                    if len(keys) < 2:
                         continue
                     linked_account = keys[0]
                     service = keys[1]
-                    usage_type = keys[2]
+                    usage_type = None  # Not available in org mode
                 else:
                     if len(keys) < 2:
                         continue
@@ -228,14 +232,15 @@ def collect_aws_costs(
                     service = keys[0]
                     usage_type = keys[1]
                 
-                # Filter to backup/snapshot related usage types
-                is_backup_related = any(
-                    bt.lower() in usage_type.lower() 
-                    for bt in AWS_BACKUP_FILTERS['usage_types']
-                )
-                
-                if not is_backup_related:
-                    continue
+                # Filter to backup/snapshot related usage types (only when usage_type is available)
+                if usage_type:
+                    is_backup_related = any(
+                        bt.lower() in usage_type.lower() 
+                        for bt in AWS_BACKUP_FILTERS['usage_types']
+                    )
+                    
+                    if not is_backup_related:
+                        continue
                 
                 metrics = group.get('Metrics', {})
                 cost = float(metrics.get('UnblendedCost', {}).get('Amount', 0))
@@ -246,7 +251,7 @@ def collect_aws_costs(
                     continue
                 
                 # Categorize
-                category = categorize_aws_usage(service, usage_type)
+                category = categorize_aws_usage(service, usage_type or '')
                 
                 record = CostRecord(
                     provider='aws',
@@ -259,7 +264,7 @@ def collect_aws_costs(
                     period_end=period_end,
                     usage_quantity=round(usage_qty, 2) if usage_qty else None,
                     usage_unit=usage_unit if usage_unit else None,
-                    metadata={'usage_type': usage_type}
+                    metadata={'usage_type': usage_type} if usage_type else None
                 )
                 records.append(record)
         

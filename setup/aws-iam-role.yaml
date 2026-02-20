@@ -103,6 +103,9 @@ Resources:
               - rds:DescribeDBSnapshots
               - rds:DescribeDBClusterSnapshots
               
+              # CloudWatch (for Aurora storage metrics)
+              - cloudwatch:GetMetricStatistics
+              
               # S3
               - s3:ListAllMyBuckets
               - s3:GetBucketLocation

@@ -131,13 +131,13 @@ python3 aws_collect.py --org-role CCACollectorRole --skip-accounts 999999999999
 # Deploy IAM role to target account
 aws cloudformation create-stack \
     --stack-name cca-collector \
-    --template-body file://cloudformation/cca-collector-role.yaml \
+    --template-body file://setup/aws-iam-role.yaml \
     --capabilities CAPABILITY_NAMED_IAM
 
 # For cross-account access from management account
 aws cloudformation create-stack \
     --stack-name cca-collector \
-    --template-body file://cloudformation/cca-collector-role.yaml \
+    --template-body file://setup/aws-iam-role.yaml \
     --capabilities CAPABILITY_NAMED_IAM \
     --parameters \
         ParameterKey=TrustedAccountId,ParameterValue=<MGMT_ACCOUNT_ID> \
@@ -327,7 +327,7 @@ Requires `ce:GetCostAndUsage` permission. Enable with CloudFormation:
 ```bash
 aws cloudformation create-stack \
     --stack-name cca-collector \
-    --template-body file://cloudformation/cca-collector-role.yaml \
+    --template-body file://setup/aws-iam-role.yaml \
     --capabilities CAPABILITY_NAMED_IAM \
     --parameters ParameterKey=EnableCostExplorerAccess,ParameterValue=true
 ```

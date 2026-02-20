@@ -1,0 +1,38 @@
+# CCA CloudShell - Microsoft 365 Configuration
+#
+# Use this config when collecting from Microsoft 365.
+# Requires Azure AD App Registration with Microsoft Graph API permissions.
+#
+# Prerequisites:
+#   1. Create an App Registration in Azure AD
+#   2. Add API permissions (Application type):
+#      - Sites.Read.All (SharePoint sites)
+#      - User.Read.All (Users, OneDrive, Exchange mailboxes)
+#      - Group.Read.All (Groups, Teams membership)
+#      - TeamSettings.Read.All (Teams settings)
+#   3. Grant admin consent for the permissions
+#   4. Create a client secret and set environment variables:
+#
+#      export MS365_TENANT_ID="your-tenant-id"
+#      export MS365_CLIENT_ID="your-client-id"
+#      export MS365_CLIENT_SECRET="your-client-secret"
+#
+# Usage:
+#   python collect.py --cloud m365 --config config-examples/m365.yaml
+
+org_name: "acme-corp"
+output: "./collections"
+log_level: INFO
+
+m365:
+  # Azure AD tenant ID (use env var for portability)
+  tenant_id: ${MS365_TENANT_ID}
+  
+  # App registration client ID (use env var for portability)
+  client_id: ${MS365_CLIENT_ID}
+  
+  # Client secret - ALWAYS use env var, never commit secrets!
+  # The collector reads MS365_CLIENT_SECRET from environment automatically
+  
+  # Include Entra ID (Azure AD) users and groups in collection
+  include_entra: false

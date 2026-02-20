@@ -1,0 +1,18 @@
+# CCA CloudShell - GCP Configuration
+#
+# Use this config when collecting from Google Cloud projects.
+# Works automatically in Google Cloud Shell or with application default credentials.
+#
+# Usage:
+#   python collect.py --cloud gcp --config config-examples/gcp.yaml
+
+org_name: "acme-corp"
+output: "./collections"
+log_level: INFO
+
+gcp:
+  # Specific project ID (comment out to scan all accessible projects)
+  # project: "my-project-id"
+  
+  # Collect from all accessible projects
+  # all_projects: true

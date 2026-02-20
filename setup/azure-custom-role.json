@@ -1,0 +1,117 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "description": "CCA CloudShell - Custom Role for Azure Resource Collection. Creates a least-privilege custom role with read-only permissions needed by the CCA collector. Deploy at the subscription level."
+    },
+    "parameters": {
+        "roleName": {
+            "type": "string",
+            "defaultValue": "CCA CloudShell Reader",
+            "metadata": {
+                "description": "Name for the custom role"
+            }
+        },
+        "principalId": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "(Optional) Object ID of user/service principal to assign the role to"
+            }
+        }
+    },
+    "variables": {
+        "roleDefName": "[guid(subscription().id, parameters('roleName'))]",
+        "roleAssignmentName": "[guid(subscription().id, parameters('roleName'), parameters('principalId'))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Authorization/roleDefinitions",
+            "apiVersion": "2022-04-01",
+            "name": "[variables('roleDefName')]",
+            "properties": {
+                "roleName": "[parameters('roleName')]",
+                "description": "Read-only access for CCA CloudShell cloud assessment collector",
+                "type": "CustomRole",
+                "permissions": [
+                    {
+                        "actions": [
+                            "Microsoft.Resources/subscriptions/read",
+                            "Microsoft.Resources/subscriptions/resourceGroups/read",
+                            
+                            "Microsoft.Compute/virtualMachines/read",
+                            "Microsoft.Compute/disks/read",
+                            "Microsoft.Compute/snapshots/read",
+                            "Microsoft.Compute/virtualMachineScaleSets/read",
+                            
+                            "Microsoft.Storage/storageAccounts/read",
+                            "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+                            "Microsoft.Storage/storageAccounts/fileServices/shares/read",
+                            
+                            "Microsoft.Sql/servers/read",
+                            "Microsoft.Sql/servers/databases/read",
+                            "Microsoft.Sql/managedInstances/read",
+                            "Microsoft.Sql/managedInstances/databases/read",
+                            
+                            "Microsoft.DocumentDB/databaseAccounts/read",
+                            
+                            "Microsoft.ContainerService/managedClusters/read",
+                            
+                            "Microsoft.Web/sites/read",
+                            "Microsoft.Web/serverfarms/read",
+                            
+                            "Microsoft.RecoveryServices/vaults/read",
+                            "Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/read",
+                            "Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/protectedItems/read",
+                            "Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/protectedItems/recoveryPoints/read",
+                            "Microsoft.RecoveryServices/vaults/backupPolicies/read",
+                            "Microsoft.RecoveryServices/vaults/backupProtectedItems/read",
+                            
+                            "Microsoft.Cache/redis/read",
+                            
+                            "Microsoft.NetApp/netAppAccounts/read",
+                            "Microsoft.NetApp/netAppAccounts/capacityPools/read",
+                            "Microsoft.NetApp/netAppAccounts/capacityPools/volumes/read",
+                            
+                            "Microsoft.DBforPostgreSQL/servers/read",
+                            "Microsoft.DBforPostgreSQL/flexibleServers/read",
+                            "Microsoft.DBforMySQL/servers/read",
+                            "Microsoft.DBforMySQL/flexibleServers/read",
+                            "Microsoft.DBforMariaDB/servers/read"
+                        ],
+                        "notActions": [],
+                        "dataActions": [],
+                        "notDataActions": []
+                    }
+                ],
+                "assignableScopes": [
+                    "[subscription().id]"
+                ]
+            }
+        },
+        {
+            "condition": "[not(empty(parameters('principalId')))]",
+            "type": "Microsoft.Authorization/roleAssignments",
+            "apiVersion": "2022-04-01",
+            "name": "[variables('roleAssignmentName')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefName'))]"
+            ],
+            "properties": {
+                "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefName'))]",
+                "principalId": "[parameters('principalId')]",
+                "principalType": "User"
+            }
+        }
+    ],
+    "outputs": {
+        "roleDefinitionId": {
+            "type": "string",
+            "value": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefName'))]"
+        },
+        "roleDefinitionName": {
+            "type": "string",
+            "value": "[parameters('roleName')]"
+        }
+    }
+}

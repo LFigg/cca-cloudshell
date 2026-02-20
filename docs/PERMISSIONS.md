@@ -19,11 +19,11 @@ The easiest way to set up AWS permissions is using our CloudFormation template:
 ```bash
 aws cloudformation create-stack \
   --stack-name cca-collector \
-  --template-body file://cloudformation/cca-collector-role.yaml \
+  --template-body file://setup/aws-iam-role.yaml \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-See [cloudformation/README.md](../cloudformation/README.md) for multi-account deployment options.
+See [setup/](../setup/) for multi-account deployment options and Azure/GCP setup scripts.
 
 ### Alternative: Use AWS Managed Policy
 
@@ -56,6 +56,8 @@ If you need a least-privilege policy, use the following:
                 "rds:DescribeDBClusters",
                 "rds:DescribeDBSnapshots",
                 "rds:DescribeDBClusterSnapshots",
+                
+                "cloudwatch:GetMetricStatistics",
                 
                 "s3:ListAllMyBuckets",
                 "s3:GetBucketLocation",
@@ -169,6 +171,7 @@ This permission is only needed in the management account (or delegated admin).
 | | `rds:DescribeDBClusters` | List Aurora clusters |
 | | `rds:DescribeDBSnapshots` | List RDS snapshots |
 | | `rds:DescribeDBClusterSnapshots` | List Aurora snapshots |
+| **CloudWatch** | `cloudwatch:GetMetricStatistics` | Get Aurora storage metrics |
 | **S3** | `s3:ListAllMyBuckets` | List S3 buckets |
 | | `s3:GetBucketLocation` | Get bucket region |
 | | `s3:GetBucketTagging` | Get bucket tags |
