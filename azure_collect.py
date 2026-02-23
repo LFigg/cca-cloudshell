@@ -46,6 +46,11 @@ from lib.utils import (
     write_json, write_csv, setup_logging, print_summary_table,
     retry_with_backoff, ProgressTracker
 )
+from lib.change_rate import (
+    DataChangeMetrics, TransactionLogMetrics, ChangeRateSummary,
+    aggregate_change_rates, format_change_rate_output,
+    get_azure_monitor_client, get_azure_disk_change_rate, get_azure_sql_transaction_log_rate
+)
 
 logger = logging.getLogger(__name__)
 
@@ -874,6 +879,282 @@ def collect_redis_caches(credential, subscription_id: str) -> List[CloudResource
 
 
 # =============================================================================
+# Azure Database for PostgreSQL
+# =============================================================================
+
+def collect_postgresql_servers(credential, subscription_id: str) -> List[CloudResource]:
+    """Collect Azure Database for PostgreSQL servers (Flexible and Single Server)."""
+    resources = []
+    try:
+        from azure.mgmt.rdbms.postgresql_flexibleservers import PostgreSQLManagementClient as PGFlexClient
+        
+        # Collect Flexible Servers (recommended)
+        flex_client = PGFlexClient(credential, subscription_id)
+        
+        for server in flex_client.servers.list():
+            server_id = getattr(server, 'id', None)
+            if not server_id:
+                continue
+            
+            rg = _extract_resource_group(server_id)
+            
+            # Get storage size
+            storage = getattr(server, 'storage', None)
+            storage_gb = float(getattr(storage, 'storage_size_gb', 0)) if storage else 0.0
+            
+            # SKU info
+            sku = getattr(server, 'sku', None)
+            sku_name = getattr(sku, 'name', 'unknown') if sku else 'unknown'
+            sku_tier = getattr(sku, 'tier', 'unknown') if sku else 'unknown'
+            
+            resource = CloudResource(
+                provider="azure",
+                subscription_id=subscription_id,
+                region=getattr(server, 'location', ''),
+                resource_type="azure:postgresql:flexibleserver",
+                service_family="PostgreSQL",
+                resource_id=server_id,
+                name=getattr(server, 'name', ''),
+                tags=getattr(server, 'tags', None) or {},
+                size_gb=storage_gb,
+                metadata={
+                    'resource_group': rg,
+                    'sku_name': sku_name,
+                    'sku_tier': sku_tier,
+                    'version': getattr(server, 'version', ''),
+                    'state': str(getattr(server, 'state', '')),
+                    'fully_qualified_domain_name': getattr(server, 'fully_qualified_domain_name', ''),
+                    'high_availability_mode': str(getattr(getattr(server, 'high_availability', None), 'mode', 'Disabled')) if getattr(server, 'high_availability', None) else 'Disabled',
+                    'backup_retention_days': getattr(getattr(server, 'backup', None), 'backup_retention_days', 7) if getattr(server, 'backup', None) else 7,
+                }
+            )
+            resources.append(resource)
+        
+        logger.info(f"Found {len(resources)} Azure Database for PostgreSQL servers")
+    except ImportError:
+        logger.warning("azure-mgmt-rdbms not installed. Skipping PostgreSQL collection. Install with: pip install azure-mgmt-rdbms")
+    except Exception as e:
+        logger.error(f"Failed to collect PostgreSQL servers: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# Azure Database for MySQL
+# =============================================================================
+
+def collect_mysql_servers(credential, subscription_id: str) -> List[CloudResource]:
+    """Collect Azure Database for MySQL servers (Flexible and Single Server)."""
+    resources = []
+    try:
+        from azure.mgmt.rdbms.mysql_flexibleservers import MySQLManagementClient as MySQLFlexClient
+        
+        # Collect Flexible Servers (recommended)
+        flex_client = MySQLFlexClient(credential, subscription_id)
+        
+        for server in flex_client.servers.list():
+            server_id = getattr(server, 'id', None)
+            if not server_id:
+                continue
+            
+            rg = _extract_resource_group(server_id)
+            
+            # Get storage size
+            storage = getattr(server, 'storage', None)
+            storage_gb = float(getattr(storage, 'storage_size_gb', 0)) if storage else 0.0
+            
+            # SKU info
+            sku = getattr(server, 'sku', None)
+            sku_name = getattr(sku, 'name', 'unknown') if sku else 'unknown'
+            sku_tier = getattr(sku, 'tier', 'unknown') if sku else 'unknown'
+            
+            resource = CloudResource(
+                provider="azure",
+                subscription_id=subscription_id,
+                region=getattr(server, 'location', ''),
+                resource_type="azure:mysql:flexibleserver",
+                service_family="MySQL",
+                resource_id=server_id,
+                name=getattr(server, 'name', ''),
+                tags=getattr(server, 'tags', None) or {},
+                size_gb=storage_gb,
+                metadata={
+                    'resource_group': rg,
+                    'sku_name': sku_name,
+                    'sku_tier': sku_tier,
+                    'version': getattr(server, 'version', ''),
+                    'state': str(getattr(server, 'state', '')),
+                    'fully_qualified_domain_name': getattr(server, 'fully_qualified_domain_name', ''),
+                    'high_availability_mode': str(getattr(getattr(server, 'high_availability', None), 'mode', 'Disabled')) if getattr(server, 'high_availability', None) else 'Disabled',
+                    'backup_retention_days': getattr(getattr(server, 'backup', None), 'backup_retention_days', 7) if getattr(server, 'backup', None) else 7,
+                }
+            )
+            resources.append(resource)
+        
+        logger.info(f"Found {len(resources)} Azure Database for MySQL servers")
+    except ImportError:
+        logger.warning("azure-mgmt-rdbms not installed. Skipping MySQL collection. Install with: pip install azure-mgmt-rdbms")
+    except Exception as e:
+        logger.error(f"Failed to collect MySQL servers: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# Azure Database for MariaDB
+# =============================================================================
+
+def collect_mariadb_servers(credential, subscription_id: str) -> List[CloudResource]:
+    """Collect Azure Database for MariaDB servers."""
+    resources = []
+    try:
+        from azure.mgmt.rdbms.mariadb import MariaDBManagementClient
+        
+        client = MariaDBManagementClient(credential, subscription_id)
+        
+        for server in client.servers.list():
+            server_id = getattr(server, 'id', None)
+            if not server_id:
+                continue
+            
+            rg = _extract_resource_group(server_id)
+            
+            # Get storage size (in MB for MariaDB, convert to GB)
+            storage_mb = getattr(server, 'storage_profile', None)
+            storage_gb = 0.0
+            if storage_mb:
+                storage_gb = float(getattr(storage_mb, 'storage_mb', 0)) / 1024.0
+            
+            # SKU info
+            sku = getattr(server, 'sku', None)
+            sku_name = getattr(sku, 'name', 'unknown') if sku else 'unknown'
+            sku_tier = getattr(sku, 'tier', 'unknown') if sku else 'unknown'
+            
+            resource = CloudResource(
+                provider="azure",
+                subscription_id=subscription_id,
+                region=getattr(server, 'location', ''),
+                resource_type="azure:mariadb:server",
+                service_family="MariaDB",
+                resource_id=server_id,
+                name=getattr(server, 'name', ''),
+                tags=getattr(server, 'tags', None) or {},
+                size_gb=storage_gb,
+                metadata={
+                    'resource_group': rg,
+                    'sku_name': sku_name,
+                    'sku_tier': sku_tier,
+                    'version': getattr(server, 'version', ''),
+                    'user_visible_state': str(getattr(server, 'user_visible_state', '')),
+                    'fully_qualified_domain_name': getattr(server, 'fully_qualified_domain_name', ''),
+                    'ssl_enforcement': str(getattr(server, 'ssl_enforcement', '')),
+                }
+            )
+            resources.append(resource)
+        
+        logger.info(f"Found {len(resources)} Azure Database for MariaDB servers")
+    except ImportError:
+        logger.warning("azure-mgmt-rdbms not installed. Skipping MariaDB collection. Install with: pip install azure-mgmt-rdbms")
+    except Exception as e:
+        logger.error(f"Failed to collect MariaDB servers: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# Azure Synapse Analytics
+# =============================================================================
+
+def collect_synapse_workspaces(credential, subscription_id: str) -> List[CloudResource]:
+    """Collect Azure Synapse Analytics workspaces and SQL pools."""
+    resources = []
+    try:
+        from azure.mgmt.synapse import SynapseManagementClient
+        
+        client = SynapseManagementClient(credential, subscription_id)
+        
+        # List workspaces
+        for workspace in client.workspaces.list():
+            workspace_id = getattr(workspace, 'id', None)
+            if not workspace_id:
+                continue
+            
+            rg = _extract_resource_group(workspace_id)
+            workspace_name = getattr(workspace, 'name', '')
+            
+            # Collect workspace resource
+            resource = CloudResource(
+                provider="azure",
+                subscription_id=subscription_id,
+                region=getattr(workspace, 'location', ''),
+                resource_type="azure:synapse:workspace",
+                service_family="Synapse",
+                resource_id=workspace_id,
+                name=workspace_name,
+                tags=getattr(workspace, 'tags', None) or {},
+                size_gb=0.0,
+                metadata={
+                    'resource_group': rg,
+                    'provisioning_state': getattr(workspace, 'provisioning_state', ''),
+                    'managed_resource_group': str(getattr(workspace, 'managed_resource_group_name', '')),
+                    'sql_administrator_login': getattr(workspace, 'sql_administrator_login', ''),
+                    'connectivity_endpoints': dict(getattr(workspace, 'connectivity_endpoints', {})) if getattr(workspace, 'connectivity_endpoints', None) else {},
+                }
+            )
+            resources.append(resource)
+            
+            # List dedicated SQL pools (formerly SQL DW)
+            try:
+                for pool in client.sql_pools.list_by_workspace(rg, workspace_name):
+                    pool_id = getattr(pool, 'id', None)
+                    if not pool_id:
+                        continue
+                    
+                    # Get SKU for sizing
+                    sku = getattr(pool, 'sku', None)
+                    sku_name = getattr(sku, 'name', 'unknown') if sku else 'unknown'
+                    
+                    # Estimate storage based on DWU (Data Warehouse Units)
+                    # Synapse dedicated pools have compute + storage separation
+                    # Storage is typically measured in TB and scales with usage
+                    max_size_bytes = getattr(pool, 'max_size_bytes', 0)
+                    storage_gb = float(max_size_bytes) / (1024 ** 3) if max_size_bytes else 0.0
+                    
+                    pool_resource = CloudResource(
+                        provider="azure",
+                        subscription_id=subscription_id,
+                        region=getattr(pool, 'location', ''),
+                        resource_type="azure:synapse:sqlpool",
+                        service_family="Synapse",
+                        resource_id=pool_id,
+                        name=getattr(pool, 'name', ''),
+                        tags=getattr(pool, 'tags', None) or {},
+                        size_gb=storage_gb,
+                        parent_resource_id=workspace_id,
+                        metadata={
+                            'resource_group': rg,
+                            'workspace_name': workspace_name,
+                            'sku_name': sku_name,
+                            'status': str(getattr(pool, 'status', '')),
+                            'collation': getattr(pool, 'collation', ''),
+                            'max_size_bytes': max_size_bytes,
+                            'create_mode': str(getattr(pool, 'create_mode', '')),
+                        }
+                    )
+                    resources.append(pool_resource)
+            except Exception as e:
+                logger.debug(f"Failed to list SQL pools for workspace {workspace_name}: {e}")
+        
+        logger.info(f"Found {len(resources)} Synapse workspaces and SQL pools")
+    except ImportError:
+        logger.warning("azure-mgmt-synapse not installed. Skipping Synapse collection. Install with: pip install azure-mgmt-synapse")
+    except Exception as e:
+        logger.error(f"Failed to collect Synapse workspaces: {e}")
+    
+    return resources
+
+
+# =============================================================================
 # Azure NetApp Files (enterprise file storage similar to AWS FSx)
 # =============================================================================
 
@@ -1160,6 +1441,12 @@ def collect_subscription(credential, subscription_id: str, subscription_name: st
     resources.extend(collect_and_track("SQL managed instances", collect_sql_managed_instances, credential, subscription_id))
     resources.extend(collect_and_track("SQL backups", collect_sql_database_backups, credential, subscription_id))
     resources.extend(collect_and_track("CosmosDB accounts", collect_cosmosdb_accounts, credential, subscription_id))
+    resources.extend(collect_and_track("PostgreSQL servers", collect_postgresql_servers, credential, subscription_id))
+    resources.extend(collect_and_track("MySQL servers", collect_mysql_servers, credential, subscription_id))
+    resources.extend(collect_and_track("MariaDB servers", collect_mariadb_servers, credential, subscription_id))
+    
+    # Analytics
+    resources.extend(collect_and_track("Synapse workspaces", collect_synapse_workspaces, credential, subscription_id))
     
     # Containers & Compute
     resources.extend(collect_and_track("AKS clusters", collect_aks_clusters, credential, subscription_id))
@@ -1177,12 +1464,109 @@ def collect_subscription(credential, subscription_id: str, subscription_name: st
     return resources
 
 
+# =============================================================================
+# Change Rate Collection
+# =============================================================================
+
+def collect_azure_change_rates(
+    credential,
+    subscription_id: str,
+    resources: List[CloudResource],
+    days: int = 7
+) -> Dict[str, Any]:
+    """
+    Collect change rate metrics from Azure Monitor for the collected resources.
+    
+    Args:
+        credential: Azure credential
+        subscription_id: Azure subscription ID
+        resources: List of CloudResource objects collected from the subscription
+        days: Number of days to sample for metrics
+    
+    Returns:
+        Dict with change rate summaries by service family
+    """
+    change_rates = []
+    
+    # Get Monitor client
+    monitor_client = get_azure_monitor_client(credential, subscription_id)
+    if not monitor_client:
+        logger.warning("Azure Monitor client not available, skipping change rate collection")
+        return {}
+    
+    for resource in resources:
+        try:
+            rate_entry = _collect_azure_resource_change_rate(
+                monitor_client, resource, days
+            )
+            if rate_entry:
+                change_rates.append(rate_entry)
+        except Exception as e:
+            logger.debug(f"Error collecting change rate for {resource.resource_id}: {e}")
+            continue
+    
+    # Aggregate change rates by service family
+    summaries = aggregate_change_rates(change_rates)
+    return format_change_rate_output(summaries)
+
+
+def _collect_azure_resource_change_rate(
+    monitor_client,
+    resource: CloudResource,
+    days: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Collect change rate for a single Azure resource based on its type.
+    """
+    service_family = resource.service_family
+    resource_id = resource.resource_id
+    
+    if service_family == 'ManagedDisk':
+        # Azure managed disks
+        data_change = get_azure_disk_change_rate(
+            monitor_client, resource_id, resource.size_gb, days
+        )
+        if data_change:
+            return {
+                'provider': 'azure',
+                'service_family': 'ManagedDisk',
+                'size_gb': resource.size_gb,
+                'data_change': data_change
+            }
+    
+    elif service_family == 'AzureSQL':
+        # Azure SQL databases
+        tlog_metrics = get_azure_sql_transaction_log_rate(
+            monitor_client, resource_id, days
+        )
+        if tlog_metrics:
+            return {
+                'provider': 'azure',
+                'service_family': 'AzureSQL',
+                'size_gb': resource.size_gb,
+                'transaction_logs': tlog_metrics
+            }
+    
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description='CCA CloudShell - Azure Resource Collector')
     parser.add_argument('--subscription', help='Specific subscription ID (default: all accessible)')
     parser.add_argument('--regions', help='Comma-separated list of regions to filter (e.g., eastus,westus2)')
     parser.add_argument('--output', help='Output directory or blob URL', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
+    parser.add_argument(
+        '--include-change-rate',
+        action='store_true',
+        help='Collect data change rates from Azure Monitor (for sizing tool DCR overrides)'
+    )
+    parser.add_argument(
+        '--change-rate-days',
+        type=int,
+        default=7,
+        help='Number of days to sample for change rate metrics (default: 7)'
+    )
     
     args = parser.parse_args()
     
@@ -1248,6 +1632,60 @@ def main():
     # Generate summaries
     summaries = aggregate_sizing(all_resources)
     
+    # Collect change rates if requested
+    change_rate_data = None
+    if args.include_change_rate:
+        logger.info("Collecting change rate metrics from Azure Monitor...")
+        print("Collecting change rate metrics from Azure Monitor...")
+        all_change_rates = {}
+        for sub in subscriptions:
+            if sub['id'] not in subscription_ids:
+                continue  # Skip failed subscriptions
+            try:
+                # Filter resources for this subscription
+                sub_resources = [r for r in all_resources if r.subscription_id == sub['id']]
+                cr_data = collect_azure_change_rates(credential, sub['id'], sub_resources, args.change_rate_days)
+                # Merge into overall change rates
+                for key, summary in cr_data.get('change_rates', {}).items():
+                    if key not in all_change_rates:
+                        all_change_rates[key] = summary
+                    else:
+                        # Aggregate across subscriptions
+                        existing = all_change_rates[key]
+                        existing['resource_count'] += summary['resource_count']
+                        existing['total_size_gb'] += summary['total_size_gb']
+                        existing['data_change']['daily_change_gb'] += summary['data_change']['daily_change_gb']
+                        existing['data_change']['data_points'] += summary['data_change']['data_points']
+                        if summary.get('transaction_logs'):
+                            if existing.get('transaction_logs'):
+                                existing['transaction_logs']['daily_generation_gb'] += summary['transaction_logs']['daily_generation_gb']
+                            else:
+                                existing['transaction_logs'] = summary['transaction_logs']
+            except Exception as e:
+                logger.warning(f"Failed to collect change rates for subscription {sub['id']}: {e}")
+        
+        if all_change_rates:
+            # Recalculate percentages after aggregation
+            for key, summary in all_change_rates.items():
+                if summary['total_size_gb'] > 0 and summary['data_change']['daily_change_gb'] > 0:
+                    summary['data_change']['daily_change_percent'] = (
+                        summary['data_change']['daily_change_gb'] / summary['total_size_gb'] * 100
+                    )
+            
+            change_rate_data = {
+                'change_rates': all_change_rates,
+                'collection_metadata': {
+                    'collected_at': get_timestamp(),
+                    'sample_period_days': args.change_rate_days,
+                    'notes': [
+                        'Data change rates are estimates based on Azure Monitor write throughput metrics',
+                        'Transaction log rates apply to database services (always 100% capture)',
+                        'Use these values to override default DCR assumptions in sizing tools'
+                    ]
+                }
+            }
+            logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+    
     # Prepare output
     run_id = generate_run_id()
     timestamp = get_timestamp()
@@ -1268,8 +1706,12 @@ def main():
         'subscriptions': subscription_ids,
         'total_resources': len(all_resources),
         'total_capacity_gb': sum(s.total_gb for s in summaries),
-        'summaries': [s.to_dict() for s in summaries]
+        'summaries': [s.to_dict() for s in summaries],
+        'change_rates': change_rate_data if change_rate_data else None
     }
+    
+    # Remove None values
+    summary_data = {k: v for k, v in summary_data.items() if v is not None}
     
     # Write outputs
     output_base = args.output.rstrip('/')
@@ -1281,6 +1723,17 @@ def main():
     file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
     write_json(output_data, f"{output_base}/cca_azure_inv_{file_ts}.json")
     write_json(summary_data, f"{output_base}/cca_azure_sum_{file_ts}.json")
+    
+    # Write change rate data to separate file if collected
+    if change_rate_data:
+        change_rate_output = {
+            'run_id': run_id,
+            'timestamp': timestamp,
+            'provider': 'azure',
+            'subscriptions': subscription_ids,
+            **change_rate_data
+        }
+        write_json(change_rate_output, f"{output_base}/cca_azure_change_rates_{file_ts}.json")
     
     # Write CSV
     csv_data = [s.to_dict() for s in summaries]

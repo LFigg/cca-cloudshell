@@ -141,6 +141,24 @@ def get_rds_instances(resources: List[Dict]) -> List[Dict]:
     return [r for r in resources if r['resource_type'] in ['aws:rds:instance', 'aws:rds:cluster']]
 
 
+def _format_rds_snapshot_description(snap: Dict) -> str:
+    """Format RDS snapshot description with clear cost indication.
+    
+    RDS automated backups are INCLUDED with the service (up to retention period storage).
+    Manual and AWS Backup snapshots are ADDITIONAL COST.
+    """
+    snapshot_type = snap.get('metadata', {}).get('snapshot_type', 'unknown')
+    
+    if snapshot_type == 'automated':
+        return "Automated (Included with RDS)"
+    elif snapshot_type == 'manual':
+        return "Manual (Additional Cost)"
+    elif snapshot_type == 'awsbackup':
+        return "AWS Backup (Additional Cost)"
+    else:
+        return f"{snapshot_type} snapshot"
+
+
 def get_other_primary_resources(resources: List[Dict]) -> List[Dict]:
     """Get other primary resources (S3, EFS, DynamoDB, etc.)."""
     other_types = [
@@ -929,7 +947,7 @@ def generate_report(inventory_path: str, output_path: str, preloaded_data: Optio
                     'snapshot_id': snap['resource_id'],
                     'snapshot_size_gb': snap['size_gb'],
                     'snapshot_created': snap.get('metadata', {}).get('snapshot_create_time', ''),
-                    'snapshot_description': f"{snap.get('metadata', {}).get('snapshot_type', '')} snapshot",
+                    'snapshot_description': _format_rds_snapshot_description(snap),
                     'is_replica': 'Yes' if is_replica_snapshot(snap) else '',
                     'backup_plan': backup_plan,
                     'protection_source': protection_source,
@@ -1070,6 +1088,15 @@ def generate_report(inventory_path: str, output_path: str, preloaded_data: Optio
     total_rds_snapshot_size = sum(s['size_gb'] for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot'])
     ami_snapshot_size = sum(s['size_gb'] for s in ami_snapshots if s['resource_type'] == 'aws:ec2:snapshot')
     
+    # Break down RDS snapshots by type (automated=included, manual/awsbackup=additional cost)
+    rds_snaps_all = [s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']]
+    rds_snaps_automated = [s for s in rds_snaps_all if s.get('metadata', {}).get('snapshot_type') == 'automated']
+    rds_snaps_manual = [s for s in rds_snaps_all if s.get('metadata', {}).get('snapshot_type') == 'manual']
+    rds_snaps_awsbackup = [s for s in rds_snaps_all if s.get('metadata', {}).get('snapshot_type') == 'awsbackup']
+    rds_automated_size = sum(s['size_gb'] for s in rds_snaps_automated)
+    rds_manual_size = sum(s['size_gb'] for s in rds_snaps_manual)
+    rds_awsbackup_size = sum(s['size_gb'] for s in rds_snaps_awsbackup)
+    
     # Calculate protected vs unprotected sizes
     protected_volume_ids = set(r['volume_id'] for r in rows if r['volume_id'] and 'Protected' in r['protection_status'])
     unprotected_volume_ids = set(r['volume_id'] for r in rows if r['volume_id'] and 'Unprotected' in r['protection_status'])
@@ -1124,7 +1151,10 @@ def generate_report(inventory_path: str, output_path: str, preloaded_data: Optio
         ["  - Orphan Snapshots", len(orphan_snapshots), round(orphan_snapshot_size, 1), "No matching volume (cross-region copies, etc.)"],
         ["AMI Snapshots", len(ebs_ami_snapshots), round(ami_snapshot_size, 1), "Created by AMI generation, not backups"],
         ["RDS Databases", len(rds_instances), round(total_rds_size, 1), "Allocated storage"],
-        ["RDS Snapshots", len([s for s in user_snapshots if s['resource_type'] in ['aws:rds:snapshot', 'aws:rds:cluster-snapshot']]), round(total_rds_snapshot_size, 1), ""],
+        ["RDS Snapshots (Total)", len(rds_snaps_all), round(total_rds_snapshot_size, 1), ""],
+        ["  - Automated (Built-in)", len(rds_snaps_automated), round(rds_automated_size, 1), "INCLUDED with RDS - no extra charge"],
+        ["  - Manual", len(rds_snaps_manual), round(rds_manual_size, 1), "Additional storage cost"],
+        ["  - AWS Backup", len(rds_snaps_awsbackup), round(rds_awsbackup_size, 1), "Additional storage cost"],
         ["Backup Plans", len([r for r in backup_plans if r['resource_type'] == 'aws:backup:plan']), "", ""],
         ["Backup Selections", len(backup_selections), "", ""],
         ["Protected Resources", len(protected_resources), "", "Resources with recovery points"],

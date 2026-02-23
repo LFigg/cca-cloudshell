@@ -59,6 +59,12 @@ from lib.utils import (
     get_name_from_tags, write_json, write_csv, setup_logging, print_summary_table,
     retry_with_backoff, ProgressTracker
 )
+from lib.change_rate import (
+    DataChangeMetrics, TransactionLogMetrics, ChangeRateSummary,
+    aggregate_change_rates, format_change_rate_output,
+    get_aws_cloudwatch_client, get_ebs_volume_change_rate,
+    get_rds_transaction_log_rate, get_rds_write_iops_change_rate, get_s3_change_rate
+)
 from lib.config import load_config, generate_sample_config
 
 logger = logging.getLogger(__name__)
@@ -1458,6 +1464,363 @@ def collect_backup_region_settings(session: boto3.Session, region: str, account_
 
 
 # =============================================================================
+# Redshift Collector
+# =============================================================================
+
+def collect_redshift_clusters(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect Amazon Redshift clusters."""
+    resources = []
+    try:
+        redshift = session.client('redshift', region_name=region)
+        paginator = redshift.get_paginator('describe_clusters')
+        
+        for page in paginator.paginate():
+            for cluster in page.get('Clusters', []):
+                cluster_id = cluster.get('ClusterIdentifier', '')
+                
+                # Calculate total storage from number of nodes * node storage
+                num_nodes = cluster.get('NumberOfNodes', 1)
+                node_type = cluster.get('NodeType', '')
+                
+                # Redshift node storage estimates (GB per node)
+                node_storage_map = {
+                    'dc2.large': 160, 'dc2.8xlarge': 2560,
+                    'ra3.xlplus': 32000, 'ra3.4xlarge': 128000, 'ra3.16xlarge': 128000,
+                    'ds2.xlarge': 2000, 'ds2.8xlarge': 16000,
+                }
+                storage_per_node = node_storage_map.get(node_type, 0)
+                total_storage_gb = num_nodes * storage_per_node
+                
+                tags = {t['Key']: t['Value'] for t in cluster.get('Tags', [])}
+                
+                resource = CloudResource(
+                    provider="aws",
+                    account_id=account_id,
+                    region=region,
+                    resource_type="aws:redshift:cluster",
+                    service_family="Redshift",
+                    resource_id=f"arn:aws:redshift:{region}:{account_id}:cluster:{cluster_id}",
+                    name=cluster_id,
+                    tags=tags,
+                    size_gb=float(total_storage_gb),
+                    metadata={
+                        'node_type': node_type,
+                        'number_of_nodes': num_nodes,
+                        'cluster_status': cluster.get('ClusterStatus'),
+                        'db_name': cluster.get('DBName'),
+                        'encrypted': cluster.get('Encrypted', False),
+                        'total_storage_capacity_gb': total_storage_gb,
+                    }
+                )
+                resources.append(resource)
+        
+        logger.info(f"[{region}] Found {len(resources)} Redshift clusters")
+    except Exception as e:
+        logger.error(f"[{region}] Failed to collect Redshift clusters: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# DocumentDB Collector
+# =============================================================================
+
+def collect_documentdb_clusters(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect Amazon DocumentDB (MongoDB-compatible) clusters."""
+    resources = []
+    try:
+        docdb = session.client('docdb', region_name=region)
+        paginator = docdb.get_paginator('describe_db_clusters')
+        
+        for page in paginator.paginate(Filters=[{'Name': 'engine', 'Values': ['docdb']}]):
+            for cluster in page.get('DBClusters', []):
+                cluster_id = cluster.get('DBClusterIdentifier', '')
+                
+                # Get storage used if available
+                storage_gb = float(cluster.get('AllocatedStorage', 0))
+                
+                resource = CloudResource(
+                    provider="aws",
+                    account_id=account_id,
+                    region=region,
+                    resource_type="aws:docdb:cluster",
+                    service_family="DocumentDB",
+                    resource_id=cluster.get('DBClusterArn', ''),
+                    name=cluster_id,
+                    tags={},
+                    size_gb=storage_gb,
+                    metadata={
+                        'status': cluster.get('Status'),
+                        'engine': cluster.get('Engine'),
+                        'engine_version': cluster.get('EngineVersion'),
+                        'db_cluster_members': len(cluster.get('DBClusterMembers', [])),
+                        'storage_encrypted': cluster.get('StorageEncrypted', False),
+                        'backup_retention_period': cluster.get('BackupRetentionPeriod'),
+                    }
+                )
+                resources.append(resource)
+        
+        logger.info(f"[{region}] Found {len(resources)} DocumentDB clusters")
+    except Exception as e:
+        logger.error(f"[{region}] Failed to collect DocumentDB clusters: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# Neptune Collector
+# =============================================================================
+
+def collect_neptune_clusters(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect Amazon Neptune (graph database) clusters."""
+    resources = []
+    try:
+        neptune = session.client('neptune', region_name=region)
+        paginator = neptune.get_paginator('describe_db_clusters')
+        
+        for page in paginator.paginate(Filters=[{'Name': 'engine', 'Values': ['neptune']}]):
+            for cluster in page.get('DBClusters', []):
+                cluster_id = cluster.get('DBClusterIdentifier', '')
+                
+                # Neptune storage is auto-scaling, allocated storage is estimate
+                storage_gb = float(cluster.get('AllocatedStorage', 0))
+                
+                resource = CloudResource(
+                    provider="aws",
+                    account_id=account_id,
+                    region=region,
+                    resource_type="aws:neptune:cluster",
+                    service_family="Neptune",
+                    resource_id=cluster.get('DBClusterArn', ''),
+                    name=cluster_id,
+                    tags={},
+                    size_gb=storage_gb,
+                    metadata={
+                        'status': cluster.get('Status'),
+                        'engine': cluster.get('Engine'),
+                        'engine_version': cluster.get('EngineVersion'),
+                        'db_cluster_members': len(cluster.get('DBClusterMembers', [])),
+                        'storage_encrypted': cluster.get('StorageEncrypted', False),
+                        'backup_retention_period': cluster.get('BackupRetentionPeriod'),
+                        'serverless': cluster.get('ServerlessV2ScalingConfiguration') is not None,
+                    }
+                )
+                resources.append(resource)
+        
+        logger.info(f"[{region}] Found {len(resources)} Neptune clusters")
+    except Exception as e:
+        logger.error(f"[{region}] Failed to collect Neptune clusters: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# OpenSearch Service Collector
+# =============================================================================
+
+def collect_opensearch_domains(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect Amazon OpenSearch Service domains."""
+    resources = []
+    try:
+        opensearch = session.client('opensearch', region_name=region)
+        
+        # List all domain names first
+        domain_list = opensearch.list_domain_names().get('DomainNames', [])
+        domain_names = [d['DomainName'] for d in domain_list]
+        
+        if domain_names:
+            # Describe domains in batches (max 5 per call)
+            for i in range(0, len(domain_names), 5):
+                batch = domain_names[i:i+5]
+                domains_info = opensearch.describe_domains(DomainNames=batch)
+                
+                for domain in domains_info.get('DomainStatusList', []):
+                    domain_name = domain.get('DomainName', '')
+                    
+                    # Calculate storage from EBS config
+                    ebs_options = domain.get('EBSOptions', {})
+                    cluster_config = domain.get('ClusterConfig', {})
+                    
+                    volume_size = ebs_options.get('VolumeSize', 0)
+                    instance_count = cluster_config.get('InstanceCount', 1)
+                    total_storage_gb = volume_size * instance_count
+                    
+                    # Add warm storage if configured
+                    if cluster_config.get('WarmEnabled'):
+                        warm_count = cluster_config.get('WarmCount', 0)
+                        # Warm nodes have fixed storage based on type
+                        warm_storage = warm_count * 500  # Approximate
+                        total_storage_gb += warm_storage
+                    
+                    tags = domain.get('Tags', {})
+                    if isinstance(tags, list):
+                        tags = {t['Key']: t['Value'] for t in tags}
+                    
+                    resource = CloudResource(
+                        provider="aws",
+                        account_id=account_id,
+                        region=region,
+                        resource_type="aws:opensearch:domain",
+                        service_family="OpenSearch",
+                        resource_id=domain.get('ARN', ''),
+                        name=domain_name,
+                        tags=tags,
+                        size_gb=float(total_storage_gb),
+                        metadata={
+                            'engine_version': domain.get('EngineVersion'),
+                            'instance_type': cluster_config.get('InstanceType'),
+                            'instance_count': instance_count,
+                            'dedicated_master_enabled': cluster_config.get('DedicatedMasterEnabled', False),
+                            'zone_awareness_enabled': cluster_config.get('ZoneAwarenessEnabled', False),
+                            'warm_enabled': cluster_config.get('WarmEnabled', False),
+                            'ebs_enabled': ebs_options.get('EBSEnabled', False),
+                            'volume_type': ebs_options.get('VolumeType'),
+                            'processing': domain.get('Processing', False),
+                        }
+                    )
+                    resources.append(resource)
+        
+        logger.info(f"[{region}] Found {len(resources)} OpenSearch domains")
+    except Exception as e:
+        logger.error(f"[{region}] Failed to collect OpenSearch domains: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# MemoryDB for Redis Collector
+# =============================================================================
+
+def collect_memorydb_clusters(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect Amazon MemoryDB for Redis clusters."""
+    resources = []
+    try:
+        memorydb = session.client('memorydb', region_name=region)
+        
+        # List all clusters
+        clusters_response = memorydb.describe_clusters()
+        
+        for cluster in clusters_response.get('Clusters', []):
+            cluster_name = cluster.get('Name', '')
+            
+            # Calculate data size from shards and node type
+            num_shards = cluster.get('NumberOfShards', 1)
+            node_type = cluster.get('NodeType', '')
+            
+            # MemoryDB node memory sizes (GB) - data size estimate
+            node_memory_map = {
+                'db.t4g.small': 1.37, 'db.t4g.medium': 3.09,
+                'db.r6g.large': 13.07, 'db.r6g.xlarge': 26.32,
+                'db.r6g.2xlarge': 52.82, 'db.r6g.4xlarge': 105.81,
+                'db.r6g.8xlarge': 209.55, 'db.r6g.12xlarge': 317.77,
+                'db.r6g.16xlarge': 419.09,
+                'db.r7g.large': 13.07, 'db.r7g.xlarge': 26.32,
+                'db.r7g.2xlarge': 52.82, 'db.r7g.4xlarge': 105.81,
+            }
+            memory_per_node = node_memory_map.get(node_type, 0)
+            replicas = cluster.get('NumReplicasPerShard', 0) + 1  # +1 for primary
+            total_memory_gb = num_shards * replicas * memory_per_node
+            
+            resource = CloudResource(
+                provider="aws",
+                account_id=account_id,
+                region=region,
+                resource_type="aws:memorydb:cluster",
+                service_family="MemoryDB",
+                resource_id=cluster.get('ARN', ''),
+                name=cluster_name,
+                tags={},
+                size_gb=float(total_memory_gb),
+                metadata={
+                    'status': cluster.get('Status'),
+                    'node_type': node_type,
+                    'number_of_shards': num_shards,
+                    'num_replicas_per_shard': cluster.get('NumReplicasPerShard', 0),
+                    'engine_version': cluster.get('EngineVersion'),
+                    'tls_enabled': cluster.get('TLSEnabled', False),
+                    'snapshot_retention_limit': cluster.get('SnapshotRetentionLimit', 0),
+                    'data_tiering': cluster.get('DataTiering', 'false'),
+                }
+            )
+            resources.append(resource)
+        
+        logger.info(f"[{region}] Found {len(resources)} MemoryDB clusters")
+    except Exception as e:
+        logger.error(f"[{region}] Failed to collect MemoryDB clusters: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# Timestream Collector
+# =============================================================================
+
+def collect_timestream_databases(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
+    """Collect Amazon Timestream databases and tables."""
+    resources = []
+    try:
+        timestream = session.client('timestream-write', region_name=region)
+        
+        # List databases
+        paginator = timestream.get_paginator('list_databases')
+        
+        for page in paginator.paginate():
+            for db in page.get('Databases', []):
+                db_name = db.get('DatabaseName', '')
+                
+                # List tables in database
+                table_paginator = timestream.get_paginator('list_tables')
+                for table_page in table_paginator.paginate(DatabaseName=db_name):
+                    for table in table_page.get('Tables', []):
+                        table_name = table.get('TableName', '')
+                        
+                        # Get table details for metrics
+                        try:
+                            table_details = timestream.describe_table(
+                                DatabaseName=db_name,
+                                TableName=table_name
+                            ).get('Table', {})
+                            
+                            # Storage metrics (if available)
+                            magnetic_gb = table_details.get('MagneticStoreWriteProperties', {}).get('MagneticStoreRejectedDataLocation', {})
+                            retention_memory = table_details.get('RetentionProperties', {}).get('MemoryStoreRetentionPeriodInHours', 0)
+                            retention_magnetic = table_details.get('RetentionProperties', {}).get('MagneticStoreRetentionPeriodInDays', 0)
+                        except Exception:
+                            retention_memory = 0
+                            retention_magnetic = 0
+                        
+                        resource = CloudResource(
+                            provider="aws",
+                            account_id=account_id,
+                            region=region,
+                            resource_type="aws:timestream:table",
+                            service_family="Timestream",
+                            resource_id=table.get('Arn', ''),
+                            name=f"{db_name}/{table_name}",
+                            tags={},
+                            size_gb=0.0,  # Timestream doesn't expose storage size directly
+                            metadata={
+                                'database_name': db_name,
+                                'table_name': table_name,
+                                'table_status': table.get('TableStatus'),
+                                'memory_retention_hours': retention_memory,
+                                'magnetic_retention_days': retention_magnetic,
+                            }
+                        )
+                        resources.append(resource)
+        
+        logger.info(f"[{region}] Found {len(resources)} Timestream tables")
+    except Exception as e:
+        # Timestream is not available in all regions
+        if 'not available' in str(e).lower() or 'not supported' in str(e).lower():
+            logger.debug(f"[{region}] Timestream not available in this region")
+        else:
+            logger.error(f"[{region}] Failed to collect Timestream: {e}")
+    
+    return resources
+
+
+# =============================================================================
 # Main Collection Logic
 # =============================================================================
 
@@ -1499,6 +1862,12 @@ def collect_region(session: boto3.Session, region: str, account_id: str, tracker
     # Databases
     resources.extend(collect_and_track("DynamoDB tables", collect_dynamodb_tables, session, region, account_id))
     resources.extend(collect_and_track("ElastiCache clusters", collect_elasticache_clusters, session, region, account_id))
+    resources.extend(collect_and_track("Redshift clusters", collect_redshift_clusters, session, region, account_id))
+    resources.extend(collect_and_track("DocumentDB clusters", collect_documentdb_clusters, session, region, account_id))
+    resources.extend(collect_and_track("Neptune clusters", collect_neptune_clusters, session, region, account_id))
+    resources.extend(collect_and_track("OpenSearch domains", collect_opensearch_domains, session, region, account_id))
+    resources.extend(collect_and_track("MemoryDB clusters", collect_memorydb_clusters, session, region, account_id))
+    resources.extend(collect_and_track("Timestream tables", collect_timestream_databases, session, region, account_id))
     
     # AWS Backup
     resources.extend(collect_and_track("Backup vaults", collect_backup_vaults, session, region, account_id))
@@ -1509,6 +1878,137 @@ def collect_region(session: boto3.Session, region: str, account_id: str, tracker
     # Note: Backup region settings collected once per account in collect_account(), not per region
     
     return resources
+
+
+# =============================================================================
+# Change Rate Collection
+# =============================================================================
+
+def collect_resource_change_rates(
+    session: boto3.Session,
+    resources: List[CloudResource],
+    days: int = 7
+) -> Dict[str, Any]:
+    """
+    Collect change rate metrics from CloudWatch for the collected resources.
+    
+    Args:
+        session: boto3 session
+        resources: List of CloudResource objects collected from the account
+        days: Number of days to sample for metrics
+    
+    Returns:
+        Dict with change rate summaries by service family
+    """
+    change_rates = []
+    
+    # Group resources by region for efficient CloudWatch access
+    resources_by_region: Dict[str, List[CloudResource]] = {}
+    for r in resources:
+        if r.region:
+            resources_by_region.setdefault(r.region, []).append(r)
+    
+    for region, region_resources in resources_by_region.items():
+        try:
+            cloudwatch = get_aws_cloudwatch_client(session, region)
+        except Exception as e:
+            logger.warning(f"Could not create CloudWatch client for {region}: {e}")
+            continue
+        
+        for resource in region_resources:
+            try:
+                rate_entry = _collect_single_resource_change_rate(
+                    cloudwatch, resource, days
+                )
+                if rate_entry:
+                    change_rates.append(rate_entry)
+            except Exception as e:
+                logger.debug(f"Error collecting change rate for {resource.resource_id}: {e}")
+                continue
+    
+    # Also collect for global resources like S3
+    try:
+        # Use us-east-1 for S3 CloudWatch metrics
+        s3_cloudwatch = get_aws_cloudwatch_client(session, 'us-east-1')
+        for resource in resources:
+            if resource.service_family == 'S3' and resource.size_gb > 0:
+                try:
+                    bucket_name = resource.metadata.get('bucket_name', resource.name)
+                    if bucket_name:
+                        data_change = get_s3_change_rate(
+                            s3_cloudwatch, bucket_name, resource.size_gb, days
+                        )
+                        if data_change:
+                            change_rates.append({
+                                'provider': 'aws',
+                                'service_family': 'S3',
+                                'size_gb': resource.size_gb,
+                                'data_change': data_change
+                            })
+                except Exception as e:
+                    logger.debug(f"Error collecting S3 change rate for {resource.name}: {e}")
+    except Exception as e:
+        logger.debug(f"Error creating S3 CloudWatch client: {e}")
+    
+    # Aggregate change rates by service family
+    summaries = aggregate_change_rates(change_rates)
+    return format_change_rate_output(summaries)
+
+
+def _collect_single_resource_change_rate(
+    cloudwatch,
+    resource: CloudResource,
+    days: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Collect change rate for a single resource based on its type.
+    """
+    service_family = resource.service_family
+    
+    if service_family == 'EBS':
+        # EBS volumes
+        volume_id = resource.metadata.get('volume_id') or resource.resource_id.split('/')[-1]
+        if volume_id.startswith('vol-'):
+            data_change = get_ebs_volume_change_rate(
+                cloudwatch, volume_id, resource.size_gb, days
+            )
+            if data_change:
+                return {
+                    'provider': 'aws',
+                    'service_family': 'EBS',
+                    'size_gb': resource.size_gb,
+                    'data_change': data_change
+                }
+    
+    elif service_family in ('RDS', 'Aurora'):
+        # RDS instances and Aurora
+        db_id = resource.metadata.get('db_instance_id') or resource.metadata.get('db_cluster_id')
+        engine = resource.metadata.get('engine', '').lower()
+        
+        if db_id:
+            data_change = get_rds_write_iops_change_rate(
+                cloudwatch, db_id, resource.size_gb, days
+            )
+            tlog_metrics = get_rds_transaction_log_rate(
+                cloudwatch, db_id, engine, days
+            )
+            
+            if data_change or tlog_metrics:
+                return {
+                    'provider': 'aws',
+                    'service_family': service_family,
+                    'size_gb': resource.size_gb,
+                    'data_change': data_change,
+                    'transaction_logs': tlog_metrics
+                }
+    
+    elif service_family in ('DocumentDB', 'Neptune', 'OpenSearch', 'Redshift'):
+        # Other database services - use WriteIOPS equivalent metrics
+        # For these services, we use size and estimate based on typical patterns
+        # (CloudWatch metrics vary by service)
+        pass
+    
+    return None
 
 
 def main():
@@ -1577,6 +2077,17 @@ Large Environment Examples:
         '--include-storage-sizes',
         action='store_true',
         help='Query CloudWatch for S3 bucket sizes (slower but accurate)'
+    )
+    parser.add_argument(
+        '--include-change-rate',
+        action='store_true',
+        help='Collect data change rates from CloudWatch (for sizing tool DCR overrides)'
+    )
+    parser.add_argument(
+        '--change-rate-days',
+        type=int,
+        default=7,
+        help='Number of days to sample for change rate metrics (default: 7)'
     )
     
     # Multi-account options
@@ -1885,6 +2396,58 @@ Large Environment Examples:
         # Generate summaries for this batch
         batch_summaries = aggregate_sizing(batch_resources)
         
+        # Collect change rates if requested
+        change_rate_data = None
+        if args.include_change_rate:
+            logger.info("Collecting change rate metrics from CloudWatch...")
+            print("Collecting change rate metrics from CloudWatch...")
+            all_change_rates = {}
+            for session, account_id, account_name in account_sessions:
+                try:
+                    # Filter resources for this account
+                    account_resources = [r for r in batch_resources if r.account_id == account_id]
+                    cr_data = collect_resource_change_rates(session, account_resources, args.change_rate_days)
+                    # Merge into overall change rates
+                    for key, summary in cr_data.get('change_rates', {}).items():
+                        if key not in all_change_rates:
+                            all_change_rates[key] = summary
+                        else:
+                            # Aggregate across accounts
+                            existing = all_change_rates[key]
+                            existing['resource_count'] += summary['resource_count']
+                            existing['total_size_gb'] += summary['total_size_gb']
+                            existing['data_change']['daily_change_gb'] += summary['data_change']['daily_change_gb']
+                            existing['data_change']['data_points'] += summary['data_change']['data_points']
+                            if summary.get('transaction_logs'):
+                                if existing.get('transaction_logs'):
+                                    existing['transaction_logs']['daily_generation_gb'] += summary['transaction_logs']['daily_generation_gb']
+                                else:
+                                    existing['transaction_logs'] = summary['transaction_logs']
+                except Exception as e:
+                    logger.warning(f"Failed to collect change rates for account {account_id}: {e}")
+            
+            if all_change_rates:
+                # Recalculate percentages after aggregation
+                for key, summary in all_change_rates.items():
+                    if summary['total_size_gb'] > 0 and summary['data_change']['daily_change_gb'] > 0:
+                        summary['data_change']['daily_change_percent'] = (
+                            summary['data_change']['daily_change_gb'] / summary['total_size_gb'] * 100
+                        )
+                
+                change_rate_data = {
+                    'change_rates': all_change_rates,
+                    'collection_metadata': {
+                        'collected_at': get_timestamp(),
+                        'sample_period_days': args.change_rate_days,
+                        'notes': [
+                            'Data change rates are estimates based on CloudWatch write throughput metrics',
+                            'Transaction log rates apply to database services (always 100% capture)',
+                            'Use these values to override default DCR assumptions in sizing tools'
+                        ]
+                    }
+                }
+                logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+        
         # Write batch outputs
         run_id = generate_run_id()
         timestamp = get_timestamp()
@@ -1913,7 +2476,8 @@ Large Environment Examples:
             'accounts': batch_collected if is_multi_account else None,
             'total_resources': len(batch_resources),
             'total_capacity_gb': sum(s.total_gb for s in batch_summaries),
-            'summaries': [s.to_dict() for s in batch_summaries]
+            'summaries': [s.to_dict() for s in batch_summaries],
+            'change_rates': change_rate_data if change_rate_data else None
         }
         
         # Remove None values
@@ -1928,6 +2492,17 @@ Large Environment Examples:
         file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
         write_json(output_data, f"{batch_output}/cca_aws_inv_{file_ts}.json")
         write_json(summary_data, f"{batch_output}/cca_aws_sum_{file_ts}.json")
+        
+        # Write change rate data to separate file if collected
+        if change_rate_data:
+            change_rate_output = {
+                'run_id': run_id,
+                'timestamp': timestamp,
+                'provider': 'aws',
+                'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,
+                **change_rate_data
+            }
+            write_json(change_rate_output, f"{batch_output}/cca_aws_change_rates_{file_ts}.json")
         
         csv_data = [s.to_dict() for s in batch_summaries]
         write_csv(csv_data, f"{batch_output}/cca_aws_sizing.csv")

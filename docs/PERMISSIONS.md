@@ -79,6 +79,19 @@ If you need a least-privilege policy, use the following:
                 
                 "elasticache:DescribeCacheClusters",
                 
+                "redshift:DescribeClusters",
+                
+                "rds:DescribeDBClusters",
+                
+                "es:ListDomainNames",
+                "es:DescribeDomains",
+                
+                "memorydb:DescribeClusters",
+                
+                "timestream:ListDatabases",
+                "timestream:ListTables",
+                "timestream:DescribeTable",
+                
                 "backup:ListBackupVaults",
                 "backup:ListRecoveryPointsByBackupVault",
                 "backup:ListBackupPlans",
@@ -185,6 +198,15 @@ This permission is only needed in the management account (or delegated admin).
 | **DynamoDB** | `dynamodb:ListTables` | List DynamoDB tables |
 | | `dynamodb:DescribeTable` | Get table details |
 | **ElastiCache** | `elasticache:DescribeCacheClusters` | List ElastiCache clusters |
+| **Redshift** | `redshift:DescribeClusters` | List Redshift clusters |
+| **DocumentDB** | `rds:DescribeDBClusters` | List DocumentDB clusters (filter by engine) |
+| **Neptune** | `rds:DescribeDBClusters` | List Neptune clusters (filter by engine) |
+| **OpenSearch** | `es:ListDomainNames` | List OpenSearch domains |
+| | `es:DescribeDomains` | Get domain details |
+| **MemoryDB** | `memorydb:DescribeClusters` | List MemoryDB clusters |
+| **Timestream** | `timestream:ListDatabases` | List Timestream databases |
+| | `timestream:ListTables` | List tables |
+| | `timestream:DescribeTable` | Get table details |
 | **AWS Backup** | `backup:ListBackupVaults` | List backup vaults |
 | | `backup:ListRecoveryPointsByBackupVault` | List recovery points |
 | | `backup:ListBackupPlans` | List backup plans |
@@ -249,6 +271,15 @@ Or use a custom role with these permissions:
         
         "Microsoft.Cache/redis/read",
         
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        
+        "Microsoft.DBforMySQL/flexibleServers/read",
+        
+        "Microsoft.DBforMariaDB/servers/read",
+        
+        "Microsoft.Synapse/workspaces/read",
+        "Microsoft.Synapse/workspaces/sqlPools/read",
+        
         "Microsoft.NetApp/netAppAccounts/read",
         "Microsoft.NetApp/netAppAccounts/capacityPools/read",
         "Microsoft.NetApp/netAppAccounts/capacityPools/volumes/read"
@@ -281,6 +312,11 @@ Or use a custom role with these permissions:
 | | `Microsoft.RecoveryServices/vaults/backupFabrics/*/read` | List protected items & recovery points |
 | | `Microsoft.RecoveryServices/vaults/backupPolicies/read` | List backup policies |
 | **Redis Cache** | `Microsoft.Cache/redis/read` | List Redis instances |
+| **PostgreSQL** | `Microsoft.DBforPostgreSQL/flexibleServers/read` | List PostgreSQL Flexible Servers |
+| **MySQL** | `Microsoft.DBforMySQL/flexibleServers/read` | List MySQL Flexible Servers |
+| **MariaDB** | `Microsoft.DBforMariaDB/servers/read` | List MariaDB servers |
+| **Synapse** | `Microsoft.Synapse/workspaces/read` | List Synapse workspaces |
+| | `Microsoft.Synapse/workspaces/sqlPools/read` | List dedicated SQL pools |
 | **NetApp Files** | `Microsoft.NetApp/netAppAccounts/read` | List NetApp accounts |
 | | `Microsoft.NetApp/netAppAccounts/capacityPools/read` | List capacity pools |
 | | `Microsoft.NetApp/netAppAccounts/capacityPools/volumes/read` | List volumes |
@@ -339,6 +375,28 @@ includedPermissions:
   - redis.instances.list
   - redis.instances.get
   
+  # BigQuery
+  - bigquery.datasets.get
+  - bigquery.datasets.list
+  - bigquery.tables.get
+  - bigquery.tables.list
+  
+  # Cloud Spanner
+  - spanner.instances.list
+  - spanner.instances.get
+  - spanner.databases.list
+  
+  # Bigtable
+  - bigtable.instances.list
+  - bigtable.instances.get
+  - bigtable.clusters.list
+  
+  # AlloyDB
+  - alloydb.clusters.list
+  - alloydb.clusters.get
+  - alloydb.instances.list
+  - alloydb.instances.get
+  
   # Backup and DR
   - backupdr.backupVaults.list
   - backupdr.backupVaults.get
@@ -373,6 +431,20 @@ includedPermissions:
 | | `file.instances.get` | Get instance details |
 | **Memorystore** | `redis.instances.list` | List Redis instances |
 | | `redis.instances.get` | Get instance details |
+| **BigQuery** | `bigquery.datasets.list` | List datasets |
+| | `bigquery.datasets.get` | Get dataset details |
+| | `bigquery.tables.list` | List tables |
+| | `bigquery.tables.get` | Get table details (size) |
+| **Cloud Spanner** | `spanner.instances.list` | List Spanner instances |
+| | `spanner.instances.get` | Get instance details |
+| | `spanner.databases.list` | List databases |
+| **Bigtable** | `bigtable.instances.list` | List Bigtable instances |
+| | `bigtable.instances.get` | Get instance details |
+| | `bigtable.clusters.list` | List clusters |
+| **AlloyDB** | `alloydb.clusters.list` | List AlloyDB clusters |
+| | `alloydb.clusters.get` | Get cluster details |
+| | `alloydb.instances.list` | List AlloyDB instances |
+| | `alloydb.instances.get` | Get instance details |
 | **Backup and DR** | `backupdr.backupVaults.list` | List backup vaults |
 | | `backupdr.backupVaults.get` | Get vault details |
 | | `backupdr.backupPlans.list` | List backup plans |
@@ -381,6 +453,129 @@ includedPermissions:
 | | `backupdr.dataSources.get` | Get data source details |
 | | `backupdr.backups.list` | List backups |
 | | `backupdr.backups.get` | Get backup details |
+
+---
+
+## Change Rate Collection Permissions (Optional)
+
+When using the `--include-change-rate` flag, the collectors query cloud monitoring APIs to estimate daily data change rates. These permissions are **optional** - the collector will work without them, but you won't get change rate metrics.
+
+### AWS CloudWatch Permissions
+
+Add these permissions to your IAM policy for change rate collection:
+
+```json
+{
+    "Sid": "CloudWatchChangeRateMetrics",
+    "Effect": "Allow",
+    "Action": [
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:GetMetricData"
+    ],
+    "Resource": "*"
+}
+```
+
+| Permission | Purpose |
+|------------|---------|
+| `cloudwatch:GetMetricStatistics` | Query EBS VolumeWriteBytes, RDS WriteIOPS, etc. |
+| `cloudwatch:GetMetricData` | Batch query for multiple metrics |
+
+**Metrics collected:**
+- EBS: `VolumeWriteBytes` - estimates daily write throughput
+- RDS: `WriteIOPS`, `BinLogDiskUsage`, `TransactionLogsDiskUsage` - estimates data and transaction log changes
+- S3: `NumberOfObjects` - estimates object churn rate
+
+### Azure Monitor Permissions
+
+Add these permissions to your custom role for change rate collection:
+
+```json
+{
+    "Actions": [
+        "Microsoft.Insights/metrics/read",
+        "Microsoft.Insights/metricDefinitions/read"
+    ]
+}
+```
+
+| Permission | Purpose |
+|------------|---------|
+| `Microsoft.Insights/metrics/read` | Query disk write metrics, SQL log metrics |
+| `Microsoft.Insights/metricDefinitions/read` | List available metrics |
+
+**Metrics collected:**
+- Managed Disks: `Composite Disk Write Bytes/sec` - estimates daily write throughput
+- Azure SQL: `log_write_percent` - estimates transaction log activity
+
+### GCP Cloud Monitoring Permissions
+
+Add these permissions to your custom role for change rate collection:
+
+```yaml
+includedPermissions:
+  - monitoring.timeSeries.list
+  - monitoring.metricDescriptors.list
+```
+
+| Permission | Purpose |
+|------------|---------|
+| `monitoring.timeSeries.list` | Query disk write metrics |
+| `monitoring.metricDescriptors.list` | List available metrics |
+
+**Metrics collected:**
+- Persistent Disks: `compute.googleapis.com/instance/disk/write_bytes_count` - estimates daily write throughput
+- Cloud SQL: `cloudsql.googleapis.com/database/disk/write_ops_count` - estimates database write activity
+
+### Change Rate Output Format
+
+When `--include-change-rate` is specified, collectors output a separate JSON file (`cca_*_change_rates_*.json`) with this structure:
+
+```json
+{
+  "change_rates": {
+    "aws:EBS": {
+      "provider": "aws",
+      "service_family": "EBS",
+      "resource_count": 150,
+      "total_size_gb": 5000.0,
+      "data_change": {
+        "daily_change_gb": 125.5,
+        "daily_change_percent": 2.51,
+        "sample_days": 7,
+        "data_points": 1050
+      }
+    },
+    "aws:RDS": {
+      "provider": "aws",
+      "service_family": "RDS",
+      "resource_count": 10,
+      "total_size_gb": 500.0,
+      "data_change": {
+        "daily_change_gb": 25.0,
+        "daily_change_percent": 5.0,
+        "sample_days": 7,
+        "data_points": 70
+      },
+      "transaction_logs": {
+        "daily_generation_gb": 10.5,
+        "capture_rate_percent": 100.0,
+        "sample_days": 7,
+        "data_points": 70
+      }
+    }
+  },
+  "collection_metadata": {
+    "collected_at": "2026-02-23T10:30:00Z",
+    "sample_period_days": 7,
+    "notes": [
+      "Data change rates are estimates based on write throughput metrics",
+      "Transaction log rates apply to database services (always 100% capture)",
+      "Use these values to override default DCR assumptions in sizing tools"
+    ]
+  }
+}
+```
 
 ---
 

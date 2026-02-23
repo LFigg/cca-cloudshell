@@ -133,6 +133,21 @@ Resources:
               # ElastiCache
               - elasticache:DescribeCacheClusters
               
+              # Redshift
+              - redshift:DescribeClusters
+              
+              # OpenSearch (Elasticsearch)
+              - es:ListDomainNames
+              - es:DescribeDomains
+              
+              # MemoryDB for Redis
+              - memorydb:DescribeClusters
+              
+              # Timestream
+              - timestream:ListDatabases
+              - timestream:ListTables
+              - timestream:DescribeTable
+              
               # AWS Backup
               - backup:ListBackupVaults
               - backup:ListRecoveryPointsByBackupVault

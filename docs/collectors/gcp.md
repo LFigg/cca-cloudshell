@@ -58,6 +58,11 @@ The collector uses Application Default Credentials (ADC).
 | `gcp:functions:function` | CloudFunctions | Cloud Functions |
 | `gcp:filestore:instance` | Filestore | Filestore instances |
 | `gcp:redis:instance` | Memorystore | Memorystore Redis |
+| `gcp:bigquery:dataset` | BigQuery | BigQuery datasets |
+| `gcp:spanner:instance` | Spanner | Cloud Spanner instances |
+| `gcp:bigtable:instance` | Bigtable | Cloud Bigtable instances |
+| `gcp:alloydb:cluster` | AlloyDB | AlloyDB clusters |
+| `gcp:alloydb:instance` | AlloyDB | AlloyDB instances |
 | `gcp:backupdr:vault` | Backup | Backup & DR vaults |
 | `gcp:backupdr:plan` | Backup | Backup plans |
 | `gcp:backupdr:datasource` | Backup | Data sources |

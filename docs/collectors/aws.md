@@ -117,6 +117,12 @@ python3 aws_collect.py --org-role CCARole --external-id MySecretExternalId
 | `aws:lambda:function` | Lambda | Serverless functions |
 | `aws:dynamodb:table` | DynamoDB | NoSQL tables |
 | `aws:elasticache:cluster` | ElastiCache | Cache clusters |
+| `aws:redshift:cluster` | Redshift | Data warehouse clusters |
+| `aws:docdb:cluster` | DocumentDB | MongoDB-compatible database |
+| `aws:neptune:cluster` | Neptune | Graph database |
+| `aws:opensearch:domain` | OpenSearch | Search/analytics engine |
+| `aws:memorydb:cluster` | MemoryDB | Persistent Redis |
+| `aws:timestream:table` | Timestream | Time-series database |
 | `aws:backup:vault` | Backup | Backup vaults |
 | `aws:backup:recovery-point` | Backup | Recovery points |
 | `aws:backup:plan` | Backup | Backup plans |

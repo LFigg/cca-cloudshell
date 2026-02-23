@@ -102,10 +102,27 @@ python3 gcp_collect.py --all-projects
 # Custom output directory
 python3 aws_collect.py -o ./my_output/
 
+# Include change rate metrics (for sizing tool DCR overrides)
+python3 aws_collect.py --include-change-rate --change-rate-days 14
+
 # Analyze backup/snapshot costs (requires management account for AWS Organizations)
 python3 cost_collect.py --aws --org-costs  # Break down by linked account
 python3 cost_collect.py --aws --start-date 2026-01-01
 ```
+
+### Change Rate Collection
+
+Use `--include-change-rate` to collect data change rate metrics from CloudWatch/Monitor:
+
+```bash
+python3 aws_collect.py --include-change-rate      # Default: 7-day sample
+python3 azure_collect.py --include-change-rate --change-rate-days 14  # 14-day sample
+python3 gcp_collect.py --include-change-rate
+```
+
+This outputs a separate `cca_*_change_rates_*.json` file with estimated daily change rates by service family. Use these values to override default DCR assumptions in sizing tools.
+
+**Note:** Requires additional monitoring permissions (CloudWatch for AWS, Azure Monitor for Azure, Cloud Monitoring for GCP). See [PERMISSIONS.md](docs/PERMISSIONS.md) for details.
 
 ## Config Files
 

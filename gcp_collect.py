@@ -41,6 +41,11 @@ from lib.utils import (
     write_json, write_csv, setup_logging, print_summary_table,
     retry_with_backoff, ProgressTracker
 )
+from lib.change_rate import (
+    DataChangeMetrics, TransactionLogMetrics, ChangeRateSummary,
+    aggregate_change_rates, format_change_rate_output,
+    get_gcp_monitoring_client, get_gcp_disk_change_rate, get_cloudsql_change_rate
+)
 
 logger = logging.getLogger(__name__)
 
@@ -805,6 +810,286 @@ def collect_backups(project_id: str) -> List[CloudResource]:
 
 
 # =============================================================================
+# BigQuery Collector
+# =============================================================================
+
+def collect_bigquery_datasets(project_id: str) -> List[CloudResource]:
+    """Collect BigQuery datasets and tables with storage size."""
+    resources = []
+    try:
+        from google.cloud import bigquery  # type: ignore[import-untyped]
+        
+        client = bigquery.Client(project=project_id)
+        
+        # List all datasets
+        for dataset_ref in client.list_datasets():
+            dataset = client.get_dataset(dataset_ref.reference)
+            
+            labels = dict(dataset.labels) if dataset.labels else {}
+            location = dataset.location or 'US'
+            
+            # Calculate total size from all tables
+            total_bytes = 0
+            table_count = 0
+            
+            for table_ref in client.list_tables(dataset.reference):
+                table_count += 1
+                try:
+                    table = client.get_table(table_ref.reference)
+                    if table.num_bytes:
+                        total_bytes += table.num_bytes
+                except Exception:
+                    pass
+            
+            total_gb = float(total_bytes) / (1024 ** 3) if total_bytes else 0.0
+            
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:bigquery:dataset",
+                service_family="BigQuery",
+                resource_id=f"projects/{project_id}/datasets/{dataset.dataset_id}",
+                name=dataset.dataset_id,
+                tags=labels,
+                size_gb=total_gb,
+                metadata={
+                    'location': location,
+                    'table_count': table_count,
+                    'total_bytes': total_bytes,
+                    'default_table_expiration_ms': dataset.default_table_expiration_ms,
+                    'creation_time': str(dataset.created),
+                    'modified_time': str(dataset.modified),
+                }
+            )
+            resources.append(resource)
+        
+        logger.info(f"Found {len(resources)} BigQuery datasets")
+    except ImportError:
+        logger.warning("BigQuery client not available. Install with: pip install google-cloud-bigquery")
+    except Exception as e:
+        logger.error(f"Failed to collect BigQuery datasets: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# Cloud Spanner Collector
+# =============================================================================
+
+def collect_spanner_instances(project_id: str) -> List[CloudResource]:
+    """Collect Cloud Spanner instances and databases."""
+    resources = []
+    try:
+        from google.cloud import spanner_v1  # type: ignore[import-untyped]
+        
+        client = spanner_v1.InstanceAdminClient()
+        
+        parent = f"projects/{project_id}"
+        
+        for instance in client.list_instances(parent=parent):
+            labels = dict(instance.labels) if instance.labels else {}
+            
+            # Extract region from instance config
+            config_name = instance.config or ''
+            location = 'global'
+            if 'regional' in config_name:
+                location = config_name.split('-')[-1] if '-' in config_name else 'unknown'
+            
+            # Node count and processing units for sizing
+            node_count = instance.node_count or 0
+            processing_units = instance.processing_units or 0
+            
+            # Estimate storage (Spanner charges per GB stored)
+            # No direct API, but we can list databases and get metadata
+            db_client = spanner_v1.DatabaseAdminClient()
+            db_parent = instance.name
+            
+            db_count = 0
+            try:
+                for db in db_client.list_databases(parent=db_parent):
+                    db_count += 1
+            except Exception:
+                pass
+            
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:spanner:instance",
+                service_family="Spanner",
+                resource_id=instance.name,
+                name=instance.display_name or instance.name.split('/')[-1],
+                tags=labels,
+                size_gb=0.0,  # Storage size not directly available via API
+                metadata={
+                    'state': instance.state.name if instance.state else '',
+                    'config': config_name,
+                    'node_count': node_count,
+                    'processing_units': processing_units,
+                    'database_count': db_count,
+                }
+            )
+            resources.append(resource)
+        
+        logger.info(f"Found {len(resources)} Cloud Spanner instances")
+    except ImportError:
+        logger.warning("Spanner client not available. Install with: pip install google-cloud-spanner")
+    except Exception as e:
+        logger.error(f"Failed to collect Spanner instances: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# Bigtable Collector
+# =============================================================================
+
+def collect_bigtable_instances(project_id: str) -> List[CloudResource]:
+    """Collect Cloud Bigtable instances and clusters."""
+    resources = []
+    try:
+        from google.cloud import bigtable  # type: ignore[import-untyped]
+        from google.cloud.bigtable import enums
+        
+        client = bigtable.Client(project=project_id, admin=True)
+        
+        for instance in client.list_instances()[0]:  # Returns (instances, failed_locations)
+            labels = dict(instance.labels) if hasattr(instance, 'labels') and instance.labels else {}
+            
+            # Get clusters for this instance
+            cluster_count = 0
+            total_nodes = 0
+            locations = []
+            storage_type = 'unknown'
+            
+            try:
+                clusters = instance.list_clusters()[0]  # Returns (clusters, failed_locations)
+                for cluster in clusters:
+                    cluster_count += 1
+                    if hasattr(cluster, 'serve_nodes'):
+                        total_nodes += cluster.serve_nodes
+                    if hasattr(cluster, 'location'):
+                        locations.append(cluster.location_id if hasattr(cluster, 'location_id') else str(cluster.location))
+                    if hasattr(cluster, 'default_storage_type'):
+                        storage_type = str(cluster.default_storage_type)
+            except Exception as e:
+                logger.debug(f"Failed to get clusters for instance {instance.instance_id}: {e}")
+            
+            location = locations[0] if locations else 'unknown'
+            
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:bigtable:instance",
+                service_family="Bigtable",
+                resource_id=f"projects/{project_id}/instances/{instance.instance_id}",
+                name=instance.display_name or instance.instance_id,
+                tags=labels,
+                size_gb=0.0,  # Bigtable storage size not directly available
+                metadata={
+                    'instance_type': str(instance.type_) if hasattr(instance, 'type_') else 'unknown',
+                    'cluster_count': cluster_count,
+                    'total_nodes': total_nodes,
+                    'locations': locations,
+                    'storage_type': storage_type,
+                }
+            )
+            resources.append(resource)
+        
+        logger.info(f"Found {len(resources)} Bigtable instances")
+    except ImportError:
+        logger.warning("Bigtable client not available. Install with: pip install google-cloud-bigtable")
+    except Exception as e:
+        logger.error(f"Failed to collect Bigtable instances: {e}")
+    
+    return resources
+
+
+# =============================================================================
+# AlloyDB Collector
+# =============================================================================
+
+def collect_alloydb_clusters(project_id: str) -> List[CloudResource]:
+    """Collect AlloyDB for PostgreSQL clusters and instances."""
+    resources = []
+    try:
+        from google.cloud import alloydb_v1  # type: ignore[import-untyped]
+        
+        client = alloydb_v1.AlloyDBAdminClient()
+        
+        # List clusters in all locations
+        parent = f"projects/{project_id}/locations/-"
+        
+        for cluster in client.list_clusters(parent=parent):
+            labels = dict(cluster.labels) if cluster.labels else {}
+            
+            # Extract location from cluster name
+            location = cluster.name.split('/')[3] if '/' in cluster.name else 'unknown'
+            
+            # Get cluster network config
+            network_config = cluster.network_config if hasattr(cluster, 'network_config') else None
+            
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:alloydb:cluster",
+                service_family="AlloyDB",
+                resource_id=cluster.name,
+                name=cluster.display_name or cluster.name.split('/')[-1],
+                tags=labels,
+                size_gb=0.0,  # Storage auto-scales; size tracked by instances
+                metadata={
+                    'state': cluster.state.name if hasattr(cluster, 'state') and cluster.state else '',
+                    'cluster_type': cluster.cluster_type.name if hasattr(cluster, 'cluster_type') and cluster.cluster_type else 'unknown',
+                    'database_version': str(cluster.database_version) if hasattr(cluster, 'database_version') else '',
+                }
+            )
+            resources.append(resource)
+            
+            # List instances for this cluster
+            try:
+                for instance in client.list_instances(parent=cluster.name):
+                    instance_labels = dict(instance.labels) if instance.labels else {}
+                    
+                    # Get instance size from machine config
+                    machine_config = instance.machine_config if hasattr(instance, 'machine_config') else None
+                    cpu_count = getattr(machine_config, 'cpu_count', 0) if machine_config else 0
+                    
+                    instance_resource = CloudResource(
+                        provider="gcp",
+                        account_id=project_id,
+                        region=location,
+                        resource_type="gcp:alloydb:instance",
+                        service_family="AlloyDB",
+                        resource_id=instance.name,
+                        name=instance.display_name or instance.name.split('/')[-1],
+                        tags=instance_labels,
+                        size_gb=0.0,
+                        parent_resource_id=cluster.name,
+                        metadata={
+                            'state': instance.state.name if hasattr(instance, 'state') and instance.state else '',
+                            'instance_type': instance.instance_type.name if hasattr(instance, 'instance_type') and instance.instance_type else 'unknown',
+                            'cpu_count': cpu_count,
+                            'availability_type': instance.availability_type.name if hasattr(instance, 'availability_type') and instance.availability_type else 'unknown',
+                        }
+                    )
+                    resources.append(instance_resource)
+            except Exception as e:
+                logger.debug(f"Failed to list instances for cluster {cluster.name}: {e}")
+        
+        logger.info(f"Found {len(resources)} AlloyDB clusters and instances")
+    except ImportError:
+        logger.warning("AlloyDB client not available. Install with: pip install google-cloud-alloydb")
+    except Exception as e:
+        logger.error(f"Failed to collect AlloyDB clusters: {e}")
+    
+    return resources
+
+
+# =============================================================================
 # Main Collection
 # =============================================================================
 
@@ -835,6 +1120,12 @@ def collect_project(project_id: str, tracker: Optional[ProgressTracker] = None) 
     # Databases
     all_resources.extend(collect_and_track("Cloud SQL instances", collect_cloud_sql_instances, project_id))
     all_resources.extend(collect_and_track("Memorystore Redis", collect_memorystore_redis, project_id))
+    all_resources.extend(collect_and_track("Cloud Spanner instances", collect_spanner_instances, project_id))
+    all_resources.extend(collect_and_track("AlloyDB clusters", collect_alloydb_clusters, project_id))
+    
+    # Analytics
+    all_resources.extend(collect_and_track("BigQuery datasets", collect_bigquery_datasets, project_id))
+    all_resources.extend(collect_and_track("Bigtable instances", collect_bigtable_instances, project_id))
     
     # Containers & Compute
     all_resources.extend(collect_and_track("GKE clusters", collect_gke_clusters, project_id))
@@ -849,6 +1140,97 @@ def collect_project(project_id: str, tracker: Optional[ProgressTracker] = None) 
     return all_resources
 
 
+# =============================================================================
+# Change Rate Collection
+# =============================================================================
+
+def collect_gcp_change_rates(
+    project_id: str,
+    resources: List[CloudResource],
+    days: int = 7
+) -> Dict[str, Any]:
+    """
+    Collect change rate metrics from Cloud Monitoring for the collected resources.
+    
+    Args:
+        project_id: GCP project ID
+        resources: List of CloudResource objects collected from the project
+        days: Number of days to sample for metrics
+    
+    Returns:
+        Dict with change rate summaries by service family
+    """
+    change_rates = []
+    
+    # Get Monitoring client
+    monitoring_client = get_gcp_monitoring_client(project_id)
+    if not monitoring_client:
+        logger.warning("Cloud Monitoring client not available, skipping change rate collection")
+        return {}
+    
+    for resource in resources:
+        try:
+            rate_entry = _collect_gcp_resource_change_rate(
+                monitoring_client, project_id, resource, days
+            )
+            if rate_entry:
+                change_rates.append(rate_entry)
+        except Exception as e:
+            logger.debug(f"Error collecting change rate for {resource.resource_id}: {e}")
+            continue
+    
+    # Aggregate change rates by service family
+    summaries = aggregate_change_rates(change_rates)
+    return format_change_rate_output(summaries)
+
+
+def _collect_gcp_resource_change_rate(
+    monitoring_client,
+    project_id: str,
+    resource: CloudResource,
+    days: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Collect change rate for a single GCP resource based on its type.
+    """
+    service_family = resource.service_family
+    
+    if service_family == 'PersistentDisk':
+        # GCP persistent disks
+        disk_name = resource.metadata.get('disk_name', resource.name)
+        zone = resource.region  # For zonal disks, this would be the zone
+        
+        if disk_name and zone:
+            data_change = get_gcp_disk_change_rate(
+                monitoring_client, project_id, disk_name, zone, resource.size_gb, days
+            )
+            if data_change:
+                return {
+                    'provider': 'gcp',
+                    'service_family': 'PersistentDisk',
+                    'size_gb': resource.size_gb,
+                    'data_change': data_change
+                }
+    
+    elif service_family == 'CloudSQL':
+        # Cloud SQL instances
+        instance_id = resource.metadata.get('instance_name', resource.name)
+        
+        if instance_id:
+            data_change = get_cloudsql_change_rate(
+                monitoring_client, project_id, instance_id, resource.size_gb, days
+            )
+            if data_change:
+                return {
+                    'provider': 'gcp',
+                    'service_family': 'CloudSQL',
+                    'size_gb': resource.size_gb,
+                    'data_change': data_change
+                }
+    
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description='CCA CloudShell - GCP Resource Collector')
     parser.add_argument('--project', help='GCP project ID (default: current project)')
@@ -856,6 +1238,17 @@ def main():
     parser.add_argument('--regions', help='Comma-separated list of regions to filter (e.g., us-central1,us-east1)')
     parser.add_argument('--output', help='Output directory or GCS path', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
+    parser.add_argument(
+        '--include-change-rate',
+        action='store_true',
+        help='Collect data change rates from Cloud Monitoring (for sizing tool DCR overrides)'
+    )
+    parser.add_argument(
+        '--change-rate-days',
+        type=int,
+        default=7,
+        help='Number of days to sample for change rate metrics (default: 7)'
+    )
     
     args = parser.parse_args()
     
@@ -914,6 +1307,60 @@ def main():
         # Aggregate sizing
         sizing = aggregate_sizing(all_resources)
         
+        # Collect change rates if requested
+        change_rate_data = None
+        if args.include_change_rate:
+            logger.info("Collecting change rate metrics from Cloud Monitoring...")
+            print("Collecting change rate metrics from Cloud Monitoring...")
+            all_change_rates = {}
+            for project_id in project_ids:
+                if project_id in [p['project_id'] for p in failed_projects]:
+                    continue  # Skip failed projects
+                try:
+                    # Filter resources for this project
+                    proj_resources = [r for r in all_resources if r.metadata.get('project_id') == project_id or r.resource_id.startswith(f"projects/{project_id}")]
+                    cr_data = collect_gcp_change_rates(project_id, proj_resources, args.change_rate_days)
+                    # Merge into overall change rates
+                    for key, summary in cr_data.get('change_rates', {}).items():
+                        if key not in all_change_rates:
+                            all_change_rates[key] = summary
+                        else:
+                            # Aggregate across projects
+                            existing = all_change_rates[key]
+                            existing['resource_count'] += summary['resource_count']
+                            existing['total_size_gb'] += summary['total_size_gb']
+                            existing['data_change']['daily_change_gb'] += summary['data_change']['daily_change_gb']
+                            existing['data_change']['data_points'] += summary['data_change']['data_points']
+                            if summary.get('transaction_logs'):
+                                if existing.get('transaction_logs'):
+                                    existing['transaction_logs']['daily_generation_gb'] += summary['transaction_logs']['daily_generation_gb']
+                                else:
+                                    existing['transaction_logs'] = summary['transaction_logs']
+                except Exception as e:
+                    logger.warning(f"Failed to collect change rates for project {project_id}: {e}")
+            
+            if all_change_rates:
+                # Recalculate percentages after aggregation
+                for key, summary in all_change_rates.items():
+                    if summary['total_size_gb'] > 0 and summary['data_change']['daily_change_gb'] > 0:
+                        summary['data_change']['daily_change_percent'] = (
+                            summary['data_change']['daily_change_gb'] / summary['total_size_gb'] * 100
+                        )
+                
+                change_rate_data = {
+                    'change_rates': all_change_rates,
+                    'collection_metadata': {
+                        'collected_at': timestamp,
+                        'sample_period_days': args.change_rate_days,
+                        'notes': [
+                            'Data change rates are estimates based on Cloud Monitoring write throughput metrics',
+                            'Transaction log rates apply to database services (always 100% capture)',
+                            'Use these values to override default DCR assumptions in sizing tools'
+                        ]
+                    }
+                }
+                logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+        
         # Prepare output data
         inventory_data = {
             'run_id': run_id,
@@ -929,8 +1376,12 @@ def main():
             'provider': 'gcp',
             'project_ids': project_ids,
             'total_resources': len(all_resources),
-            'sizing': [s.to_dict() for s in sizing]
+            'sizing': [s.to_dict() for s in sizing],
+            'change_rates': change_rate_data if change_rate_data else None
         }
+        
+        # Remove None values
+        summary_data = {k: v for k, v in summary_data.items() if v is not None}
         
         # Write outputs
         output_dir = args.output.rstrip('/')
@@ -947,6 +1398,18 @@ def main():
         
         write_json(inventory_data, inv_file)
         write_json(summary_data, sum_file)
+        
+        # Write change rate data to separate file if collected
+        if change_rate_data:
+            change_rate_file = f"{output_dir}/cca_gcp_change_rates_{file_ts}.json"
+            change_rate_output = {
+                'run_id': run_id,
+                'timestamp': timestamp,
+                'provider': 'gcp',
+                'project_ids': project_ids,
+                **change_rate_data
+            }
+            write_json(change_rate_output, change_rate_file)
         
         # Write CSV for spreadsheet use
         csv_data = [s.to_dict() for s in sizing]

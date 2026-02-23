@@ -77,7 +77,11 @@
                             "Microsoft.DBforPostgreSQL/flexibleServers/read",
                             "Microsoft.DBforMySQL/servers/read",
                             "Microsoft.DBforMySQL/flexibleServers/read",
-                            "Microsoft.DBforMariaDB/servers/read"
+                            "Microsoft.DBforMariaDB/servers/read",
+                            
+                            "Microsoft.Synapse/workspaces/read",
+                            "Microsoft.Synapse/workspaces/sqlPools/read",
+                            "Microsoft.Synapse/workspaces/bigDataPools/read"
                         ],
                         "notActions": [],
                         "dataActions": [],

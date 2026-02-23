@@ -55,6 +55,11 @@ The collector uses `DefaultAzureCredential` which tries multiple authentication 
 | `azure:sql:database` | AzureSQL | SQL databases |
 | `azure:sql:managed-instance` | AzureSQL | SQL Managed Instances |
 | `azure:cosmosdb:account` | CosmosDB | Cosmos DB accounts |
+| `azure:postgresql:flexibleserver` | PostgreSQL | PostgreSQL Flexible Servers |
+| `azure:mysql:flexibleserver` | MySQL | MySQL Flexible Servers |
+| `azure:mariadb:server` | MariaDB | MariaDB servers |
+| `azure:synapse:workspace` | Synapse | Synapse Analytics workspaces |
+| `azure:synapse:sqlpool` | Synapse | Dedicated SQL pools |
 | `azure:aks:cluster` | AKS | Kubernetes clusters |
 | `azure:web:functionapp` | Functions | Function apps |
 | `azure:cache:redis` | Redis | Redis cache instances |
