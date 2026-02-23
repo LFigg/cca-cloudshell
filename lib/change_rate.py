@@ -301,7 +301,7 @@ def get_s3_change_rate(cloudwatch_client, bucket_name: str, bucket_size_gb: floa
 def get_azure_monitor_client(credential, subscription_id: str):
     """Get Azure Monitor client."""
     try:
-        from azure.mgmt.monitor import MonitorManagementClient
+        from azure.mgmt.monitor import MonitorManagementClient  # type: ignore[import-not-found]
         return MonitorManagementClient(credential, subscription_id)
     except ImportError:
         logger.warning("azure-mgmt-monitor not installed, change rate collection unavailable")
@@ -415,7 +415,7 @@ def get_azure_sql_transaction_log_rate(monitor_client, resource_id: str, days: i
 def get_gcp_monitoring_client(project_id: str):
     """Get GCP Cloud Monitoring client."""
     try:
-        from google.cloud import monitoring_v3
+        from google.cloud import monitoring_v3  # type: ignore[import-not-found]
         return monitoring_v3.MetricServiceClient()
     except ImportError:
         logger.warning("google-cloud-monitoring not installed, change rate collection unavailable")
@@ -433,7 +433,8 @@ def get_gcp_metric_average(
     Get average daily value of a GCP Cloud Monitoring metric.
     """
     try:
-        from google.cloud.monitoring_v3 import query
+        from google.cloud.monitoring_v3 import query  # type: ignore[import-not-found]
+        from google.cloud import monitoring_v3  # type: ignore[import-not-found]
         from google.protobuf.timestamp_pb2 import Timestamp
         
         end_time = datetime.now(timezone.utc)
