@@ -124,6 +124,28 @@ This outputs a separate `cca_*_change_rates_*.json` file with estimated daily ch
 
 **Note:** Requires additional monitoring permissions (CloudWatch for AWS, Azure Monitor for Azure, Cloud Monitoring for GCP). See [PERMISSIONS.md](docs/PERMISSIONS.md) for details.
 
+### Kubernetes PVC Collection
+
+Use `--include-pvc` to collect PersistentVolumeClaims from managed Kubernetes clusters:
+
+```bash
+python3 aws_collect.py --include-pvc      # Collect PVCs from EKS clusters
+python3 azure_collect.py --include-pvc    # Collect PVCs from AKS clusters
+python3 gcp_collect.py --include-pvc      # Collect PVCs from GKE clusters
+```
+
+This collects:
+- PVC name, namespace, and storage class
+- Requested and actual storage sizes
+- Access modes (ReadWriteOnce, ReadWriteMany, etc.)
+- Bound PersistentVolume information
+- Pods using each PVC
+
+**Requirements:**
+- `kubernetes` Python package: `pip install kubernetes`
+- K8s RBAC permissions to list PVCs, PVs, and Pods in the cluster
+- Network connectivity to cluster API endpoints
+
 ## Config Files
 
 Use YAML config files for repeated runs or complex configurations:

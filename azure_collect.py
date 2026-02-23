@@ -51,6 +51,7 @@ from lib.change_rate import (
     aggregate_change_rates, format_change_rate_output,
     get_azure_monitor_client, get_azure_disk_change_rate, get_azure_sql_transaction_log_rate
 )
+from lib.k8s import collect_aks_pvcs
 
 logger = logging.getLogger(__name__)
 
@@ -1562,6 +1563,11 @@ def main():
         help='Collect data change rates from Azure Monitor (for sizing tool DCR overrides)'
     )
     parser.add_argument(
+        '--include-pvc',
+        action='store_true',
+        help='Collect Kubernetes PersistentVolumeClaims from AKS clusters (requires kubernetes package)'
+    )
+    parser.add_argument(
         '--change-rate-days',
         type=int,
         default=7,
@@ -1685,6 +1691,43 @@ def main():
                 }
             }
             logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+    
+    # Collect PVCs from AKS clusters if requested
+    if args.include_pvc:
+        logger.info("Collecting PVCs from AKS clusters...")
+        print("Collecting PVCs from AKS clusters...")
+        
+        # Find all AKS clusters in the collected resources
+        aks_clusters = [r for r in all_resources if r.resource_type == 'azure:aks:cluster']
+        
+        if aks_clusters:
+            pvc_count = 0
+            for cluster in aks_clusters:
+                try:
+                    resource_group = cluster.metadata.get('resource_group', '')
+                    if not resource_group:
+                        # Extract from resource ID
+                        parts = cluster.resource_id.split('/')
+                        rg_idx = parts.index('resourceGroups') if 'resourceGroups' in parts else -1
+                        resource_group = parts[rg_idx + 1] if rg_idx >= 0 else ''
+                    
+                    cluster_pvcs = collect_aks_pvcs(
+                        credential,
+                        cluster.subscription_id,
+                        resource_group,
+                        cluster.name,
+                        cluster.region
+                    )
+                    all_resources.extend(cluster_pvcs)
+                    pvc_count += len(cluster_pvcs)
+                    if cluster_pvcs:
+                        logger.info(f"Found {len(cluster_pvcs)} PVCs in AKS cluster {cluster.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to collect PVCs from AKS cluster {cluster.name}: {e}")
+            
+            print(f"Collected {pvc_count} PVCs from {len(aks_clusters)} AKS clusters")
+        else:
+            print("No AKS clusters found - skipping PVC collection")
     
     # Prepare output
     run_id = generate_run_id()

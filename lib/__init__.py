@@ -29,6 +29,15 @@ from .change_rate import (
     get_gcp_disk_change_rate,
     get_cloudsql_change_rate
 )
+from .k8s import (
+    PVCInfo,
+    parse_k8s_storage_size,
+    get_k8s_client,
+    collect_pvcs_from_cluster,
+    collect_eks_pvcs,
+    collect_aks_pvcs,
+    collect_gke_pvcs
+)
 
 __all__ = [
     'CloudResource',
@@ -57,4 +66,12 @@ __all__ = [
     'get_gcp_monitoring_client',
     'get_gcp_disk_change_rate',
     'get_cloudsql_change_rate',
+    # K8s PVC exports
+    'PVCInfo',
+    'parse_k8s_storage_size',
+    'get_k8s_client',
+    'collect_pvcs_from_cluster',
+    'collect_eks_pvcs',
+    'collect_aks_pvcs',
+    'collect_gke_pvcs',
 ]

@@ -46,6 +46,7 @@ from lib.change_rate import (
     aggregate_change_rates, format_change_rate_output,
     get_gcp_monitoring_client, get_gcp_disk_change_rate, get_cloudsql_change_rate
 )
+from lib.k8s import collect_gke_pvcs
 
 logger = logging.getLogger(__name__)
 
@@ -1244,6 +1245,11 @@ def main():
         help='Collect data change rates from Cloud Monitoring (for sizing tool DCR overrides)'
     )
     parser.add_argument(
+        '--include-pvc',
+        action='store_true',
+        help='Collect Kubernetes PersistentVolumeClaims from GKE clusters (requires kubernetes package)'
+    )
+    parser.add_argument(
         '--change-rate-days',
         type=int,
         default=7,
@@ -1360,6 +1366,38 @@ def main():
                     }
                 }
                 logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+        
+        # Collect PVCs from GKE clusters if requested
+        if args.include_pvc:
+            logger.info("Collecting PVCs from GKE clusters...")
+            print("Collecting PVCs from GKE clusters...")
+            
+            # Find all GKE clusters in the collected resources
+            gke_clusters = [r for r in all_resources if r.resource_type == 'gcp:container:cluster']
+            
+            if gke_clusters:
+                pvc_count = 0
+                for cluster in gke_clusters:
+                    try:
+                        # Extract project_id from resource_id: projects/{project}/locations/{location}/clusters/{name}
+                        parts = cluster.resource_id.split('/')
+                        project_id = parts[1] if len(parts) > 1 else cluster.account_id
+                        
+                        cluster_pvcs = collect_gke_pvcs(
+                            project_id,
+                            cluster.region,  # This is the location
+                            cluster.name
+                        )
+                        all_resources.extend(cluster_pvcs)
+                        pvc_count += len(cluster_pvcs)
+                        if cluster_pvcs:
+                            logger.info(f"Found {len(cluster_pvcs)} PVCs in GKE cluster {cluster.name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to collect PVCs from GKE cluster {cluster.name}: {e}")
+                
+                print(f"Collected {pvc_count} PVCs from {len(gke_clusters)} GKE clusters")
+            else:
+                print("No GKE clusters found - skipping PVC collection")
         
         # Prepare output data
         inventory_data = {

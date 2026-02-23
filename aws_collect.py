@@ -65,6 +65,7 @@ from lib.change_rate import (
     get_aws_cloudwatch_client, get_ebs_volume_change_rate,
     get_rds_transaction_log_rate, get_rds_write_iops_change_rate, get_s3_change_rate
 )
+from lib.k8s import collect_eks_pvcs
 from lib.config import load_config, generate_sample_config
 
 logger = logging.getLogger(__name__)
@@ -2084,6 +2085,11 @@ Large Environment Examples:
         help='Collect data change rates from CloudWatch (for sizing tool DCR overrides)'
     )
     parser.add_argument(
+        '--include-pvc',
+        action='store_true',
+        help='Collect Kubernetes PersistentVolumeClaims from EKS clusters (requires kubernetes package)'
+    )
+    parser.add_argument(
         '--change-rate-days',
         type=int,
         default=7,
@@ -2447,6 +2453,37 @@ Large Environment Examples:
                     }
                 }
                 logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+        
+        # Collect PVCs from EKS clusters if requested
+        if args.include_pvc:
+            logger.info("Collecting PVCs from EKS clusters...")
+            print("Collecting PVCs from EKS clusters...")
+            
+            # Find all EKS clusters in the collected resources
+            eks_clusters = [r for r in batch_resources if r.resource_type == 'aws:eks:cluster']
+            
+            if eks_clusters:
+                pvc_count = 0
+                for session, account_id, account_name in account_sessions:
+                    account_clusters = [c for c in eks_clusters if c.account_id == account_id]
+                    for cluster in account_clusters:
+                        try:
+                            cluster_pvcs = collect_eks_pvcs(
+                                session, 
+                                cluster.name, 
+                                cluster.region, 
+                                account_id
+                            )
+                            batch_resources.extend(cluster_pvcs)
+                            pvc_count += len(cluster_pvcs)
+                            if cluster_pvcs:
+                                logger.info(f"[{cluster.region}] Found {len(cluster_pvcs)} PVCs in cluster {cluster.name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to collect PVCs from cluster {cluster.name}: {e}")
+                
+                print(f"Collected {pvc_count} PVCs from {len(eks_clusters)} EKS clusters")
+            else:
+                print("No EKS clusters found - skipping PVC collection")
         
         # Write batch outputs
         run_id = generate_run_id()

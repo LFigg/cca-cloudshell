@@ -579,6 +579,95 @@ When `--include-change-rate` is specified, collectors output a separate JSON fil
 
 ---
 
+## Kubernetes PVC Collection Permissions (Optional)
+
+When using the `--include-pvc` flag, the collectors connect to managed Kubernetes clusters (EKS/AKS/GKE) to discover PersistentVolumeClaims. These permissions are **optional** - the collector will work without them, but you won't get PVC data.
+
+### Prerequisites
+
+1. **Python package**: `pip install kubernetes`
+2. **Network connectivity** to cluster API endpoints
+3. **Cloud provider permissions** to get cluster credentials (already included in base permissions)
+
+### Kubernetes RBAC Permissions
+
+Create a ClusterRole in each cluster with read-only access to storage resources:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cca-pvc-reader
+rules:
+  - apiGroups: [""]
+    resources:
+      - persistentvolumeclaims
+      - persistentvolumes
+      - pods
+      - namespaces
+    verbs: ["get", "list"]
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cca-pvc-reader-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cca-pvc-reader
+subjects:
+  # For EKS: Use the IAM role ARN
+  - kind: User
+    name: arn:aws:iam::123456789012:role/CCACollectorRole
+    apiGroup: rbac.authorization.k8s.io
+  # For AKS: Use the Azure AD identity
+  # - kind: User
+  #   name: <service-principal-object-id>
+  #   apiGroup: rbac.authorization.k8s.io
+  # For GKE: Use the service account email
+  # - kind: User
+  #   name: <service-account>@<project>.iam.gserviceaccount.com
+  #   apiGroup: rbac.authorization.k8s.io
+```
+
+### Collected PVC Data
+
+| Field | Description |
+|-------|-------------|
+| `namespace` | Kubernetes namespace |
+| `name` | PVC name |
+| `storage_class` | StorageClass used for provisioning |
+| `access_modes` | ReadWriteOnce, ReadWriteMany, ReadOnlyMany |
+| `requested_size_gb` | Storage requested in the PVC spec |
+| `actual_size_gb` | Actual size from bound PersistentVolume |
+| `status` | Bound, Pending, Lost |
+| `bound_pv` | Name of bound PersistentVolume |
+| `volume_mode` | Filesystem or Block |
+| `pods_using` | List of pods claiming this PVC |
+
+### Provider-Specific Notes
+
+**AWS EKS:**
+- The IAM role used for collection needs `eks:DescribeCluster` permission (already in base policy)
+- Authentication uses STS to generate a bearer token equivalent to `aws eks get-token`
+- Works with both public and private cluster endpoints (if network accessible)
+
+**Azure AKS:**
+- Uses Azure AD credentials to authenticate to cluster
+- Requires `Microsoft.ContainerService/managedClusters/listClusterAdminCredential/action` (already in base role)
+- Works with both public and private clusters (if network accessible)
+
+**GCP GKE:**
+- Uses Application Default Credentials for cluster authentication
+- Requires `container.clusters.get` permission (already in base role)
+- Works with both public and private clusters (if network accessible)
+
+---
+
 ## Microsoft 365 Permissions
 
 The M365 collector requires an Azure AD App Registration with Microsoft Graph API permissions.
