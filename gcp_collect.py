@@ -1245,9 +1245,9 @@ def main():
         help='Collect data change rates from Cloud Monitoring (for sizing tool DCR overrides)'
     )
     parser.add_argument(
-        '--include-pvc',
+        '--skip-pvc',
         action='store_true',
-        help='Collect Kubernetes PersistentVolumeClaims from GKE clusters (requires kubernetes package)'
+        help='Skip PVC collection from GKE clusters (PVCs are collected by default when clusters are found)'
     )
     parser.add_argument(
         '--change-rate-days',
@@ -1367,37 +1367,43 @@ def main():
                 }
                 logger.info(f"Collected change rates for {len(all_change_rates)} service families")
         
-        # Collect PVCs from GKE clusters if requested
-        if args.include_pvc:
+        # Collect PVCs from GKE clusters (automatic when clusters are discovered)
+        gke_clusters = [r for r in all_resources if r.resource_type == 'gcp:container:cluster']
+        
+        if gke_clusters and not args.skip_pvc:
             logger.info("Collecting PVCs from GKE clusters...")
             print("Collecting PVCs from GKE clusters...")
             
-            # Find all GKE clusters in the collected resources
-            gke_clusters = [r for r in all_resources if r.resource_type == 'gcp:container:cluster']
+            pvc_count = 0
+            k8s_available = True
+            for cluster in gke_clusters:
+                if not k8s_available:
+                    break
+                try:
+                    # Extract project_id from resource_id: projects/{project}/locations/{location}/clusters/{name}
+                    parts = cluster.resource_id.split('/')
+                    project_id = parts[1] if len(parts) > 1 else cluster.account_id
+                    
+                    cluster_pvcs = collect_gke_pvcs(
+                        project_id,
+                        cluster.region,  # This is the location
+                        cluster.name
+                    )
+                    all_resources.extend(cluster_pvcs)
+                    pvc_count += len(cluster_pvcs)
+                    if cluster_pvcs:
+                        logger.info(f"Found {len(cluster_pvcs)} PVCs in GKE cluster {cluster.name}")
+                except ImportError:
+                    logger.info("kubernetes package not installed - skipping PVC collection (pip install kubernetes)")
+                    print("Note: Install 'kubernetes' package for PVC collection: pip install kubernetes")
+                    k8s_available = False
+                except Exception as e:
+                    logger.warning(f"Failed to collect PVCs from GKE cluster {cluster.name}: {e}")
             
-            if gke_clusters:
-                pvc_count = 0
-                for cluster in gke_clusters:
-                    try:
-                        # Extract project_id from resource_id: projects/{project}/locations/{location}/clusters/{name}
-                        parts = cluster.resource_id.split('/')
-                        project_id = parts[1] if len(parts) > 1 else cluster.account_id
-                        
-                        cluster_pvcs = collect_gke_pvcs(
-                            project_id,
-                            cluster.region,  # This is the location
-                            cluster.name
-                        )
-                        all_resources.extend(cluster_pvcs)
-                        pvc_count += len(cluster_pvcs)
-                        if cluster_pvcs:
-                            logger.info(f"Found {len(cluster_pvcs)} PVCs in GKE cluster {cluster.name}")
-                    except Exception as e:
-                        logger.warning(f"Failed to collect PVCs from GKE cluster {cluster.name}: {e}")
-                
+            if pvc_count > 0:
                 print(f"Collected {pvc_count} PVCs from {len(gke_clusters)} GKE clusters")
-            else:
-                print("No GKE clusters found - skipping PVC collection")
+        elif gke_clusters and args.skip_pvc:
+            logger.info("Skipping PVC collection (--skip-pvc specified)")
         
         # Prepare output data
         inventory_data = {

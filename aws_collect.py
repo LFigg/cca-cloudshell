@@ -2085,9 +2085,9 @@ Large Environment Examples:
         help='Collect data change rates from CloudWatch (for sizing tool DCR overrides)'
     )
     parser.add_argument(
-        '--include-pvc',
+        '--skip-pvc',
         action='store_true',
-        help='Collect Kubernetes PersistentVolumeClaims from EKS clusters (requires kubernetes package)'
+        help='Skip PVC collection from EKS clusters (PVCs are collected by default when clusters are found)'
     )
     parser.add_argument(
         '--change-rate-days',
@@ -2454,36 +2454,42 @@ Large Environment Examples:
                 }
                 logger.info(f"Collected change rates for {len(all_change_rates)} service families")
         
-        # Collect PVCs from EKS clusters if requested
-        if args.include_pvc:
+        # Collect PVCs from EKS clusters (automatic when clusters are discovered)
+        eks_clusters = [r for r in batch_resources if r.resource_type == 'aws:eks:cluster']
+        
+        if eks_clusters and not args.skip_pvc:
             logger.info("Collecting PVCs from EKS clusters...")
             print("Collecting PVCs from EKS clusters...")
             
-            # Find all EKS clusters in the collected resources
-            eks_clusters = [r for r in batch_resources if r.resource_type == 'aws:eks:cluster']
+            pvc_count = 0
+            for session, account_id, account_name in account_sessions:
+                account_clusters = [c for c in eks_clusters if c.account_id == account_id]
+                for cluster in account_clusters:
+                    try:
+                        cluster_pvcs = collect_eks_pvcs(
+                            session, 
+                            cluster.name, 
+                            cluster.region, 
+                            account_id
+                        )
+                        batch_resources.extend(cluster_pvcs)
+                        pvc_count += len(cluster_pvcs)
+                        if cluster_pvcs:
+                            logger.info(f"[{cluster.region}] Found {len(cluster_pvcs)} PVCs in cluster {cluster.name}")
+                    except ImportError:
+                        logger.info("kubernetes package not installed - skipping PVC collection (pip install kubernetes)")
+                        print("Note: Install 'kubernetes' package for PVC collection: pip install kubernetes")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed to collect PVCs from cluster {cluster.name}: {e}")
+                else:
+                    continue
+                break  # Break outer loop if ImportError occurred
             
-            if eks_clusters:
-                pvc_count = 0
-                for session, account_id, account_name in account_sessions:
-                    account_clusters = [c for c in eks_clusters if c.account_id == account_id]
-                    for cluster in account_clusters:
-                        try:
-                            cluster_pvcs = collect_eks_pvcs(
-                                session, 
-                                cluster.name, 
-                                cluster.region, 
-                                account_id
-                            )
-                            batch_resources.extend(cluster_pvcs)
-                            pvc_count += len(cluster_pvcs)
-                            if cluster_pvcs:
-                                logger.info(f"[{cluster.region}] Found {len(cluster_pvcs)} PVCs in cluster {cluster.name}")
-                        except Exception as e:
-                            logger.warning(f"Failed to collect PVCs from cluster {cluster.name}: {e}")
-                
+            if pvc_count > 0:
                 print(f"Collected {pvc_count} PVCs from {len(eks_clusters)} EKS clusters")
-            else:
-                print("No EKS clusters found - skipping PVC collection")
+        elif eks_clusters and args.skip_pvc:
+            logger.info("Skipping PVC collection (--skip-pvc specified)")
         
         # Write batch outputs
         run_id = generate_run_id()

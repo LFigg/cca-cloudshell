@@ -1563,9 +1563,9 @@ def main():
         help='Collect data change rates from Azure Monitor (for sizing tool DCR overrides)'
     )
     parser.add_argument(
-        '--include-pvc',
+        '--skip-pvc',
         action='store_true',
-        help='Collect Kubernetes PersistentVolumeClaims from AKS clusters (requires kubernetes package)'
+        help='Skip PVC collection from AKS clusters (PVCs are collected by default when clusters are found)'
     )
     parser.add_argument(
         '--change-rate-days',
@@ -1692,42 +1692,48 @@ def main():
             }
             logger.info(f"Collected change rates for {len(all_change_rates)} service families")
     
-    # Collect PVCs from AKS clusters if requested
-    if args.include_pvc:
+    # Collect PVCs from AKS clusters (automatic when clusters are discovered)
+    aks_clusters = [r for r in all_resources if r.resource_type == 'azure:aks:cluster']
+    
+    if aks_clusters and not args.skip_pvc:
         logger.info("Collecting PVCs from AKS clusters...")
         print("Collecting PVCs from AKS clusters...")
         
-        # Find all AKS clusters in the collected resources
-        aks_clusters = [r for r in all_resources if r.resource_type == 'azure:aks:cluster']
+        pvc_count = 0
+        k8s_available = True
+        for cluster in aks_clusters:
+            if not k8s_available:
+                break
+            try:
+                resource_group = cluster.metadata.get('resource_group', '')
+                if not resource_group:
+                    # Extract from resource ID
+                    parts = cluster.resource_id.split('/')
+                    rg_idx = parts.index('resourceGroups') if 'resourceGroups' in parts else -1
+                    resource_group = parts[rg_idx + 1] if rg_idx >= 0 else ''
+                
+                cluster_pvcs = collect_aks_pvcs(
+                    credential,
+                    cluster.subscription_id,
+                    resource_group,
+                    cluster.name,
+                    cluster.region
+                )
+                all_resources.extend(cluster_pvcs)
+                pvc_count += len(cluster_pvcs)
+                if cluster_pvcs:
+                    logger.info(f"Found {len(cluster_pvcs)} PVCs in AKS cluster {cluster.name}")
+            except ImportError:
+                logger.info("kubernetes package not installed - skipping PVC collection (pip install kubernetes)")
+                print("Note: Install 'kubernetes' package for PVC collection: pip install kubernetes")
+                k8s_available = False
+            except Exception as e:
+                logger.warning(f"Failed to collect PVCs from AKS cluster {cluster.name}: {e}")
         
-        if aks_clusters:
-            pvc_count = 0
-            for cluster in aks_clusters:
-                try:
-                    resource_group = cluster.metadata.get('resource_group', '')
-                    if not resource_group:
-                        # Extract from resource ID
-                        parts = cluster.resource_id.split('/')
-                        rg_idx = parts.index('resourceGroups') if 'resourceGroups' in parts else -1
-                        resource_group = parts[rg_idx + 1] if rg_idx >= 0 else ''
-                    
-                    cluster_pvcs = collect_aks_pvcs(
-                        credential,
-                        cluster.subscription_id,
-                        resource_group,
-                        cluster.name,
-                        cluster.region
-                    )
-                    all_resources.extend(cluster_pvcs)
-                    pvc_count += len(cluster_pvcs)
-                    if cluster_pvcs:
-                        logger.info(f"Found {len(cluster_pvcs)} PVCs in AKS cluster {cluster.name}")
-                except Exception as e:
-                    logger.warning(f"Failed to collect PVCs from AKS cluster {cluster.name}: {e}")
-            
+        if pvc_count > 0:
             print(f"Collected {pvc_count} PVCs from {len(aks_clusters)} AKS clusters")
-        else:
-            print("No AKS clusters found - skipping PVC collection")
+    elif aks_clusters and args.skip_pvc:
+        logger.info("Skipping PVC collection (--skip-pvc specified)")
     
     # Prepare output
     run_id = generate_run_id()

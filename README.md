@@ -126,12 +126,12 @@ This outputs a separate `cca_*_change_rates_*.json` file with estimated daily ch
 
 ### Kubernetes PVC Collection
 
-Use `--include-pvc` to collect PersistentVolumeClaims from managed Kubernetes clusters:
+PersistentVolumeClaims (PVCs) are automatically collected when managed Kubernetes clusters are discovered. Use `--skip-pvc` to disable this:
 
 ```bash
-python3 aws_collect.py --include-pvc      # Collect PVCs from EKS clusters
-python3 azure_collect.py --include-pvc    # Collect PVCs from AKS clusters
-python3 gcp_collect.py --include-pvc      # Collect PVCs from GKE clusters
+python3 aws_collect.py --skip-pvc      # Skip PVC collection from EKS clusters
+python3 azure_collect.py --skip-pvc    # Skip PVC collection from AKS clusters
+python3 gcp_collect.py --skip-pvc      # Skip PVC collection from GKE clusters
 ```
 
 This collects:
