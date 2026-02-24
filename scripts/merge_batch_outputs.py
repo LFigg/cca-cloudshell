@@ -25,7 +25,7 @@ import json
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -431,7 +431,7 @@ def process_folder(
     if merged_inv:
         # Determine provider for filename
         provider = merged_inv.get("provider", "aws")
-        timestamp = datetime.now().strftime("%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%H%M%S")
         
         inv_path = output_dir / f"cca_{provider}_inv_{timestamp}_merged.json"
         write_json(merged_inv, str(inv_path))
@@ -469,7 +469,7 @@ def process_folder(
         merged_cost, cost_stats = merge_cost_files(cost_files)
         if merged_cost:
             provider = merged_cost.get("provider", "aws")
-            timestamp = datetime.now().strftime("%H%M%S")
+            timestamp = datetime.now(timezone.utc).strftime("%H%M%S")
             cost_path = output_dir / f"cca_{provider}_cost_{timestamp}_merged.json"
             write_json(merged_cost, str(cost_path))
             print(f"  Wrote: {cost_path.name}")
@@ -562,7 +562,7 @@ Examples:
                 out.mkdir(parents=True, exist_ok=True)
                 
                 provider = merged_inv.get("provider", "aws")
-                timestamp = datetime.now().strftime("%H%M%S")
+                timestamp = datetime.now(timezone.utc).strftime("%H%M%S")
                 
                 inv_path = out / f"cca_{provider}_inv_{timestamp}_merged.json"
                 write_json(merged_inv, str(inv_path))

@@ -33,7 +33,7 @@ import logging
 import argparse
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Check for required packages
 try:
@@ -709,12 +709,12 @@ Security Note:
         return
     
     # Generate outputs
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     
     # Raw inventory
     inventory = [asdict(r) for r in all_resources]
     # Use HHMMSS format for timestamp in filenames
-    file_ts = datetime.now().strftime('%H%M%S')
+    file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
     inventory_file = write_json_file(inventory, f'cca_m365_inv_{file_ts}.json', args.output_dir)
     print(f"Inventory saved: {inventory_file}")
     
