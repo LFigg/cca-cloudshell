@@ -740,7 +740,10 @@ Examples:
     parser.add_argument('--log-level', default='INFO', help='Logging level')
     
     args = parser.parse_args()
-    setup_logging(args.log_level)
+    
+    # Setup logging - write to file if output is local directory
+    log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
+    setup_logging(args.log_level, output_dir=log_dir)
     
     # Handle --last-30-days override
     if args.last_30_days:

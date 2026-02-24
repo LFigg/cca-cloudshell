@@ -2170,7 +2170,9 @@ Large Environment Examples:
         print(generate_sample_config())
         sys.exit(0)
     
-    setup_logging(args.log_level)
+    # Setup logging - write to file if output is local directory
+    log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
+    setup_logging(args.log_level, output_dir=log_dir)
     
     # Load configuration from file/env/args
     try:
@@ -2465,6 +2467,8 @@ Large Environment Examples:
             for session, account_id, account_name in account_sessions:
                 account_clusters = [c for c in eks_clusters if c.account_id == account_id]
                 for cluster in account_clusters:
+                    if not cluster.name or not cluster.region:
+                        continue
                     try:
                         cluster_pvcs = collect_eks_pvcs(
                             session, 

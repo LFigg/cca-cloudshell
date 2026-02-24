@@ -11,7 +11,10 @@ import logging
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lib.models import CloudResource
 
 logger = logging.getLogger(__name__)
 
@@ -365,11 +368,11 @@ def get_eks_cluster_config(session, cluster_name: str, region: str) -> Optional[
         return None
 
 
-def collect_eks_pvcs(session, cluster_name: str, region: str, account_id: str) -> List[Dict]:
+def collect_eks_pvcs(session, cluster_name: str, region: str, account_id: str) -> "List[CloudResource]":
     """
     Collect PVCs from an EKS cluster.
     
-    Returns list of CloudResource-compatible dicts.
+    Returns list of CloudResource objects.
     """
     from lib.models import CloudResource
     
@@ -491,11 +494,11 @@ def get_aks_credentials(credential, subscription_id: str, resource_group: str, c
         return None
 
 
-def collect_aks_pvcs(credential, subscription_id: str, resource_group: str, cluster_name: str, location: str) -> List:
+def collect_aks_pvcs(credential, subscription_id: str, resource_group: str, cluster_name: str, location: str) -> "List[CloudResource]":
     """
     Collect PVCs from an AKS cluster.
     
-    Returns list of CloudResource-compatible objects.
+    Returns list of CloudResource objects.
     """
     from lib.models import CloudResource
     
@@ -588,11 +591,11 @@ def get_gke_credentials(project_id: str, location: str, cluster_name: str) -> Op
         return None
 
 
-def collect_gke_pvcs(project_id: str, location: str, cluster_name: str) -> List:
+def collect_gke_pvcs(project_id: str, location: str, cluster_name: str) -> "List[CloudResource]":
     """
     Collect PVCs from a GKE cluster.
     
-    Returns list of CloudResource-compatible objects.
+    Returns list of CloudResource objects.
     """
     from lib.models import CloudResource
     

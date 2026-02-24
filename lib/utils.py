@@ -379,16 +379,51 @@ def get_name_from_tags(tags: Dict[str, str], resource_id: str = "") -> str:
     return tags.get("Name", tags.get("name", resource_id))
 
 
-def setup_logging(level: str = "INFO") -> logging.Logger:
-    """Setup logging configuration."""
+def setup_logging(level: str = "INFO", output_dir: Optional[str] = None) -> logging.Logger:
+    """
+    Setup logging configuration with console and optional file output.
+    
+    Args:
+        level: Logging level (DEBUG, INFO, WARNING, ERROR)
+        output_dir: If provided, also write logs to a file in this directory
+        
+    Returns:
+        Logger instance
+    """
     numeric_level = getattr(logging, level.upper(), logging.INFO)
     
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        stream=sys.stderr
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
+    
+    # Get root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+    
+    # Clear existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+    
+    # Console handler (stderr)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(numeric_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+    
+    # File handler (if output_dir provided)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        log_file = os.path.join(output_dir, f"cca_log_{timestamp}.log")
+        
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setLevel(numeric_level)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+        
+        # Log the log file location (meta!)
+        root_logger.info(f"Logging to: {log_file}")
     
     return logging.getLogger(__name__)
 

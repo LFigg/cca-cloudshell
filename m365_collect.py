@@ -49,11 +49,6 @@ except ImportError:
     print("    python -m pip install msgraph-sdk azure-identity")
     sys.exit(1)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +59,7 @@ logger = logging.getLogger(__name__)
 # Add lib to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.models import CloudResource
-from lib.utils import write_json as _write_json_to_path, ProgressTracker
+from lib.utils import write_json as _write_json_to_path, ProgressTracker, setup_logging
 
 
 # =============================================================================
@@ -610,13 +605,16 @@ Security Note:
                         help='Skip Exchange mailbox collection')
     parser.add_argument('--skip-teams', action='store_true',
                         help='Skip Teams collection')
+    parser.add_argument('--log-level', default='INFO',
+                        help='Logging level (DEBUG, INFO, WARNING, ERROR)')
     parser.add_argument('--verbose', '-v', action='store_true',
-                        help='Enable verbose logging')
+                        help='Enable verbose logging (same as --log-level DEBUG)')
     
     args = parser.parse_args()
     
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    # Setup logging - write to file in output directory
+    log_level = 'DEBUG' if args.verbose else args.log_level
+    setup_logging(log_level, output_dir=args.output_dir)
     
     # Get client secret from environment only (security: not from CLI args)
     client_secret = os.environ.get('MS365_CLIENT_SECRET')

@@ -1258,7 +1258,9 @@ def main():
     
     args = parser.parse_args()
     
-    setup_logging(args.log_level)
+    # Setup logging - write to file if output is local directory
+    log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
+    setup_logging(args.log_level, output_dir=log_dir)
     
     if not HAS_GCP_SDK:
         logger.error("Google Cloud SDK not installed. Run: pip install google-cloud-compute google-cloud-storage")
