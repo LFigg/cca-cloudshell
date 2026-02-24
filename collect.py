@@ -3,10 +3,10 @@
 CCA CloudShell - Unified Cloud Collector
 
 Simple entry point for collecting cloud resources.
-Guides you through cloud selection, verifies permissions, and runs collection.
+Auto-detects available cloud credentials and runs appropriate collectors.
 
 Usage:
-    # Interactive mode (recommended for first-time users)
+    # Auto-detect mode (recommended)
     python collect.py
     
     # Direct cloud selection
@@ -14,6 +14,9 @@ Usage:
     python collect.py --cloud azure
     python collect.py --cloud gcp
     python collect.py --cloud m365
+    
+    # Interactive setup wizard
+    python collect.py --setup
     
     # Skip permission check (if you know credentials are valid)
     python collect.py --cloud aws --skip-check
@@ -327,6 +330,95 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
     return True, "M365 credentials verified", details
 
 
+# =============================================================================
+# Cloud Auto-Detection
+# =============================================================================
+
+def detect_aws() -> bool:
+    """Check if AWS credentials are available."""
+    # Check environment variables
+    if os.environ.get('AWS_ACCESS_KEY_ID') or os.environ.get('AWS_SESSION_TOKEN'):
+        return True
+    # Check for CloudShell
+    if os.environ.get('AWS_EXECUTION_ENV'):
+        return True
+    # Check for credentials file
+    aws_creds = os.path.expanduser('~/.aws/credentials')
+    if os.path.exists(aws_creds):
+        return True
+    # Check for config file with SSO
+    aws_config = os.path.expanduser('~/.aws/config')
+    if os.path.exists(aws_config):
+        return True
+    return False
+
+
+def detect_azure() -> bool:
+    """Check if Azure credentials are available."""
+    # Check environment variables
+    if os.environ.get('AZURE_CLIENT_ID') or os.environ.get('AZURE_SUBSCRIPTION_ID'):
+        return True
+    # Check for Cloud Shell
+    if os.environ.get('ACC_TERM_ID') or os.path.exists(os.path.expanduser('~/clouddrive')):
+        return True
+    # Check for Azure CLI logged in
+    azure_config = os.path.expanduser('~/.azure/azureProfile.json')
+    if os.path.exists(azure_config):
+        return True
+    return False
+
+
+def detect_gcp() -> bool:
+    """Check if GCP credentials are available."""
+    # Check environment variables
+    if os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
+        return True
+    if os.environ.get('GOOGLE_CLOUD_PROJECT') or os.environ.get('GCLOUD_PROJECT'):
+        return True
+    # Check for Cloud Shell
+    if os.environ.get('CLOUD_SHELL') == 'true' or os.environ.get('DEVSHELL_GCLOUD_CONFIG'):
+        return True
+    # Check for gcloud config
+    gcloud_config = os.path.expanduser('~/.config/gcloud/credentials.db')
+    if os.path.exists(gcloud_config):
+        return True
+    # Check for application default credentials
+    adc = os.path.expanduser('~/.config/gcloud/application_default_credentials.json')
+    if os.path.exists(adc):
+        return True
+    return False
+
+
+def detect_m365() -> bool:
+    """Check if M365 credentials are available."""
+    return all([
+        os.environ.get('MS365_TENANT_ID'),
+        os.environ.get('MS365_CLIENT_ID'),
+        os.environ.get('MS365_CLIENT_SECRET')
+    ])
+
+
+def auto_detect_clouds() -> List[str]:
+    """Detect which clouds have credentials configured."""
+    detected = []
+    
+    detectors = [
+        ('aws', detect_aws),
+        ('azure', detect_azure),
+        ('gcp', detect_gcp),
+        ('m365', detect_m365),
+    ]
+    
+    for cloud, detector in detectors:
+        try:
+            if detector():
+                detected.append(cloud)
+        except Exception:
+            pass  # Ignore detection errors
+    
+    return detected
+
+
 def verify_permissions(cloud: str) -> bool:
     """Run permission check for specified cloud."""
     print(color(f"\n{'─'*60}", Colors.CYAN))
@@ -453,6 +545,147 @@ def show_collector_help(cloud: str):
 
 
 # =============================================================================
+# Setup Wizard
+# =============================================================================
+
+def run_setup_wizard():
+    """Interactive setup wizard to configure credentials and test permissions."""
+    print(color("\n" + "="*60, Colors.CYAN))
+    print(color("  CCA CloudShell - Setup Wizard", Colors.BOLD))
+    print(color("="*60 + "\n", Colors.CYAN))
+    
+    print("This wizard will help you configure cloud credentials and verify permissions.\n")
+    
+    # Detect what's already configured
+    detected = auto_detect_clouds()
+    
+    if detected:
+        print(color(f"✓ Detected credentials for: {', '.join(c.upper() for c in detected)}\n", Colors.GREEN))
+    else:
+        print(color("No cloud credentials detected.\n", Colors.YELLOW))
+    
+    # Ask which clouds to set up
+    print(color("Which clouds do you want to collect from?\n", Colors.BOLD))
+    print(f"  {color('1', Colors.GREEN)}) AWS       {'✓ credentials found' if 'aws' in detected else ''}")
+    print(f"  {color('2', Colors.GREEN)}) Azure     {'✓ credentials found' if 'azure' in detected else ''}")
+    print(f"  {color('3', Colors.GREEN)}) GCP       {'✓ credentials found' if 'gcp' in detected else ''}")
+    print(f"  {color('4', Colors.GREEN)}) M365      {'✓ credentials found' if 'm365' in detected else ''}")
+    print(f"  {color('a', Colors.GREEN)}) All detected ({', '.join(detected) if detected else 'none'})")
+    print()
+    
+    try:
+        choice = input(color("Enter choice(s) (e.g., 1,2 or 'a' for all detected): ", Colors.CYAN)).strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print(color("\n\nSetup cancelled.", Colors.YELLOW))
+        return
+    
+    if choice in ('q', 'quit', 'exit'):
+        print(color("\nSetup cancelled.", Colors.YELLOW))
+        return
+    
+    selected = []
+    if choice == 'a':
+        selected = detected.copy()
+    else:
+        choice_map = {'1': 'aws', '2': 'azure', '3': 'gcp', '4': 'm365',
+                      'aws': 'aws', 'azure': 'azure', 'gcp': 'gcp', 'm365': 'm365'}
+        for c in choice.replace(',', ' ').split():
+            if c.strip() in choice_map:
+                selected.append(choice_map[c.strip()])
+    
+    if not selected:
+        print(color("\nNo clouds selected. Exiting setup.", Colors.YELLOW))
+        return
+    
+    print(color(f"\nSelected: {', '.join(c.upper() for c in selected)}\n", Colors.CYAN))
+    
+    # Test each selected cloud
+    all_passed = True
+    ready_clouds = []
+    
+    for cloud in selected:
+        success = verify_permissions(cloud)
+        if success:
+            ready_clouds.append(cloud)
+        else:
+            all_passed = False
+            print(color(f"\n  Setup instructions for {cloud.upper()}:\n", Colors.YELLOW))
+            _show_setup_instructions(cloud)
+    
+    # Summary
+    print(color("\n" + "="*60, Colors.CYAN))
+    print(color("  Setup Summary", Colors.BOLD))
+    print(color("="*60 + "\n", Colors.CYAN))
+    
+    if ready_clouds:
+        print(color(f"✓ Ready to collect: {', '.join(c.upper() for c in ready_clouds)}", Colors.GREEN))
+    
+    failed = [c for c in selected if c not in ready_clouds]
+    if failed:
+        print(color(f"✗ Need configuration: {', '.join(c.upper() for c in failed)}", Colors.RED))
+    
+    if ready_clouds:
+        print()
+        try:
+            response = input(color(f"Run collection for {', '.join(c.upper() for c in ready_clouds)} now? [Y/n]: ", Colors.CYAN)).strip().lower()
+            if response in ('', 'y', 'yes'):
+                for cloud in ready_clouds:
+                    run_collector(cloud, [])
+        except (KeyboardInterrupt, EOFError):
+            print(color("\n\nCollection skipped.", Colors.YELLOW))
+
+
+def _show_setup_instructions(cloud: str):
+    """Show setup instructions for a specific cloud."""
+    instructions = {
+        'aws': [
+            "Option 1: Use AWS CloudShell (recommended)",
+            "  - Open AWS Console → CloudShell (top-right icon)",
+            "  - Clone this repo and run collect.py",
+            "",
+            "Option 2: Configure AWS CLI",
+            "  - Run: aws configure",
+            "  - Or set: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
+            "",
+            "For organization access, see: docs/collectors/aws.md"
+        ],
+        'azure': [
+            "Option 1: Use Azure Cloud Shell (recommended)",
+            "  - Open Azure Portal → Cloud Shell (top-right icon)",
+            "  - Clone this repo and run collect.py",
+            "",
+            "Option 2: Configure Azure CLI",
+            "  - Run: az login",
+            "",
+            "See: docs/collectors/azure.md"
+        ],
+        'gcp': [
+            "Option 1: Use Google Cloud Shell (recommended)",
+            "  - Open Google Cloud Console → Cloud Shell (top-right icon)",
+            "  - Clone this repo and run collect.py",
+            "",
+            "Option 2: Configure gcloud CLI",
+            "  - Run: gcloud auth application-default login",
+            "",
+            "See: docs/collectors/gcp.md"
+        ],
+        'm365': [
+            "M365 requires an Azure AD App Registration with Graph API permissions.",
+            "",
+            "Set these environment variables:",
+            "  export MS365_TENANT_ID='your-tenant-id'",
+            "  export MS365_CLIENT_ID='your-client-id'",
+            "  export MS365_CLIENT_SECRET='your-secret'",
+            "",
+            "See: docs/collectors/m365.md"
+        ]
+    }
+    
+    for line in instructions.get(cloud, ["See docs/ for setup instructions."]):
+        print(f"    {line}")
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -462,19 +695,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python collect.py                          # Interactive mode
-  python collect.py --cloud aws              # Direct AWS collection
+  python collect.py                          # Auto-detect and collect
+  python collect.py --cloud aws              # Collect from AWS only
+  python collect.py --setup                  # Interactive setup wizard
   python collect.py --cloud azure --skip-check   # Skip permission check
   python collect.py --cloud aws -- --org-role CCARole  # Pass args to collector
-  python collect.py --cloud aws --help-collector       # Show AWS collector options
-  python collect.py --generate-config                  # Generate sample config file
 """
     )
     
     parser.add_argument(
         '--cloud', '-c',
         choices=['aws', 'azure', 'gcp', 'm365'],
-        help='Cloud platform to collect from (skip interactive menu)'
+        help='Cloud platform to collect from'
+    )
+    parser.add_argument(
+        '--setup',
+        action='store_true',
+        help='Run interactive setup wizard'
     )
     parser.add_argument(
         '--config',
@@ -512,6 +749,12 @@ Examples:
         print(generate_sample_config())
         sys.exit(0)
     
+    # Handle --setup
+    if args.setup:
+        print_banner()
+        run_setup_wizard()
+        sys.exit(0)
+    
     # Pass --config to collector if specified
     if args.config:
         extra_args = ['--config', args.config] + extra_args
@@ -524,17 +767,81 @@ Examples:
         show_collector_help(args.cloud)
         sys.exit(0)
     
-    # Interactive mode if no cloud specified
-    if not args.cloud:
-        print_banner()
-        print_cloud_menu()
-        cloud = get_cloud_choice()
-        if not cloud:
-            print(color("\nExiting.", Colors.CYAN))
-            sys.exit(0)
-    else:
+    print_banner()
+    
+    # Auto-detect or use specified cloud
+    if args.cloud:
         cloud = args.cloud
-        print_banner()
+    else:
+        # Auto-detect available clouds
+        print(color("Detecting cloud credentials...\n", Colors.CYAN))
+        detected = auto_detect_clouds()
+        
+        if not detected:
+            print(color("No cloud credentials detected.\n", Colors.YELLOW))
+            print("Run the setup wizard to configure credentials:")
+            print(color("  python collect.py --setup\n", Colors.GREEN))
+            print("Or configure credentials manually:")
+            print("  AWS:   aws configure")
+            print("  Azure: az login")
+            print("  GCP:   gcloud auth application-default login")
+            print("  M365:  Set MS365_* environment variables")
+            sys.exit(1)
+        
+        print(color(f"✓ Found credentials for: {', '.join(c.upper() for c in detected)}\n", Colors.GREEN))
+        
+        if len(detected) == 1:
+            # Only one cloud detected - use it automatically
+            cloud = detected[0]
+            print(color(f"Auto-selecting {cloud.upper()}\n", Colors.CYAN))
+        else:
+            # Multiple clouds detected - let user choose
+            print(color("Multiple clouds detected. Select one:\n", Colors.BOLD))
+            for i, c in enumerate(detected, 1):
+                print(f"  {color(str(i), Colors.GREEN)}) {c.upper()}")
+            print(f"  {color('a', Colors.GREEN)}) All (run each sequentially)")
+            print()
+            
+            try:
+                choice = input(color("Enter choice: ", Colors.CYAN)).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print(color("\n\nExiting.", Colors.CYAN))
+                sys.exit(0)
+            
+            if choice == 'a':
+                # Run all detected clouds
+                all_exit_codes = []
+                for c in detected:
+                    if not args.skip_check:
+                        if not verify_permissions(c):
+                            print(color(f"Skipping {c.upper()} due to permission issues.\n", Colors.YELLOW))
+                            continue
+                    exit_code = run_collector(c, extra_args)
+                    all_exit_codes.append((c, exit_code))
+                
+                # Summary
+                print(color("\n" + "="*60, Colors.CYAN))
+                print(color("  Collection Summary", Colors.BOLD))
+                print(color("="*60 + "\n", Colors.CYAN))
+                for c, code in all_exit_codes:
+                    status = color("✓", Colors.GREEN) if code == 0 else color("✗", Colors.RED)
+                    print(f"  {status} {c.upper()}: exit code {code}")
+                
+                sys.exit(0 if all(c == 0 for _, c in all_exit_codes) else 1)
+            
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(detected):
+                    cloud = detected[idx]
+                else:
+                    print(color("Invalid choice.", Colors.RED))
+                    sys.exit(1)
+            except ValueError:
+                if choice in detected:
+                    cloud = choice
+                else:
+                    print(color("Invalid choice.", Colors.RED))
+                    sys.exit(1)
     
     # Permission check
     if not args.skip_check:
@@ -542,12 +849,6 @@ Examples:
             print(color("Permission check failed. Fix the issues above and try again.", Colors.RED))
             print(color(f"Or use --skip-check to bypass (not recommended).\n", Colors.YELLOW))
             sys.exit(1)
-        
-        # Ask to continue if interactive
-        if not args.cloud:  # Was interactive
-            if not prompt_continue():
-                print(color("\nCollection cancelled.", Colors.CYAN))
-                sys.exit(0)
     
     # Run collection
     exit_code = run_collector(cloud, extra_args)
