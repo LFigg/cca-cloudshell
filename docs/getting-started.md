@@ -44,8 +44,11 @@ pip install msgraph-sdk azure-identity  # M365
 The easiest way to run collection is using the unified entry point:
 
 ```bash
-# Interactive - select cloud and verify permissions
+# Auto-detect credentials and run
 python3 collect.py
+
+# Setup wizard for first-time users
+python3 collect.py --setup
 
 # Specify cloud directly
 python3 collect.py --cloud aws
@@ -55,9 +58,9 @@ python3 collect.py --cloud m365
 ```
 
 The unified collector will:
-1. Verify your credentials and permissions
-2. Show you what access is available
-3. Run the appropriate collector
+1. Auto-detect which cloud credentials are configured
+2. Verify your credentials and permissions
+3. Run the appropriate collector(s) automatically
 
 ## Quick Start by Cloud
 
@@ -154,6 +157,7 @@ Each collector generates:
 | `cca_<cloud>_inv_<time>.json` | Full resource inventory |
 | `cca_<cloud>_sum_<time>.json` | Aggregated summary |
 | `cca_<cloud>_sizing.csv` | Spreadsheet-ready sizing data |
+| `cca_log_<time>.log` | Collection log for troubleshooting |
 
 ## Progress Display
 

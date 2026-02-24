@@ -20,8 +20,9 @@ curl -sL https://github.com/LFigg/cca-cloudshell/archive/refs/heads/main.tar.gz 
 cd cca-cloudshell-main && ./setup.sh
 
 # Run the unified collector (recommended)
-python3 collect.py              # Interactive mode - guides you through cloud selection
-python3 collect.py --cloud aws  # Direct mode - specify cloud upfront
+python3 collect.py              # Auto-detects cloud credentials and runs
+python3 collect.py --setup      # Interactive setup wizard for first-time users
+python3 collect.py --cloud aws  # Specify cloud explicitly
 
 # Or run individual collectors directly
 python3 aws_collect.py      # AWS
@@ -34,15 +35,18 @@ python3 cost_collect.py --aws  # Backup/snapshot costs (run from management acco
 ## Unified Collector
 
 The `collect.py` entry point provides:
-- **Cloud Selection**: Choose AWS, Azure, GCP, or M365
+- **Auto-Detection**: Finds configured cloud credentials automatically
 - **Permission Verification**: Validates credentials before collection
-- **Guided Experience**: Interactive prompts for first-time users
+- **Setup Wizard**: Interactive setup for first-time users (`--setup`)
 
 ```bash
-# Interactive mode
+# Auto-detect and run (single cloud detected = runs automatically)
 python3 collect.py
 
-# Direct mode (for scripts/CI)
+# Setup wizard - configure credentials and test permissions
+python3 collect.py --setup
+
+# Specify cloud explicitly
 python3 collect.py --cloud aws
 python3 collect.py --cloud azure --skip-check  # Skip permission verification
 
@@ -59,6 +63,7 @@ Each collector generates:
 - `cca_<cloud>_inv_<time>.json` - Full resource inventory
 - `cca_<cloud>_sum_<time>.json` - Aggregated summary
 - `cca_<cloud>_sizing.csv` - Spreadsheet-ready sizing
+- `cca_log_<time>.log` - Collection log for troubleshooting
 
 ## Features
 
