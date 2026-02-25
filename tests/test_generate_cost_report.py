@@ -7,23 +7,22 @@ Covers:
 - generate_optimization_recommendations function
 - Excel generation (integration tests)
 """
-import pytest
 import json
-import tempfile
 import os
 import sys
-from collections import defaultdict
+import tempfile
+
+import pytest
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
 
 from scripts.generate_cost_report import (
-    load_json,
     analyze_costs,
     generate_optimization_recommendations,
+    load_json,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -234,7 +233,7 @@ class TestLoadJson:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             f.write('not valid json {{{')
             temp_path = f.name
-        
+
         try:
             with pytest.raises(json.JSONDecodeError):
                 load_json(temp_path)
@@ -252,7 +251,7 @@ class TestAnalyzeCosts:
     def test_analyze_costs_metadata(self, sample_cost_inventory, sample_cost_summary):
         """Test that metadata is correctly extracted."""
         result = analyze_costs(sample_cost_inventory, sample_cost_summary)
-        
+
         assert result['metadata']['run_id'] == 'test_cost_001'
         assert result['metadata']['period_start'] == '2026-01-01'
         assert result['metadata']['period_end'] == '2026-01-31'
@@ -262,55 +261,55 @@ class TestAnalyzeCosts:
     def test_analyze_costs_totals(self, sample_cost_inventory, sample_cost_summary):
         """Test that totals are correctly calculated."""
         result = analyze_costs(sample_cost_inventory, sample_cost_summary)
-        
+
         assert result['totals']['total_cost'] == 5000.00
         assert result['totals']['total_records'] == 6
 
     def test_analyze_costs_by_provider(self, sample_cost_inventory, sample_cost_summary):
         """Test costs grouped by provider."""
         result = analyze_costs(sample_cost_inventory, sample_cost_summary)
-        
+
         assert 'aws' in result['by_provider']
         assert 'azure' in result['by_provider']
-        
+
         # AWS: 1500 + 500 + 800 = 2800
         assert result['by_provider']['aws']['cost'] == 2800.00
-        
+
         # Azure: 1200 + 700 + 300 = 2200
         assert result['by_provider']['azure']['cost'] == 2200.00
 
     def test_analyze_costs_by_category(self, sample_cost_inventory, sample_cost_summary):
         """Test costs grouped by category."""
         result = analyze_costs(sample_cost_inventory, sample_cost_summary)
-        
+
         assert 'ec2_snapshot' in result['by_category']
         assert 'rds_snapshot' in result['by_category']
         assert 'backup_storage' in result['by_category']
         assert 'disk_snapshot' in result['by_category']
         assert 'blob_storage' in result['by_category']
-        
+
         assert result['by_category']['ec2_snapshot']['cost'] == 1500.00
         assert result['by_category']['backup_storage']['cost'] == 1500.00  # 800 + 700
 
     def test_analyze_costs_by_service(self, sample_cost_inventory, sample_cost_summary):
         """Test costs grouped by service."""
         result = analyze_costs(sample_cost_inventory, sample_cost_summary)
-        
+
         assert 'Amazon EC2 EBS - Snapshot' in result['by_service']
         assert 'Amazon RDS - Snapshot' in result['by_service']
         assert 'Azure Managed Disk Snapshots' in result['by_service']
-        
+
         assert result['by_service']['Amazon EC2 EBS - Snapshot']['cost'] == 1500.00
         assert result['by_service']['Amazon EC2 EBS - Snapshot']['provider'] == 'aws'
 
     def test_analyze_costs_monthly_trend(self, multi_month_cost_inventory, sample_cost_summary):
         """Test monthly trend calculation."""
         result = analyze_costs(multi_month_cost_inventory, sample_cost_summary)
-        
+
         assert '2025-11' in result['monthly_trend']
         assert '2025-12' in result['monthly_trend']
         assert '2026-01' in result['monthly_trend']
-        
+
         assert result['monthly_trend']['2025-11']['aws'] == 1400.00
         assert result['monthly_trend']['2025-12']['aws'] == 1500.00
         assert result['monthly_trend']['2026-01']['aws'] == 1600.00
@@ -326,9 +325,9 @@ class TestAnalyzeCosts:
             'total_records': 0,
             'records': []
         }
-        
+
         result = analyze_costs(empty_inventory, sample_cost_summary)
-        
+
         assert result['totals']['total_cost'] == 0
         assert result['totals']['total_records'] == 0
         assert len(result['by_provider']) == 0
@@ -337,7 +336,7 @@ class TestAnalyzeCosts:
     def test_analyze_costs_has_optimization_recommendations(self, sample_cost_inventory, sample_cost_summary):
         """Test that optimization recommendations are generated."""
         result = analyze_costs(sample_cost_inventory, sample_cost_summary)
-        
+
         assert 'optimization' in result
         assert isinstance(result['optimization'], list)
 
@@ -360,9 +359,9 @@ class TestGenerateOptimizationRecommendations:
             'by_service': {},
             'by_provider': {'aws': {'cost': 5000.00, 'services': {}}}
         }
-        
+
         recommendations = generate_optimization_recommendations(analysis)
-        
+
         # Should have snapshot retention recommendation
         snapshot_rec = next((r for r in recommendations if 'Snapshot' in r['title']), None)
         assert snapshot_rec is not None
@@ -382,9 +381,9 @@ class TestGenerateOptimizationRecommendations:
             },
             'by_provider': {'aws': {'cost': 5000.00, 'services': {}}}
         }
-        
+
         recommendations = generate_optimization_recommendations(analysis)
-        
+
         # Should have backup vault recommendation
         vault_rec = next((r for r in recommendations if 'Vault' in r['title']), None)
         assert vault_rec is not None
@@ -401,9 +400,9 @@ class TestGenerateOptimizationRecommendations:
                 'azure': {'cost': 2000.00, 'services': {}}
             }
         }
-        
+
         recommendations = generate_optimization_recommendations(analysis)
-        
+
         # Should have multi-cloud balance recommendation
         multicloud_rec = next((r for r in recommendations if 'Multi-Cloud' in r['title']), None)
         assert multicloud_rec is not None
@@ -421,9 +420,9 @@ class TestGenerateOptimizationRecommendations:
             },
             'by_provider': {'aws': {'cost': 1000.00, 'services': {}}}
         }
-        
+
         recommendations = generate_optimization_recommendations(analysis)
-        
+
         # Should have at least one recommendation
         assert len(recommendations) >= 1
         # Should have the general tiering recommendation
@@ -440,9 +439,9 @@ class TestGenerateOptimizationRecommendations:
             'by_service': {},
             'by_provider': {'aws': {'cost': 10000.00, 'services': {}}}
         }
-        
+
         recommendations = generate_optimization_recommendations(analysis)
-        
+
         snapshot_rec = next((r for r in recommendations if 'Snapshot' in r['title']), None)
         assert snapshot_rec is not None
         assert snapshot_rec['priority'] == 'High'
@@ -451,10 +450,10 @@ class TestGenerateOptimizationRecommendations:
         """Test that all recommendations have required fields."""
         analysis = analyze_costs(sample_cost_inventory, sample_cost_summary)
         recommendations = analysis['optimization']
-        
-        required_fields = ['title', 'category', 'current_cost', 'potential_savings', 
+
+        required_fields = ['title', 'category', 'current_cost', 'potential_savings',
                           'savings_percent', 'description', 'priority']
-        
+
         for rec in recommendations:
             for field in required_fields:
                 assert field in rec, f"Missing required field: {field}"
@@ -470,22 +469,22 @@ class TestCostReportIntegration:
     def test_analyze_combined_multicloud_data(self):
         """Test analysis with combined multi-cloud mock data file."""
         sample_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'cca_cost_inv_sample.json'
         )
         summary_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'cca_cost_sum_sample.json'
         )
-        
+
         if os.path.exists(sample_path) and os.path.exists(summary_path):
             inventory = load_json(sample_path)
             summary = load_json(summary_path)
-            
+
             analysis = analyze_costs(inventory, summary)
-            
+
             # Verify multi-cloud structure
             assert analysis['totals']['total_cost'] > 0
             assert len(analysis['by_provider']) >= 2  # Should have multiple providers
@@ -495,86 +494,86 @@ class TestCostReportIntegration:
     def test_analyze_aws_fixture_data(self):
         """Test analysis with AWS-only fixture data (typical customer workflow)."""
         sample_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'aws',
             'cca_cost_inv_sample.json'
         )
         summary_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'aws',
             'cca_cost_sum_sample.json'
         )
-        
+
         if os.path.exists(sample_path) and os.path.exists(summary_path):
             inventory = load_json(sample_path)
             summary = load_json(summary_path)
-            
+
             analysis = analyze_costs(inventory, summary)
-            
+
             # Verify AWS-specific data
             assert 'aws' in analysis['by_provider']
             assert analysis['by_provider']['aws']['cost'] > 0
-            
+
             # Verify monthly trend (should have 3 months)
             assert len(analysis['monthly_trend']) == 3
 
     def test_analyze_azure_fixture_data(self):
         """Test analysis with Azure-only fixture data (typical customer workflow)."""
         sample_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'azure',
             'cca_cost_inv_sample.json'
         )
         summary_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'azure',
             'cca_cost_sum_sample.json'
         )
-        
+
         if os.path.exists(sample_path) and os.path.exists(summary_path):
             inventory = load_json(sample_path)
             summary = load_json(summary_path)
-            
+
             analysis = analyze_costs(inventory, summary)
-            
+
             # Verify Azure-specific data
             assert 'azure' in analysis['by_provider']
             assert len(analysis['by_provider']) == 1  # Only Azure
             assert analysis['by_provider']['azure']['cost'] > 0
-            
+
             # Verify monthly trend (should have 3 months)
             assert len(analysis['monthly_trend']) == 3
 
     def test_analyze_gcp_fixture_data(self):
         """Test analysis with GCP-only fixture data (typical customer workflow)."""
         sample_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'gcp',
             'cca_cost_inv_sample.json'
         )
         summary_path = os.path.join(
-            os.path.dirname(__file__), 
-            'fixtures', 
+            os.path.dirname(__file__),
+            'fixtures',
             'gcp',
             'cca_cost_sum_sample.json'
         )
-        
+
         if os.path.exists(sample_path) and os.path.exists(summary_path):
             inventory = load_json(sample_path)
             summary = load_json(summary_path)
-            
+
             analysis = analyze_costs(inventory, summary)
-            
+
             # Verify GCP-specific data
             assert 'gcp' in analysis['by_provider']
             assert len(analysis['by_provider']) == 1  # Only GCP
             assert analysis['by_provider']['gcp']['cost'] > 0
-            
+
             # Verify monthly trend (should have 3 months)
             assert len(analysis['monthly_trend']) == 3
 
@@ -598,54 +597,55 @@ class TestExcelGeneration:
     def test_generate_report_creates_file(self, temp_cost_inventory_file, temp_cost_summary_file, temp_output_path):
         """Test that generate_excel_report creates an Excel file."""
         try:
-            from scripts.generate_cost_report import generate_excel_report, OPENPYXL_AVAILABLE
+            from scripts.generate_cost_report import OPENPYXL_AVAILABLE, generate_excel_report
         except ImportError:
             pytest.skip("generate_excel_report not available")
-        
+
         if not OPENPYXL_AVAILABLE:
             pytest.skip("openpyxl not installed")
-        
+
         generate_excel_report(temp_cost_inventory_file, temp_cost_summary_file, temp_output_path)
-        
+
         assert os.path.exists(temp_output_path)
         assert os.path.getsize(temp_output_path) > 0
 
     def test_generate_report_has_expected_sheets(self, temp_cost_inventory_file, temp_cost_summary_file, temp_output_path):
         """Test that the generated report has expected worksheets."""
         try:
-            from scripts.generate_cost_report import generate_excel_report, OPENPYXL_AVAILABLE
-            from openpyxl import load_workbook  # type: ignore[import-not-found]
+            from openpyxl import load_workbook
+
+            from scripts.generate_cost_report import OPENPYXL_AVAILABLE, generate_excel_report
         except ImportError:
             pytest.skip("Required modules not available")
-        
+
         if not OPENPYXL_AVAILABLE:
             pytest.skip("openpyxl not installed")
-        
+
         generate_excel_report(temp_cost_inventory_file, temp_cost_summary_file, temp_output_path)
-        
+
         wb = load_workbook(temp_output_path)
         sheet_names = wb.sheetnames
-        
+
         expected_sheets = [
             'Executive Summary',
-            'Cost by Provider', 
+            'Cost by Provider',
             'Cost by Category',
             'Cost by Service'
         ]
-        
+
         for expected in expected_sheets:
             assert expected in sheet_names, f"Missing sheet: {expected}"
 
     def test_generate_report_with_sample_data(self, temp_output_path):
         """Test report generation with combined multi-cloud sample data files."""
         try:
-            from scripts.generate_cost_report import generate_excel_report, OPENPYXL_AVAILABLE
+            from scripts.generate_cost_report import OPENPYXL_AVAILABLE, generate_excel_report
         except ImportError:
             pytest.skip("generate_excel_report not available")
-        
+
         if not OPENPYXL_AVAILABLE:
             pytest.skip("openpyxl not installed")
-        
+
         inv_path = os.path.join(
             os.path.dirname(__file__),
             'fixtures',
@@ -656,25 +656,25 @@ class TestExcelGeneration:
             'fixtures',
             'cca_cost_sum_sample.json'
         )
-        
+
         if not os.path.exists(inv_path) or not os.path.exists(sum_path):
             pytest.skip("Sample data files not found")
-        
+
         generate_excel_report(inv_path, sum_path, temp_output_path)
-        
+
         assert os.path.exists(temp_output_path)
         assert os.path.getsize(temp_output_path) > 1000  # Should be a reasonable size
 
     def test_generate_aws_only_report(self, temp_output_path):
         """Test report generation with AWS-only data (typical customer workflow)."""
         try:
-            from scripts.generate_cost_report import generate_excel_report, OPENPYXL_AVAILABLE
+            from scripts.generate_cost_report import OPENPYXL_AVAILABLE, generate_excel_report
         except ImportError:
             pytest.skip("generate_excel_report not available")
-        
+
         if not OPENPYXL_AVAILABLE:
             pytest.skip("openpyxl not installed")
-        
+
         inv_path = os.path.join(
             os.path.dirname(__file__),
             'fixtures',
@@ -687,25 +687,25 @@ class TestExcelGeneration:
             'aws',
             'cca_cost_sum_sample.json'
         )
-        
+
         if not os.path.exists(inv_path) or not os.path.exists(sum_path):
             pytest.skip("AWS fixture files not found")
-        
+
         generate_excel_report(inv_path, sum_path, temp_output_path)
-        
+
         assert os.path.exists(temp_output_path)
         assert os.path.getsize(temp_output_path) > 1000
 
     def test_generate_azure_only_report(self, temp_output_path):
         """Test report generation with Azure-only data (typical customer workflow)."""
         try:
-            from scripts.generate_cost_report import generate_excel_report, OPENPYXL_AVAILABLE
+            from scripts.generate_cost_report import OPENPYXL_AVAILABLE, generate_excel_report
         except ImportError:
             pytest.skip("generate_excel_report not available")
-        
+
         if not OPENPYXL_AVAILABLE:
             pytest.skip("openpyxl not installed")
-        
+
         inv_path = os.path.join(
             os.path.dirname(__file__),
             'fixtures',
@@ -718,25 +718,25 @@ class TestExcelGeneration:
             'azure',
             'cca_cost_sum_sample.json'
         )
-        
+
         if not os.path.exists(inv_path) or not os.path.exists(sum_path):
             pytest.skip("Azure fixture files not found")
-        
+
         generate_excel_report(inv_path, sum_path, temp_output_path)
-        
+
         assert os.path.exists(temp_output_path)
         assert os.path.getsize(temp_output_path) > 1000
 
     def test_generate_gcp_only_report(self, temp_output_path):
         """Test report generation with GCP-only data (typical customer workflow)."""
         try:
-            from scripts.generate_cost_report import generate_excel_report, OPENPYXL_AVAILABLE
+            from scripts.generate_cost_report import OPENPYXL_AVAILABLE, generate_excel_report
         except ImportError:
             pytest.skip("generate_excel_report not available")
-        
+
         if not OPENPYXL_AVAILABLE:
             pytest.skip("openpyxl not installed")
-        
+
         inv_path = os.path.join(
             os.path.dirname(__file__),
             'fixtures',
@@ -749,11 +749,11 @@ class TestExcelGeneration:
             'gcp',
             'cca_cost_sum_sample.json'
         )
-        
+
         if not os.path.exists(inv_path) or not os.path.exists(sum_path):
             pytest.skip("GCP fixture files not found")
-        
+
         generate_excel_report(inv_path, sum_path, temp_output_path)
-        
+
         assert os.path.exists(temp_output_path)
         assert os.path.getsize(temp_output_path) > 1000

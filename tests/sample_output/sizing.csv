@@ -2,7 +2,7 @@ provider,service_family,resource_type,resource_count,total_gb
 aws,S3,aws:s3:bucket,5,0.0
 aws,EC2,aws:ec2:instance,10,0.0
 aws,EC2,aws:ec2:volume,16,3880.0
-aws,EC2,aws:ec2:snapshot,1137,17020.0
+aws,EC2,aws:ec2:snapshot,2320,34765.0
 aws,RDS,aws:rds:instance,3,750.0
 aws,RDS,aws:rds:cluster,1,1.0
 aws,RDS,aws:rds:snapshot,5,1450.0

@@ -9,29 +9,26 @@ Usage:
     # AWS costs
     python3 cost_collect.py --aws
     python3 cost_collect.py --aws --start-date 2026-01-01 --end-date 2026-02-01
-    
+
     # Azure costs
     python3 cost_collect.py --azure --subscription-id xxx
-    
+
     # GCP costs (requires BigQuery billing export)
     python3 cost_collect.py --gcp --project my-project --billing-table project.dataset.table
-    
+
     # All clouds
     python3 cost_collect.py --all
 """
 import argparse
-import json
 import logging
 import sys
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
-from lib.utils import (
-    generate_run_id, get_timestamp, write_json, write_csv, setup_logging
-)
+from lib.utils import generate_run_id, get_timestamp, setup_logging, write_csv, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +51,7 @@ class CostRecord:
     usage_quantity: Optional[float] = None
     usage_unit: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         if d['metadata'] is None:
@@ -74,7 +71,7 @@ class CostSummary:
     total_cost: float
     currency: str
     service_breakdown: Dict[str, float]
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -86,10 +83,10 @@ class CostSummary:
 def get_last_full_month() -> tuple:
     """
     Return start and end dates for the last complete month.
-    
+
     Returns:
         Tuple of (start_date, end_date) as YYYY-MM-DD strings
-        
+
     Example:
         If today is 2026-02-13, returns ('2026-01-01', '2026-02-01')
         Note: end_date is exclusive (first day of current month)
@@ -101,7 +98,7 @@ def get_last_full_month() -> tuple:
     last_of_prev_month = first_of_this_month - timedelta(days=1)
     # First day of previous month
     first_of_prev_month = last_of_prev_month.replace(day=1)
-    
+
     return (
         first_of_prev_month.strftime('%Y-%m-%d'),
         first_of_this_month.strftime('%Y-%m-%d')  # exclusive end date
@@ -133,7 +130,7 @@ AWS_BACKUP_FILTERS = {
         'WarmStorage',
         'BackupStorage',
         'Storage-ByteHrs',
-        # AWS Backup vault storage (cold) 
+        # AWS Backup vault storage (cold)
         'ColdStorage',
         # AWS Backup general
         'Backup',
@@ -163,22 +160,22 @@ def collect_aws_costs(
 ) -> List[CostRecord]:
     """
     Collect backup and snapshot costs from AWS Cost Explorer.
-    
+
     Args:
         session: boto3 session
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
         account_id: AWS account ID (management account for orgs)
         group_by_account: If True, break down costs by LINKED_ACCOUNT (for Organizations)
-    
+
     Returns:
         List of CostRecord objects
     """
     records = []
-    
+
     try:
         ce = session.client('ce', region_name='us-east-1')  # Cost Explorer is global
-        
+
         # AWS Cost Explorer only allows 2 GroupBy dimensions
         # When grouping by account, we use LINKED_ACCOUNT + SERVICE
         # Otherwise, we use SERVICE + USAGE_TYPE for more granular filtering
@@ -193,7 +190,7 @@ def collect_aws_costs(
                 {'Type': 'DIMENSION', 'Key': 'SERVICE'},
                 {'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}
             ]
-        
+
         # Query for backup-related services
         response = ce.get_cost_and_usage(
             TimePeriod={
@@ -210,14 +207,14 @@ def collect_aws_costs(
             Metrics=['UnblendedCost', 'UsageQuantity'],
             GroupBy=group_by
         )
-        
+
         for result in response.get('ResultsByTime', []):
             period_start = result['TimePeriod']['Start']
             period_end = result['TimePeriod']['End']
-            
+
             for group in result.get('Groups', []):
                 keys = group.get('Keys', [])
-                
+
                 # Parse keys based on grouping mode
                 if group_by_account:
                     if len(keys) < 2:
@@ -231,28 +228,28 @@ def collect_aws_costs(
                     linked_account = account_id  # Use caller's account
                     service = keys[0]
                     usage_type = keys[1]
-                
+
                 # Filter to backup/snapshot related usage types (only when usage_type is available)
                 if usage_type:
                     is_backup_related = any(
-                        bt.lower() in usage_type.lower() 
+                        bt.lower() in usage_type.lower()
                         for bt in AWS_BACKUP_FILTERS['usage_types']
                     )
-                    
+
                     if not is_backup_related:
                         continue
-                
+
                 metrics = group.get('Metrics', {})
                 cost = float(metrics.get('UnblendedCost', {}).get('Amount', 0))
                 usage_qty = float(metrics.get('UsageQuantity', {}).get('Amount', 0))
                 usage_unit = metrics.get('UsageQuantity', {}).get('Unit', '')
-                
+
                 if cost == 0:
                     continue
-                
+
                 # Categorize
                 category = categorize_aws_usage(service, usage_type or '')
-                
+
                 record = CostRecord(
                     provider='aws',
                     account_id=linked_account,
@@ -267,13 +264,13 @@ def collect_aws_costs(
                     metadata={'usage_type': usage_type} if usage_type else None
                 )
                 records.append(record)
-        
+
         logger.info(f"Collected {len(records)} AWS cost records")
-        
+
     except Exception as e:
         logger.error(f"Failed to collect AWS costs: {e}")
         raise
-    
+
     return records
 
 
@@ -281,7 +278,7 @@ def categorize_aws_usage(service: str, usage_type: str) -> str:
     """Categorize AWS usage type into backup, snapshot, or storage."""
     usage_lower = usage_type.lower()
     service_lower = service.lower()
-    
+
     if 'snapshot' in usage_lower:
         return 'snapshot'
     elif 'backup' in usage_lower or 'vault' in usage_lower:
@@ -324,37 +321,37 @@ def collect_azure_costs(
 ) -> List[CostRecord]:
     """
     Collect backup and snapshot costs from Azure Cost Management.
-    
+
     Args:
         credential: Azure credential
         subscription_id: Azure subscription ID
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
-    
+
     Returns:
         List of CostRecord objects
     """
     records = []
-    
+
     try:
         from azure.mgmt.costmanagement import CostManagementClient
         from azure.mgmt.costmanagement.models import (
-            QueryDefinition,
-            QueryTimePeriod,
-            QueryDataset,
             QueryAggregation,
-            QueryGrouping,
-            QueryFilter,
             QueryComparisonExpression,
+            QueryDataset,
+            QueryDefinition,
+            QueryFilter,
+            QueryGrouping,
+            QueryTimePeriod,
         )
-        
+
         client = CostManagementClient(credential, subscription_id)
         scope = f"/subscriptions/{subscription_id}"
-        
+
         # Parse dates to datetime objects for the SDK
         from_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         to_date = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
-        
+
         # Query for backup-related costs using the proper models
         query = QueryDefinition(
             type="ActualCost",
@@ -393,9 +390,9 @@ def collect_azure_costs(
                 )
             )
         )
-        
+
         result = client.query.usage(scope=scope, parameters=query)
-        
+
         # Parse results (with null checks) - handle pagination
         all_rows: List[Any] = []
         columns: List[str] = []
@@ -404,16 +401,16 @@ def collect_azure_costs(
                 if not all_rows:
                     logger.warning("No cost data returned from Azure")
                 break
-            
+
             # Store column info from first result
             if not columns:
                 columns = [col.name or '' for col in result.columns]
-            
+
             all_rows.extend(result.rows)
-            
+
             # Check for more pages
             if hasattr(result, 'next_link') and result.next_link:
-                logger.debug(f"Fetching next page of Azure cost results...")
+                logger.debug("Fetching next page of Azure cost results...")
                 try:
                     result = client.query.usage(scope=scope, parameters=query)
                     # Note: Azure Cost Management doesn't use standard pagination
@@ -423,23 +420,23 @@ def collect_azure_costs(
                     break
             else:
                 break
-        
+
         if not all_rows:
             return records
-        
+
         for row in all_rows:
             row_dict = dict(zip(columns, row))
-            
+
             cost = float(row_dict.get('Cost', 0))
             if cost == 0:
                 continue
-            
+
             service = row_dict.get('ServiceName', 'Unknown')
             meter_category = row_dict.get('MeterCategory', '')
-            
+
             # Categorize
             category = categorize_azure_cost(service, meter_category)
-            
+
             record = CostRecord(
                 provider='azure',
                 account_id=subscription_id,
@@ -453,16 +450,16 @@ def collect_azure_costs(
                 metadata={'meter_category': meter_category}
             )
             records.append(record)
-        
+
         logger.info(f"Collected {len(records)} Azure cost records")
-        
+
     except ImportError:
         logger.error("Azure Cost Management SDK not installed. Run: pip install azure-mgmt-costmanagement")
         raise
     except Exception as e:
         logger.error(f"Failed to collect Azure costs: {e}")
         raise
-    
+
     return records
 
 
@@ -470,7 +467,7 @@ def categorize_azure_cost(service: str, meter_category: str) -> str:
     """Categorize Azure cost into backup, snapshot, or storage."""
     service_lower = service.lower()
     meter_lower = meter_category.lower()
-    
+
     if 'backup' in service_lower or 'backup' in meter_lower:
         return 'backup'
     elif 'snapshot' in meter_lower:
@@ -515,23 +512,23 @@ def collect_gcp_costs(
 ) -> List[CostRecord]:
     """
     Collect backup and snapshot costs from GCP BigQuery billing export.
-    
+
     Args:
         project_id: GCP project ID
         billing_table: Full BigQuery table path (project.dataset.table)
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
-    
+
     Returns:
         List of CostRecord objects
     """
     records = []
-    
+
     try:
         from google.cloud import bigquery
-        
+
         client = bigquery.Client(project=project_id)
-        
+
         # Validate billing_table format to prevent injection
         # Expected format: project.dataset.table or project.dataset.table_*
         import re
@@ -540,20 +537,20 @@ def collect_gcp_costs(
                 f"Invalid billing_table format: {billing_table}. "
                 "Expected format: project.dataset.table"
             )
-        
+
         # Build service filter using parameterized query
         # Note: BigQuery doesn't support parameterized table names, but we validated above
         # Services and SKU keywords are from our controlled constant
         # Escape special LIKE characters (%, _, \) in keywords for safety
         def escape_like_pattern(s: str) -> str:
             return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        
+
         services_filter = ', '.join([f"'{s}'" for s in GCP_BACKUP_FILTERS['services']])
         sku_conditions = ' OR '.join([
-            f"LOWER(sku.description) LIKE '%{escape_like_pattern(kw)}%'" 
+            f"LOWER(sku.description) LIKE '%{escape_like_pattern(kw)}%'"
             for kw in GCP_BACKUP_FILTERS['sku_keywords']
         ])
-        
+
         # Use parameterized query for user-provided date values
         query = f"""
         SELECT
@@ -567,15 +564,15 @@ def collect_gcp_costs(
             FORMAT_DATE('%Y-%m-%d', DATE(usage_start_time)) as period_start,
             FORMAT_DATE('%Y-%m-%d', DATE(usage_end_time)) as period_end
         FROM `{billing_table}`
-        WHERE 
+        WHERE
             DATE(usage_start_time) >= @start_date
             AND DATE(usage_end_time) <= @end_date
             AND service.description IN ({services_filter})
             AND ({sku_conditions})
-        GROUP BY 
-            project.id, 
-            service.description, 
-            sku.description, 
+        GROUP BY
+            project.id,
+            service.description,
+            sku.description,
             currency,
             usage.unit,
             DATE(usage_start_time),
@@ -583,7 +580,7 @@ def collect_gcp_costs(
         HAVING cost > 0
         ORDER BY cost DESC
         """
-        
+
         # Configure query parameters for dates
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -591,13 +588,13 @@ def collect_gcp_costs(
                 bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
             ]
         )
-        
+
         query_job = client.query(query, job_config=job_config)
         results = query_job.result()
-        
+
         for row in results:
             category = categorize_gcp_cost(row.service, row.sku)
-            
+
             record = CostRecord(
                 provider='gcp',
                 account_id=row.project_id,
@@ -612,23 +609,23 @@ def collect_gcp_costs(
                 metadata={'sku': row.sku}
             )
             records.append(record)
-        
+
         logger.info(f"Collected {len(records)} GCP cost records")
-        
+
     except ImportError:
         logger.error("Google Cloud BigQuery SDK not installed. Run: pip install google-cloud-bigquery")
         raise
     except Exception as e:
         logger.error(f"Failed to collect GCP costs: {e}")
         raise
-    
+
     return records
 
 
 def categorize_gcp_cost(service: str, sku: str) -> str:
     """Categorize GCP cost into backup, snapshot, or storage."""
     sku_lower = sku.lower()
-    
+
     if 'snapshot' in sku_lower:
         return 'snapshot'
     elif 'backup' in sku_lower or 'Backup and DR' in service:
@@ -644,10 +641,10 @@ def categorize_gcp_cost(service: str, sku: str) -> str:
 def aggregate_costs(records: List[CostRecord]) -> List[CostSummary]:
     """Aggregate cost records into summaries by provider and category."""
     summaries = {}
-    
+
     for record in records:
         key = (record.provider, record.category, record.currency)
-        
+
         if key not in summaries:
             summaries[key] = {
                 'provider': record.provider,
@@ -656,14 +653,14 @@ def aggregate_costs(records: List[CostRecord]) -> List[CostSummary]:
                 'currency': record.currency,
                 'service_breakdown': {}
             }
-        
+
         summaries[key]['total_cost'] += record.cost
-        
+
         service = record.service
         if service not in summaries[key]['service_breakdown']:
             summaries[key]['service_breakdown'][service] = 0
         summaries[key]['service_breakdown'][service] += record.cost
-    
+
     # Round totals
     result = []
     for data in summaries.values():
@@ -672,7 +669,7 @@ def aggregate_costs(records: List[CostRecord]) -> List[CostSummary]:
             k: round(v, 2) for k, v in data['service_breakdown'].items()
         }
         result.append(CostSummary(**data))
-    
+
     return sorted(result, key=lambda x: (x.provider, x.category))
 
 
@@ -705,67 +702,67 @@ Examples:
   python3 cost_collect.py --all --subscription-id xxx --billing-table xxx
 """
     )
-    
+
     # Cloud selection
     parser.add_argument('--aws', action='store_true', help='Collect AWS costs')
     parser.add_argument('--azure', action='store_true', help='Collect Azure costs')
     parser.add_argument('--gcp', action='store_true', help='Collect GCP costs')
     parser.add_argument('--all', action='store_true', help='Collect from all configured clouds')
-    
+
     # Date range - default to last full month
     default_start, default_end = get_last_full_month()
-    
+
     parser.add_argument('--start-date', default=default_start,
                         help=f'Start date YYYY-MM-DD (default: {default_start} - last full month)')
     parser.add_argument('--end-date', default=default_end,
                         help=f'End date YYYY-MM-DD (default: {default_end} - exclusive)')
     parser.add_argument('--last-30-days', action='store_true',
                         help='Use last 30 days instead of last full month')
-    
+
     # AWS options
     parser.add_argument('--profile', help='AWS profile name')
     parser.add_argument('--role-arn', help='AWS role ARN to assume')
     parser.add_argument('--org-costs', action='store_true',
                         help='Break down costs by linked account (for AWS Organizations)')
-    
+
     # Azure options
     parser.add_argument('--subscription-id', help='Azure subscription ID')
-    
+
     # GCP options
     parser.add_argument('--project', help='GCP project ID')
     parser.add_argument('--billing-table', help='GCP BigQuery billing table (project.dataset.table)')
-    
+
     # Output options
     parser.add_argument('-o', '--output', default='.', help='Output directory')
     parser.add_argument('--log-level', default='INFO', help='Logging level')
-    
+
     args = parser.parse_args()
-    
+
     # Setup logging - write to file if output is local directory
     log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
     setup_logging(args.log_level, output_dir=log_dir)
-    
+
     # Handle --last-30-days override
     if args.last_30_days:
         args.end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         args.start_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
         logger.info(f"Using last 30 days: {args.start_date} to {args.end_date}")
-    
+
     # Validate at least one cloud selected
     if not (args.aws or args.azure or args.gcp or args.all):
         parser.error("Must specify at least one of: --aws, --azure, --gcp, --all")
-    
+
     all_records: List[CostRecord] = []
     collected_providers = []
-    
+
     # AWS Collection
     if args.aws or args.all:
         try:
             import boto3
-            from botocore.exceptions import ClientError
-            
+            from botocore.exceptions import ClientError  # noqa: F401 - imported for availability check
+
             session = boto3.Session(profile_name=args.profile)
-            
+
             # Handle role assumption if specified
             if args.role_arn:
                 sts = session.client('sts')
@@ -779,60 +776,60 @@ Examples:
                     aws_secret_access_key=creds['SecretAccessKey'],
                     aws_session_token=creds['SessionToken']
                 )
-            
+
             account_id = session.client('sts').get_caller_identity()['Account']
-            
+
             logger.info(f"Collecting AWS costs for account {account_id}")
             logger.info(f"Period: {args.start_date} to {args.end_date}")
-            
+
             records = collect_aws_costs(
-                session, 
-                args.start_date, 
-                args.end_date, 
+                session,
+                args.start_date,
+                args.end_date,
                 account_id,
                 group_by_account=args.org_costs
             )
             all_records.extend(records)
             collected_providers.append('aws')
-            
+
         except ImportError:
             logger.warning("boto3 not installed, skipping AWS")
         except Exception as e:
             logger.error(f"AWS collection failed: {e}")
             if not args.all:
                 raise
-    
+
     # Azure Collection
     if args.azure or args.all:
         if not args.subscription_id and args.azure:
             parser.error("--subscription-id required for Azure")
-        
+
         if args.subscription_id:
             try:
                 from azure.identity import DefaultAzureCredential
-                
+
                 credential = DefaultAzureCredential()
-                
+
                 logger.info(f"Collecting Azure costs for subscription {args.subscription_id}")
                 records = collect_azure_costs(
-                    credential, args.subscription_id, 
+                    credential, args.subscription_id,
                     args.start_date, args.end_date
                 )
                 all_records.extend(records)
                 collected_providers.append('azure')
-                
+
             except ImportError:
                 logger.warning("Azure SDK not installed, skipping Azure")
             except Exception as e:
                 logger.error(f"Azure collection failed: {e}")
                 if not args.all:
                     raise
-    
+
     # GCP Collection
     if args.gcp or args.all:
         if args.gcp and (not args.project or not args.billing_table):
             parser.error("--project and --billing-table required for GCP")
-        
+
         if args.project and args.billing_table:
             try:
                 logger.info(f"Collecting GCP costs for project {args.project}")
@@ -842,26 +839,26 @@ Examples:
                 )
                 all_records.extend(records)
                 collected_providers.append('gcp')
-                
+
             except ImportError:
                 logger.warning("Google Cloud BigQuery SDK not installed, skipping GCP")
             except Exception as e:
                 logger.error(f"GCP collection failed: {e}")
                 if not args.all:
                     raise
-    
+
     if not all_records:
         logger.warning("No cost records collected")
         print("\nNo backup/snapshot costs found for the specified period.")
         return
-    
+
     # Aggregate
     summaries = aggregate_costs(all_records)
-    
+
     # Prepare output
     run_id = generate_run_id()
     timestamp = get_timestamp()
-    
+
     output_data = {
         'run_id': run_id,
         'timestamp': timestamp,
@@ -874,7 +871,7 @@ Examples:
         'total_cost': round(sum(r.cost for r in all_records), 2),
         'records': [r.to_dict() for r in all_records]
     }
-    
+
     summary_data = {
         'run_id': run_id,
         'timestamp': timestamp,
@@ -886,14 +883,14 @@ Examples:
         'total_cost': round(sum(r.cost for r in all_records), 2),
         'summaries': [s.to_dict() for s in summaries]
     }
-    
+
     # Write outputs
     output_base = args.output.rstrip('/')
     file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
-    
+
     write_json(output_data, f"{output_base}/cca_cost_inv_{file_ts}.json")
     write_json(summary_data, f"{output_base}/cca_cost_sum_{file_ts}.json")
-    
+
     # Write CSV
     csv_data = []
     for s in summaries:
@@ -904,25 +901,25 @@ Examples:
             'currency': s.currency
         })
     write_csv(csv_data, f"{output_base}/cca_cost_sizing.csv")
-    
+
     # Print summary
     print(f"\n{'='*60}")
-    print(f"Backup & Snapshot Cost Analysis")
+    print("Backup & Snapshot Cost Analysis")
     print(f"{'='*60}")
     print(f"Period:    {args.start_date} to {args.end_date}")
     print(f"Providers: {', '.join(collected_providers)}")
     print(f"Records:   {len(all_records)}")
     print(f"\n{'Category':<15} {'Provider':<10} {'Cost':>12}")
     print(f"{'-'*15} {'-'*10} {'-'*12}")
-    
+
     grand_total = 0
     for s in summaries:
         print(f"{s.category:<15} {s.provider:<10} ${s.total_cost:>10,.2f}")
         grand_total += s.total_cost
-    
+
     print(f"{'-'*15} {'-'*10} {'-'*12}")
     print(f"{'TOTAL':<15} {'':<10} ${grand_total:>10,.2f}")
-    
+
     print(f"\nOutput: {output_base}/")
 
 

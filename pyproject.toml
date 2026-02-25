@@ -1,0 +1,66 @@
+[project]
+name = "cca-cloudshell"
+version = "1.0.0"
+description = "Cloud Capacity Assessment tool for AWS, Azure, GCP, and M365"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+strict_optional = true
+
+# Ignore untyped third-party libraries globally
+[[tool.mypy.overrides]]
+module = [
+    # Rich console library
+    "rich.*",
+    # Excel library
+    "openpyxl.*",
+    # Retry library
+    "tenacity.*",
+    # YAML parsing
+    "yaml",
+    # AWS SDKs
+    "boto3",
+    "boto3.*",
+    "botocore.*",
+    # Google Cloud SDKs
+    "google.cloud.*",
+    "google.api_core.*",
+    "google.auth.*",
+    "google.protobuf.*",
+    # Azure SDKs
+    "azure.identity.*",
+    "azure.mgmt.*",
+    "azure.storage.*",
+    # Microsoft Graph
+    "msgraph.*",
+    # Kubernetes
+    "kubernetes.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]

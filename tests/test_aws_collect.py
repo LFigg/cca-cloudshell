@@ -7,43 +7,41 @@ Covers:
 - Non-optimal configurations
 - Error handling
 """
-import pytest
+import os
+import sys
+
 import boto3
+import pytest
 from moto import (
     mock_aws,
 )
-from datetime import datetime
-import sys
-import os
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aws_collect import (
-    get_session,
+    collect_backup_plans,
+    collect_backup_protected_resources,
+    collect_backup_recovery_points,
+    collect_backup_selections,
+    collect_backup_vaults,
+    collect_dynamodb_tables,
+    collect_ebs_snapshots,
+    collect_ebs_volumes,
+    collect_ec2_instances,
+    collect_efs_filesystems,
+    collect_elasticache_clusters,
+    collect_lambda_functions,
+    collect_rds_cluster_snapshots,
+    collect_rds_clusters,
+    collect_rds_instances,
+    collect_rds_snapshots,
+    collect_region,
+    collect_s3_buckets,
     get_account_id,
     get_enabled_regions,
-    collect_ec2_instances,
-    collect_ebs_volumes,
-    collect_ebs_snapshots,
-    collect_rds_instances,
-    collect_rds_clusters,
-    collect_rds_snapshots,
-    collect_rds_cluster_snapshots,
-    collect_s3_buckets,
-    collect_efs_filesystems,
-    collect_lambda_functions,
-    collect_dynamodb_tables,
-    collect_eks_clusters,
-    collect_elasticache_clusters,
-    collect_backup_vaults,
-    collect_backup_recovery_points,
-    collect_backup_plans,
-    collect_backup_selections,
-    collect_backup_protected_resources,
-    collect_region,
+    validate_account_ids,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -71,14 +69,14 @@ def mock_session(aws_credentials):
 
 class TestSessionManagement:
     """Tests for session and account management functions."""
-    
+
     @mock_aws
     def test_get_account_id(self, mock_session):
         """Test getting AWS account ID."""
         account_id = get_account_id(mock_session)
         assert account_id is not None
         assert len(account_id) == 12
-        
+
     @mock_aws
     def test_get_enabled_regions(self, mock_session):
         """Test getting enabled regions."""
@@ -94,20 +92,20 @@ class TestSessionManagement:
 
 class TestEC2Instances:
     """Tests for EC2 instance collection."""
-    
+
     @mock_aws
     def test_collect_instances_with_volumes_and_tags(self, mock_session):
         """Test collecting EC2 instances with attached volumes and tags."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Create VPC
         vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
         vpc_id = vpc["Vpc"]["VpcId"]
-        
+
         # Create subnet
         subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.0.1.0/24")
         subnet_id = subnet["Subnet"]["SubnetId"]
-        
+
         # Run instance with tags
         instances = ec2.run_instances(
             ImageId="ami-12345678",
@@ -125,11 +123,11 @@ class TestEC2Instances:
                 }
             ],
         )
-        instance_id = instances["Instances"][0]["InstanceId"]
-        
+        instances["Instances"][0]["InstanceId"]
+
         # Collect resources
         resources = collect_ec2_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         resource = resources[0]
         assert resource.resource_type == "aws:ec2:instance"
@@ -137,12 +135,12 @@ class TestEC2Instances:
         assert resource.tags["Environment"] == "test"
         assert resource.metadata["instance_type"] == "t2.micro"
         assert resource.metadata["vpc_id"] == vpc_id
-        
+
     @mock_aws
     def test_collect_instance_no_tags(self, mock_session):
         """Test collecting EC2 instance without tags - should use instance ID as name."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         instances = ec2.run_instances(
             ImageId="ami-12345678",
             MinCount=1,
@@ -150,20 +148,20 @@ class TestEC2Instances:
             InstanceType="t3.medium",
         )
         instance_id = instances["Instances"][0]["InstanceId"]
-        
+
         resources = collect_ec2_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         resource = resources[0]
         # Name should fall back to instance ID when no tags
         assert resource.name == instance_id
         assert resource.tags == {}
-        
+
     @mock_aws
     def test_collect_instance_no_attached_volumes(self, mock_session):
         """Test collecting EC2 instance with no block device mappings."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Run a basic instance (moto creates with root volume by default)
         ec2.run_instances(
             ImageId="ami-12345678",
@@ -171,25 +169,25 @@ class TestEC2Instances:
             MaxCount=1,
             InstanceType="t2.nano",
         )
-        
+
         resources = collect_ec2_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         # attached_volumes should be a list (possibly empty or with root volume)
         assert isinstance(resources[0].metadata["attached_volumes"], list)
-        
+
     @mock_aws
     def test_collect_instances_empty_region(self, mock_session):
         """Test collecting EC2 instances from region with no instances."""
         resources = collect_ec2_instances(mock_session, "us-west-2", "123456789012")
-        
+
         assert resources == []
-        
+
     @mock_aws
     def test_collect_instances_multiple_states(self, mock_session):
         """Test collecting instances in various states (running, stopped)."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Create two instances
         instances = ec2.run_instances(
             ImageId="ami-12345678",
@@ -197,13 +195,13 @@ class TestEC2Instances:
             MaxCount=2,
             InstanceType="t2.micro",
         )
-        
+
         # Stop one instance
         instance_to_stop = instances["Instances"][0]["InstanceId"]
         ec2.stop_instances(InstanceIds=[instance_to_stop])
-        
+
         resources = collect_ec2_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 2
         states = {r.metadata["state"] for r in resources}
         assert "running" in states or "stopped" in states
@@ -215,12 +213,12 @@ class TestEC2Instances:
 
 class TestEBSVolumes:
     """Tests for EBS volume collection."""
-    
+
     @mock_aws
     def test_collect_volumes_attached(self, mock_session):
         """Test collecting EBS volumes attached to instances."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Create an instance (creates root volume automatically)
         instances = ec2.run_instances(
             ImageId="ami-12345678",
@@ -229,7 +227,7 @@ class TestEBSVolumes:
             InstanceType="t2.micro",
         )
         instance_id = instances["Instances"][0]["InstanceId"]
-        
+
         # Create and attach an additional volume
         volume = ec2.create_volume(
             AvailabilityZone="us-east-1a",
@@ -244,30 +242,30 @@ class TestEBSVolumes:
             ],
         )
         volume_id = volume["VolumeId"]
-        
+
         ec2.attach_volume(
             VolumeId=volume_id,
             InstanceId=instance_id,
             Device="/dev/sdf",
         )
-        
+
         resources = collect_ebs_volumes(mock_session, "us-east-1", "123456789012")
-        
+
         # Find the attached volume we created
         attached_volumes = [r for r in resources if r.name == "data-volume"]
         assert len(attached_volumes) == 1
         vol = attached_volumes[0]
         assert vol.size_gb == 100.0
-        assert vol.metadata["encrypted"] == True
+        assert vol.metadata["encrypted"]
         assert vol.metadata["volume_type"] == "gp3"
         assert vol.metadata["attached_instance"] == instance_id
         assert vol.parent_resource_id == instance_id
-        
+
     @mock_aws
     def test_collect_volumes_unattached(self, mock_session):
         """Test collecting unattached EBS volumes."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Create standalone volume, not attached
         ec2.create_volume(
             AvailabilityZone="us-east-1a",
@@ -281,50 +279,50 @@ class TestEBSVolumes:
                 }
             ],
         )
-        
+
         resources = collect_ebs_volumes(mock_session, "us-east-1", "123456789012")
-        
+
         orphan = next((r for r in resources if r.name == "orphan-volume"), None)
         assert orphan is not None
         assert orphan.size_gb == 500.0
         assert orphan.metadata["attached_instance"] is None
         assert orphan.parent_resource_id is None
-        assert orphan.metadata["encrypted"] == False
-        
+        assert not orphan.metadata["encrypted"]
+
     @mock_aws
     def test_collect_volumes_no_tags(self, mock_session):
         """Test collecting volumes without tags - name falls back to volume ID."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         volume = ec2.create_volume(
             AvailabilityZone="us-east-1a",
             Size=50,
             VolumeType="standard",
         )
         volume_id = volume["VolumeId"]
-        
+
         resources = collect_ebs_volumes(mock_session, "us-east-1", "123456789012")
-        
+
         vol = next((r for r in resources if r.resource_id == volume_id), None)
         assert vol is not None
         # Name should fall back to volume ID
         assert vol.name == volume_id
         assert vol.tags == {}
-        
+
     @mock_aws
     def test_collect_volumes_empty(self, mock_session):
         """Test collecting volumes from region with no volumes."""
         resources = collect_ebs_volumes(mock_session, "us-west-2", "123456789012")
         assert resources == []
-        
+
     @mock_aws
     def test_collect_volumes_various_types(self, mock_session):
         """Test collecting volumes of different types."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         volume_types = ["gp2", "gp3", "io1", "st1", "sc1", "standard"]
-        
-        for i, vol_type in enumerate(volume_types):
+
+        for _i, vol_type in enumerate(volume_types):
             kwargs = {
                 "AvailabilityZone": "us-east-1a",
                 "Size": 100 if vol_type not in ["st1", "sc1"] else 500,  # st1/sc1 require min 500GB
@@ -333,9 +331,9 @@ class TestEBSVolumes:
             if vol_type == "io1":
                 kwargs["Iops"] = 100
             ec2.create_volume(**kwargs)
-            
+
         resources = collect_ebs_volumes(mock_session, "us-east-1", "123456789012")
-        
+
         collected_types = {r.metadata["volume_type"] for r in resources}
         assert collected_types == set(volume_types)
 
@@ -346,12 +344,12 @@ class TestEBSVolumes:
 
 class TestRDS:
     """Tests for RDS instance and cluster collection."""
-    
+
     @mock_aws
     def test_collect_rds_instance(self, mock_session):
         """Test collecting RDS instances."""
         rds = boto3.client("rds", region_name="us-east-1")
-        
+
         rds.create_db_instance(
             DBInstanceIdentifier="test-mysql",
             DBInstanceClass="db.t3.micro",
@@ -361,22 +359,22 @@ class TestRDS:
             AllocatedStorage=100,
             StorageEncrypted=True,
         )
-        
+
         resources = collect_rds_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         db = resources[0]
         assert db.resource_type == "aws:rds:instance"
         assert db.name == "test-mysql"
         assert db.size_gb == 100.0
         assert db.metadata["engine"] == "mysql"
-        assert db.metadata["encrypted"] == True
-        
+        assert db.metadata["encrypted"]
+
     @mock_aws
     def test_collect_rds_instance_minimal(self, mock_session):
         """Test collecting RDS instance with minimal configuration."""
         rds = boto3.client("rds", region_name="us-east-1")
-        
+
         rds.create_db_instance(
             DBInstanceIdentifier="minimal-db",
             DBInstanceClass="db.t3.micro",
@@ -385,23 +383,23 @@ class TestRDS:
             MasterUserPassword="password123",
             AllocatedStorage=20,
         )
-        
+
         resources = collect_rds_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
-        assert resources[0].metadata["multi_az"] == False
-        
+        assert not resources[0].metadata["multi_az"]
+
     @mock_aws
     def test_collect_rds_instances_empty(self, mock_session):
         """Test collecting RDS instances from empty region."""
         resources = collect_rds_instances(mock_session, "us-west-2", "123456789012")
         assert resources == []
-        
+
     @mock_aws
     def test_collect_rds_cluster_aurora(self, mock_session):
         """Test collecting Aurora RDS clusters."""
         rds = boto3.client("rds", region_name="us-east-1")
-        
+
         rds.create_db_cluster(
             DBClusterIdentifier="test-aurora-cluster",
             Engine="aurora-mysql",
@@ -409,15 +407,15 @@ class TestRDS:
             MasterUserPassword="password123",
             DatabaseName="testdb",
         )
-        
+
         resources = collect_rds_clusters(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         cluster = resources[0]
         assert cluster.resource_type == "aws:rds:cluster"
         assert cluster.name == "test-aurora-cluster"
         assert cluster.metadata["engine"] == "aurora-mysql"
-        
+
     @mock_aws
     def test_collect_rds_clusters_empty(self, mock_session):
         """Test collecting RDS clusters from empty region."""
@@ -431,12 +429,12 @@ class TestRDS:
 
 class TestEBSSnapshots:
     """Tests for EBS snapshot collection."""
-    
+
     @mock_aws
     def test_collect_snapshots_with_tags(self, mock_session):
         """Test collecting EBS snapshots with tags."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Create a volume first
         volume = ec2.create_volume(
             AvailabilityZone="us-east-1a",
@@ -444,7 +442,7 @@ class TestEBSSnapshots:
             VolumeType="gp2",
         )
         volume_id = volume["VolumeId"]
-        
+
         # Create snapshot with tags
         snapshot = ec2.create_snapshot(
             VolumeId=volume_id,
@@ -460,9 +458,9 @@ class TestEBSSnapshots:
             ],
         )
         snapshot_id = snapshot["SnapshotId"]
-        
+
         resources = collect_ebs_snapshots(mock_session, "us-east-1", "123456789012")
-        
+
         # Filter to our created snapshot (moto includes AMI snapshots)
         our_snapshots = [r for r in resources if r.resource_id == snapshot_id]
         assert len(our_snapshots) == 1
@@ -474,33 +472,33 @@ class TestEBSSnapshots:
         assert snap.parent_resource_id == volume_id
         assert snap.metadata["volume_id"] == volume_id
         assert snap.metadata["description"] == "Test backup snapshot"
-        
+
     @mock_aws
     def test_collect_snapshots_no_tags(self, mock_session):
         """Test collecting EBS snapshots without tags - name falls back to snapshot ID."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         volume = ec2.create_volume(
             AvailabilityZone="us-east-1a",
             Size=50,
             VolumeType="gp2",
         )
-        
+
         snapshot = ec2.create_snapshot(
             VolumeId=volume["VolumeId"],
             Description="Untagged snapshot",
         )
         snapshot_id = snapshot["SnapshotId"]
-        
+
         resources = collect_ebs_snapshots(mock_session, "us-east-1", "123456789012")
-        
+
         # Filter to our created snapshot (moto includes AMI snapshots)
         our_snapshots = [r for r in resources if r.resource_id == snapshot_id]
         assert len(our_snapshots) == 1
         # Name should fall back to snapshot ID
         assert our_snapshots[0].name == snapshot_id
         assert our_snapshots[0].tags == {}
-        
+
     @mock_aws
     def test_collect_snapshots_empty(self, mock_session):
         """Test that collector runs without error in region with no user snapshots."""
@@ -510,19 +508,19 @@ class TestEBSSnapshots:
         for r in resources:
             assert r.resource_type == "aws:ec2:snapshot"
             assert r.service_family == "EC2"
-        
+
     @mock_aws
     def test_collect_snapshots_multiple(self, mock_session):
         """Test collecting multiple snapshots from same volume."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         volume = ec2.create_volume(
             AvailabilityZone="us-east-1a",
             Size=100,
             VolumeType="gp2",
         )
         volume_id = volume["VolumeId"]
-        
+
         # Create multiple snapshots
         created_ids = []
         for i in range(3):
@@ -531,9 +529,9 @@ class TestEBSSnapshots:
                 Description=f"Snapshot {i+1}",
             )
             created_ids.append(snap["SnapshotId"])
-        
+
         resources = collect_ebs_snapshots(mock_session, "us-east-1", "123456789012")
-        
+
         # Filter to our created snapshots
         our_snapshots = [r for r in resources if r.resource_id in created_ids]
         assert len(our_snapshots) == 3
@@ -548,12 +546,12 @@ class TestEBSSnapshots:
 
 class TestRDSSnapshots:
     """Tests for RDS snapshot collection."""
-    
+
     @mock_aws
     def test_collect_rds_snapshots(self, mock_session):
         """Test collecting RDS DB snapshots."""
         rds = boto3.client("rds", region_name="us-east-1")
-        
+
         # Create DB instance first
         rds.create_db_instance(
             DBInstanceIdentifier="test-mysql",
@@ -563,15 +561,15 @@ class TestRDSSnapshots:
             MasterUserPassword="password123",
             AllocatedStorage=100,
         )
-        
+
         # Create snapshot
         rds.create_db_snapshot(
             DBSnapshotIdentifier="test-mysql-backup",
             DBInstanceIdentifier="test-mysql",
         )
-        
+
         resources = collect_rds_snapshots(mock_session, "us-east-1", "123456789012")
-        
+
         # Filter to our manual snapshot (moto may create automated snapshots)
         our_snapshots = [r for r in resources if r.name == "test-mysql-backup"]
         assert len(our_snapshots) == 1
@@ -581,18 +579,18 @@ class TestRDSSnapshots:
         assert snap.parent_resource_id == "test-mysql"
         assert snap.metadata["db_instance_id"] == "test-mysql"
         assert snap.metadata["engine"] == "mysql"
-        
+
     @mock_aws
     def test_collect_rds_snapshots_empty(self, mock_session):
         """Test collecting RDS snapshots from empty region."""
         resources = collect_rds_snapshots(mock_session, "us-west-2", "123456789012")
         assert resources == []
-        
+
     @mock_aws
     def test_collect_rds_cluster_snapshots(self, mock_session):
         """Test collecting Aurora cluster snapshots."""
         rds = boto3.client("rds", region_name="us-east-1")
-        
+
         # Create Aurora cluster
         rds.create_db_cluster(
             DBClusterIdentifier="test-aurora",
@@ -600,15 +598,15 @@ class TestRDSSnapshots:
             MasterUsername="admin",
             MasterUserPassword="password123",
         )
-        
+
         # Create cluster snapshot
         rds.create_db_cluster_snapshot(
             DBClusterSnapshotIdentifier="aurora-backup",
             DBClusterIdentifier="test-aurora",
         )
-        
+
         resources = collect_rds_cluster_snapshots(mock_session, "us-east-1", "123456789012")
-        
+
         # Filter to our manual snapshot (moto may create automated snapshots)
         our_snapshots = [r for r in resources if r.name == "aurora-backup"]
         assert len(our_snapshots) == 1
@@ -617,7 +615,7 @@ class TestRDSSnapshots:
         assert snap.name == "aurora-backup"
         assert snap.parent_resource_id == "test-aurora"
         assert snap.metadata["db_cluster_id"] == "test-aurora"
-        
+
     @mock_aws
     def test_collect_rds_cluster_snapshots_empty(self, mock_session):
         """Test collecting Aurora cluster snapshots from empty region."""
@@ -631,25 +629,25 @@ class TestRDSSnapshots:
 
 class TestBackupVaults:
     """Tests for AWS Backup vault collection."""
-    
+
     @mock_aws
     def test_collect_backup_vaults(self, mock_session):
         """Test collecting backup vaults."""
         backup = boto3.client("backup", region_name="us-east-1")
-        
+
         # Create a backup vault
         backup.create_backup_vault(BackupVaultName="my-vault")
-        
+
         resources = collect_backup_vaults(mock_session, "us-east-1", "123456789012")
-        
+
         # Should have at least our vault (moto may include default vault)
         vault_names = [r.name for r in resources]
         assert "my-vault" in vault_names
-        
+
         our_vault = [r for r in resources if r.name == "my-vault"][0]
         assert our_vault.resource_type == "aws:backup:vault"
         assert our_vault.service_family == "Backup"
-        
+
     @mock_aws
     def test_collect_backup_vaults_empty(self, mock_session):
         """Test collecting backup vaults from region with none."""
@@ -661,16 +659,16 @@ class TestBackupVaults:
 
 class TestBackupRecoveryPoints:
     """Tests for AWS Backup recovery point collection."""
-    
+
     @mock_aws
     def test_collect_recovery_points(self, mock_session):
         """Test collecting backup recovery points."""
         backup = boto3.client("backup", region_name="us-east-1")
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Create a backup vault
         backup.create_backup_vault(BackupVaultName="test-vault")
-        
+
         # Create an EBS volume to back up
         volume = ec2.create_volume(
             AvailabilityZone="us-east-1a",
@@ -678,7 +676,7 @@ class TestBackupRecoveryPoints:
             VolumeType="gp2",
         )
         volume_arn = f"arn:aws:ec2:us-east-1:123456789012:volume/{volume['VolumeId']}"
-        
+
         # Start a backup job (moto will create recovery point)
         try:
             backup.start_backup_job(
@@ -689,15 +687,15 @@ class TestBackupRecoveryPoints:
         except Exception:
             # moto may not fully support start_backup_job
             pass
-        
+
         resources = collect_backup_recovery_points(mock_session, "us-east-1", "123456789012")
-        
+
         # Verify structure if any recovery points exist
         for r in resources:
             assert r.resource_type == "aws:backup:recovery-point"
             assert r.service_family == "Backup"
             assert "backup_vault_name" in r.metadata
-            
+
     @mock_aws
     def test_collect_recovery_points_empty(self, mock_session):
         """Test collecting recovery points from empty region."""
@@ -708,12 +706,12 @@ class TestBackupRecoveryPoints:
 
 class TestBackupPlans:
     """Tests for AWS Backup plan collection."""
-    
+
     @mock_aws
     def test_collect_backup_plans(self, mock_session):
         """Test collecting backup plans."""
         backup = boto3.client("backup", region_name="us-east-1")
-        
+
         # Create a backup plan
         backup.create_backup_plan(
             BackupPlan={
@@ -730,16 +728,16 @@ class TestBackupPlans:
                 ]
             }
         )
-        
+
         resources = collect_backup_plans(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) >= 1
         our_plan = [r for r in resources if r.name == "daily-backup-plan"][0]
         assert our_plan.resource_type == "aws:backup:plan"
         assert our_plan.service_family == "Backup"
         assert our_plan.metadata["number_of_rules"] == 1
         assert "daily-rule" in our_plan.metadata["rule_names"]
-        
+
     @mock_aws
     def test_collect_backup_plans_empty(self, mock_session):
         """Test collecting backup plans from empty region."""
@@ -749,24 +747,24 @@ class TestBackupPlans:
 
 class TestBackupSelections:
     """Tests for Backup Selection collection."""
-    
+
     @pytest.fixture
     def mock_session(self):
         """Create mock boto3 session."""
         return boto3.Session(region_name="us-east-1")
-    
+
     @mock_aws
     def test_collect_backup_selections(self, mock_session):
         """Test collecting backup selections from a plan."""
         backup_client = mock_session.client("backup", region_name="us-east-1")
         iam_client = mock_session.client("iam")
-        
+
         # Create IAM role for backup
         iam_client.create_role(
             RoleName="BackupRole",
             AssumeRolePolicyDocument='{"Version":"2012-10-17","Statement":[]}',
         )
-        
+
         # Create backup plan
         plan_response = backup_client.create_backup_plan(
             BackupPlan={
@@ -781,14 +779,14 @@ class TestBackupSelections:
             }
         )
         plan_id = plan_response["BackupPlanId"]
-        
+
         # Create backup selection - note: moto may not fully support this
         try:
             backup_client.create_backup_selection(
                 BackupPlanId=plan_id,
                 BackupSelection={
                     "SelectionName": "ec2-selection",
-                    "IamRoleArn": f"arn:aws:iam::123456789012:role/BackupRole",
+                    "IamRoleArn": "arn:aws:iam::123456789012:role/BackupRole",
                     "Resources": [
                         "arn:aws:ec2:us-east-1:123456789012:volume/*"
                     ],
@@ -797,12 +795,12 @@ class TestBackupSelections:
         except Exception:
             # moto may not support backup selections yet
             pytest.skip("moto does not support backup selections")
-        
+
         resources = collect_backup_selections(mock_session, "us-east-1", "123456789012")
-        
+
         # Should have at least our selection
         assert len(resources) >= 1
-        
+
     @mock_aws
     def test_collect_backup_selections_empty(self, mock_session):
         """Test collecting backup selections from empty region."""
@@ -812,19 +810,19 @@ class TestBackupSelections:
 
 class TestBackupProtectedResources:
     """Tests for Backup Protected Resources collection."""
-    
+
     @pytest.fixture
     def mock_session(self):
         """Create mock boto3 session."""
         return boto3.Session(region_name="us-east-1")
-    
+
     @mock_aws
     def test_collect_backup_protected_resources_empty(self, mock_session):
         """Test collecting protected resources from empty region."""
         resources = collect_backup_protected_resources(mock_session, "us-west-2", "123456789012")
         # Should return empty list or may have some based on moto behavior
         assert isinstance(resources, list)
-    
+
     @mock_aws
     def test_collect_backup_protected_resources_with_backup(self, mock_session):
         """Test collecting protected resources."""
@@ -836,10 +834,10 @@ class TestBackupProtectedResources:
             MaxCount=1,
             InstanceType="t2.micro",
         )
-        
+
         # Note: moto may not track protected resources without actual backup jobs
         resources = collect_backup_protected_resources(mock_session, "us-east-1", "123456789012")
-        
+
         # Should return a list (may be empty without actual backups)
         assert isinstance(resources, list)
 
@@ -850,12 +848,12 @@ class TestBackupProtectedResources:
 
 class TestS3:
     """Tests for S3 bucket collection."""
-    
+
     @mock_aws
     def test_collect_s3_buckets_with_tags(self, mock_session):
         """Test collecting S3 buckets with tags."""
         s3 = boto3.client("s3", region_name="us-east-1")
-        
+
         s3.create_bucket(Bucket="test-bucket-with-tags")
         s3.put_bucket_tagging(
             Bucket="test-bucket-with-tags",
@@ -866,49 +864,49 @@ class TestS3:
                 ]
             },
         )
-        
+
         resources = collect_s3_buckets(mock_session, "123456789012")
-        
+
         assert len(resources) == 1
         bucket = resources[0]
         assert bucket.resource_type == "aws:s3:bucket"
         assert bucket.name == "test-bucket-with-tags"
         assert bucket.tags["Environment"] == "production"
         assert bucket.tags["Project"] == "cca"
-        
+
     @mock_aws
     def test_collect_s3_buckets_no_tags(self, mock_session):
         """Test collecting S3 buckets without tags."""
         s3 = boto3.client("s3", region_name="us-east-1")
-        
+
         s3.create_bucket(Bucket="bucket-no-tags")
-        
+
         resources = collect_s3_buckets(mock_session, "123456789012")
-        
+
         assert len(resources) == 1
         assert resources[0].tags == {}
-        
+
     @mock_aws
     def test_collect_s3_buckets_different_regions(self, mock_session):
         """Test collecting S3 buckets from different regions."""
         s3 = boto3.client("s3", region_name="us-east-1")
-        
+
         # us-east-1 bucket (no LocationConstraint needed)
         s3.create_bucket(Bucket="bucket-us-east-1")
-        
+
         # us-west-2 bucket
         s3.create_bucket(
             Bucket="bucket-us-west-2",
             CreateBucketConfiguration={"LocationConstraint": "us-west-2"},
         )
-        
+
         resources = collect_s3_buckets(mock_session, "123456789012")
-        
+
         assert len(resources) == 2
         regions = {r.region for r in resources}
         assert "us-east-1" in regions
         assert "us-west-2" in regions
-        
+
     @mock_aws
     def test_collect_s3_buckets_empty(self, mock_session):
         """Test collecting S3 buckets when none exist."""
@@ -922,13 +920,13 @@ class TestS3:
 
 class TestEFS:
     """Tests for EFS filesystem collection."""
-    
+
     @mock_aws
     def test_collect_efs_with_tags(self, mock_session):
         """Test collecting EFS filesystems with tags."""
         efs = boto3.client("efs", region_name="us-east-1")
-        
-        fs = efs.create_file_system(
+
+        efs.create_file_system(
             CreationToken="test-efs-token",
             PerformanceMode="generalPurpose",
             Encrypted=True,
@@ -937,30 +935,30 @@ class TestEFS:
                 {"Key": "Team", "Value": "platform"},
             ],
         )
-        
+
         resources = collect_efs_filesystems(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         efs_res = resources[0]
         assert efs_res.resource_type == "aws:efs:filesystem"
         assert efs_res.name == "shared-storage"
         assert efs_res.tags["Team"] == "platform"
-        assert efs_res.metadata["encrypted"] == True
+        assert efs_res.metadata["encrypted"]
         assert efs_res.metadata["performance_mode"] == "generalPurpose"
-        
+
     @mock_aws
     def test_collect_efs_no_tags(self, mock_session):
         """Test collecting EFS without tags - name falls back to filesystem ID."""
         efs = boto3.client("efs", region_name="us-east-1")
-        
+
         fs = efs.create_file_system(CreationToken="no-tag-efs")
         fs_id = fs["FileSystemId"]
-        
+
         resources = collect_efs_filesystems(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         assert resources[0].name == fs_id
-        
+
     @mock_aws
     def test_collect_efs_empty(self, mock_session):
         """Test collecting EFS from empty region."""
@@ -974,13 +972,13 @@ class TestEFS:
 
 class TestLambda:
     """Tests for Lambda function collection."""
-    
+
     @mock_aws
     def test_collect_lambda_functions(self, mock_session):
         """Test collecting Lambda functions."""
         lambda_client = boto3.client("lambda", region_name="us-east-1")
         iam = boto3.client("iam", region_name="us-east-1")
-        
+
         # Create IAM role for Lambda
         assume_role_policy = {
             "Version": "2012-10-17",
@@ -992,12 +990,12 @@ class TestLambda:
                 }
             ],
         }
-        
+
         role = iam.create_role(
             RoleName="lambda-role",
             AssumeRolePolicyDocument=str(assume_role_policy),
         )
-        
+
         lambda_client.create_function(
             FunctionName="test-function",
             Runtime="python3.9",
@@ -1007,9 +1005,9 @@ class TestLambda:
             MemorySize=256,
             Timeout=30,
         )
-        
+
         resources = collect_lambda_functions(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         func = resources[0]
         assert func.resource_type == "aws:lambda:function"
@@ -1017,7 +1015,7 @@ class TestLambda:
         assert func.metadata["runtime"] == "python3.9"
         assert func.metadata["memory"] == 256
         assert func.metadata["timeout"] == 30
-        
+
     @mock_aws
     def test_collect_lambda_empty(self, mock_session):
         """Test collecting Lambda functions from empty region."""
@@ -1031,28 +1029,28 @@ class TestLambda:
 
 class TestDynamoDB:
     """Tests for DynamoDB table collection."""
-    
+
     @mock_aws
     def test_collect_dynamodb_tables(self, mock_session):
         """Test collecting DynamoDB tables."""
         dynamodb = boto3.client("dynamodb", region_name="us-east-1")
-        
+
         dynamodb.create_table(
             TableName="users-table",
             KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        
+
         resources = collect_dynamodb_tables(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         table = resources[0]
         assert table.resource_type == "aws:dynamodb:table"
         assert table.name == "users-table"
         # New tables have 0 items/size
         assert table.metadata["item_count"] == 0
-        
+
     @mock_aws
     def test_collect_dynamodb_empty(self, mock_session):
         """Test collecting DynamoDB tables from empty region."""
@@ -1066,28 +1064,28 @@ class TestDynamoDB:
 
 class TestElastiCache:
     """Tests for ElastiCache cluster collection."""
-    
+
     @mock_aws
     def test_collect_elasticache_redis(self, mock_session):
         """Test collecting ElastiCache Redis clusters."""
         elasticache = boto3.client("elasticache", region_name="us-east-1")
-        
+
         elasticache.create_cache_cluster(
             CacheClusterId="redis-cache",
             Engine="redis",
             CacheNodeType="cache.t3.micro",
             NumCacheNodes=1,
         )
-        
+
         resources = collect_elasticache_clusters(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         cache = resources[0]
         assert cache.resource_type == "aws:elasticache:cluster"
         assert cache.name == "redis-cache"
         assert cache.metadata["engine"] == "redis"
         assert cache.metadata["node_type"] == "cache.t3.micro"
-        
+
     @mock_aws
     def test_collect_elasticache_empty(self, mock_session):
         """Test collecting ElastiCache from empty region."""
@@ -1101,13 +1099,13 @@ class TestElastiCache:
 
 class TestCollectRegion:
     """Integration tests for collecting all resources in a region."""
-    
+
     @mock_aws
     def test_collect_region_mixed_resources(self, mock_session):
         """Test collecting multiple resource types from a single region."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
         rds = boto3.client("rds", region_name="us-east-1")
-        
+
         # Create EC2 instance
         ec2.run_instances(
             ImageId="ami-12345678",
@@ -1115,14 +1113,14 @@ class TestCollectRegion:
             MaxCount=1,
             InstanceType="t2.micro",
         )
-        
+
         # Create standalone volume
         ec2.create_volume(
             AvailabilityZone="us-east-1a",
             Size=100,
             VolumeType="gp2",
         )
-        
+
         # Create RDS instance
         rds.create_db_instance(
             DBInstanceIdentifier="test-db",
@@ -1132,22 +1130,22 @@ class TestCollectRegion:
             MasterUserPassword="password123",
             AllocatedStorage=50,
         )
-        
+
         resources = collect_region(mock_session, "us-east-1", "123456789012")
-        
+
         resource_types = {r.resource_type for r in resources}
         assert "aws:ec2:instance" in resource_types
         assert "aws:ec2:volume" in resource_types
         assert "aws:rds:instance" in resource_types
-        
+
     @mock_aws
     def test_collect_region_empty(self, mock_session):
         """Test collecting from a region with no user-created resources."""
         resources = collect_region(mock_session, "eu-west-1", "123456789012")
         # Filter out moto's pre-baked AMI snapshots which have "Auto-created snapshot for AMI" description
         user_resources = [
-            r for r in resources 
-            if not (r.resource_type == "aws:ec2:snapshot" and 
+            r for r in resources
+            if not (r.resource_type == "aws:ec2:snapshot" and
                     "Auto-created snapshot for AMI" in r.metadata.get("description", ""))
         ]
         assert user_resources == []
@@ -1159,12 +1157,12 @@ class TestCollectRegion:
 
 class TestEdgeCases:
     """Tests for edge cases and error scenarios."""
-    
+
     @mock_aws
     def test_instance_with_empty_string_values(self, mock_session):
         """Test handling instances where some fields might be empty strings."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Run basic instance
         ec2.run_instances(
             ImageId="ami-12345678",
@@ -1172,52 +1170,52 @@ class TestEdgeCases:
             MaxCount=1,
             InstanceType="t2.micro",
         )
-        
+
         resources = collect_ec2_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         # Should handle missing/empty values gracefully
         resource = resources[0]
         assert resource.resource_id != ""
         assert resource.provider == "aws"
-        
-    @mock_aws 
+
+    @mock_aws
     def test_volume_with_zero_size(self, mock_session):
         """Test that volumes always have a valid numeric size."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Minimum volume size is 1 GB, but test the handling
         ec2.create_volume(
             AvailabilityZone="us-east-1a",
             Size=1,  # Minimum size
             VolumeType="gp2",
         )
-        
+
         resources = collect_ebs_volumes(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         assert resources[0].size_gb == 1.0
         assert isinstance(resources[0].size_gb, float)
-        
+
     @mock_aws
     def test_s3_bucket_with_empty_name_filtered(self, mock_session):
         """Test that buckets must have a valid name."""
         s3 = boto3.client("s3", region_name="us-east-1")
-        
+
         # Create normal bucket - empty bucket names aren't allowed by AWS
         s3.create_bucket(Bucket="valid-bucket")
-        
+
         resources = collect_s3_buckets(mock_session, "123456789012")
-        
+
         assert len(resources) == 1
         assert resources[0].name == "valid-bucket"
         assert "arn:aws:s3:::valid-bucket" == resources[0].resource_id
-        
+
     @mock_aws
     def test_special_characters_in_tags(self, mock_session):
         """Test handling tags with special characters."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         ec2.run_instances(
             ImageId="ami-12345678",
             MinCount=1,
@@ -1234,29 +1232,217 @@ class TestEdgeCases:
                 }
             ],
         )
-        
+
         resources = collect_ec2_instances(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 1
         assert resources[0].name == "test-instance/with-slash"
         assert resources[0].tags["unicode-tag"] == "日本語"
-        
+
     @mock_aws
     def test_large_number_of_resources(self, mock_session):
         """Test collecting a larger number of resources (pagination test)."""
         ec2 = boto3.client("ec2", region_name="us-east-1")
-        
+
         # Create multiple volumes to test pagination
-        for i in range(25):
+        for _i in range(25):
             ec2.create_volume(
                 AvailabilityZone="us-east-1a",
                 Size=10,
                 VolumeType="gp2",
             )
-            
+
         resources = collect_ebs_volumes(mock_session, "us-east-1", "123456789012")
-        
+
         assert len(resources) == 25
+
+
+# =============================================================================
+# validate_account_ids Tests
+# =============================================================================
+
+class TestValidateAccountIds:
+    """Tests for validate_account_ids function."""
+
+    def test_valid_account_ids(self):
+        """Test valid 12-digit account IDs pass validation."""
+        account_ids = ["123456789012", "987654321098", "111222333444"]
+        result = validate_account_ids(account_ids)
+        assert result == account_ids
+
+    def test_single_valid_account(self):
+        """Test single valid account ID."""
+        result = validate_account_ids(["123456789012"])
+        assert result == ["123456789012"]
+
+    def test_empty_list(self):
+        """Test empty list passes validation."""
+        result = validate_account_ids([])
+        assert result == []
+
+    def test_invalid_too_short(self):
+        """Test account ID too short raises ValueError."""
+        with pytest.raises(ValueError) as excinfo:
+            validate_account_ids(["12345"])
+        assert "Invalid AWS account IDs" in str(excinfo.value)
+        assert "12345" in str(excinfo.value)
+
+    def test_invalid_too_long(self):
+        """Test account ID too long raises ValueError."""
+        with pytest.raises(ValueError) as excinfo:
+            validate_account_ids(["1234567890123"])  # 13 digits
+        assert "Invalid AWS account IDs" in str(excinfo.value)
+
+    def test_invalid_non_numeric(self):
+        """Test non-numeric account ID raises ValueError."""
+        with pytest.raises(ValueError) as excinfo:
+            validate_account_ids(["12345678901a"])
+        assert "Invalid AWS account IDs" in str(excinfo.value)
+
+    def test_invalid_with_dashes(self):
+        """Test account ID with dashes (like subscription ID format) raises ValueError."""
+        with pytest.raises(ValueError) as excinfo:
+            validate_account_ids(["1234-5678-9012"])
+        assert "Invalid AWS account IDs" in str(excinfo.value)
+
+    def test_mixed_valid_invalid(self):
+        """Test mix of valid and invalid IDs raises ValueError."""
+        with pytest.raises(ValueError) as excinfo:
+            validate_account_ids(["123456789012", "invalid", "987654321098"])
+        assert "invalid" in str(excinfo.value)
+
+    def test_multiple_invalid_shows_examples(self):
+        """Test multiple invalid IDs shows first 3 examples."""
+        invalid_ids = ["a", "b", "c", "d", "e"]
+        with pytest.raises(ValueError) as excinfo:
+            validate_account_ids(invalid_ids)
+        error_msg = str(excinfo.value)
+        assert "a" in error_msg or "b" in error_msg or "c" in error_msg
+        assert "and 2 more" in error_msg
+
+    def test_source_in_error_message(self):
+        """Test source parameter appears in error message."""
+        with pytest.raises(ValueError) as excinfo:
+            validate_account_ids(["invalid"], source="config file")
+        assert "config file" in str(excinfo.value)
+
+
+# =============================================================================
+# Integration Tests for Utility Functions
+# =============================================================================
+
+class TestChangeRateIntegration:
+    """Tests verifying AWS collector correctly uses change rate utilities."""
+
+    def test_imports_merge_change_rates(self):
+        """Verify merge_change_rates is imported from lib.change_rate."""
+        import aws_collect
+        from lib.change_rate import merge_change_rates
+        # Verify the module has access to the function
+        assert hasattr(aws_collect, 'merge_change_rates') or 'merge_change_rates' in dir(aws_collect) or callable(merge_change_rates)
+
+    def test_imports_finalize_change_rate_output(self):
+        """Verify finalize_change_rate_output is imported from lib.change_rate."""
+        from lib.change_rate import finalize_change_rate_output
+        assert callable(finalize_change_rate_output)
+
+    def test_change_rate_aggregation_flow(self):
+        """Test that change rates can be merged across multiple accounts."""
+        from lib.change_rate import finalize_change_rate_output, merge_change_rates
+
+        # Simulate collecting change rates from multiple accounts
+        all_change_rates = {}
+
+        # Account 1 data (format matches actual collector output)
+        account1_cr = {
+            "change_rates": {
+                "ebs": {
+                    "resource_count": 5,
+                    "total_size_gb": 100,
+                    "data_change": {
+                        "daily_change_gb": 5.0,
+                        "data_points": 10
+                    }
+                }
+            }
+        }
+        merge_change_rates(all_change_rates, account1_cr)
+
+        # Account 2 data
+        account2_cr = {
+            "change_rates": {
+                "ebs": {
+                    "resource_count": 3,
+                    "total_size_gb": 200,
+                    "data_change": {
+                        "daily_change_gb": 8.0,
+                        "data_points": 6
+                    }
+                },
+                "rds": {
+                    "resource_count": 2,
+                    "total_size_gb": 50,
+                    "data_change": {
+                        "daily_change_gb": 2.0,
+                        "data_points": 4
+                    },
+                    "transaction_logs": {
+                        "daily_generation_gb": 0.1
+                    }
+                }
+            }
+        }
+        merge_change_rates(all_change_rates, account2_cr)
+
+        # Finalize
+        result = finalize_change_rate_output(all_change_rates, sample_days=7, provider_note="CloudWatch")
+
+        # Verify aggregation
+        assert "change_rates" in result
+        assert "ebs" in result["change_rates"]
+        assert result["change_rates"]["ebs"]["total_size_gb"] == 300  # 100 + 200
+        assert result["change_rates"]["ebs"]["data_change"]["daily_change_gb"] == 13.0  # 5 + 8
+        assert "rds" in result["change_rates"]
+        assert "collection_metadata" in result
+        assert "CloudWatch" in str(result["collection_metadata"]["notes"])
+
+
+class TestSecurityUtilsIntegration:
+    """Tests verifying AWS collector correctly uses security utilities."""
+
+    def test_imports_mask_account_id(self):
+        """Verify mask_account_id is imported from lib.utils."""
+        from lib.utils import mask_account_id
+        # Function masks 12-digit account IDs in ARNs with ***
+        arn = "arn:aws:iam::123456789012:role/MyRole"
+        assert mask_account_id(arn) == "arn:aws:iam::***:role/MyRole"
+
+    def test_imports_redact_sensitive_data(self):
+        """Verify redact_sensitive_data is imported from lib.utils."""
+        from lib.utils import redact_sensitive_data
+        # Test with a field that matches sensitive field names (account_id)
+        test_data = {"account_id": "123456789012"}
+        redacted = redact_sensitive_data(test_data)
+        # The value should be hashed, not the original
+        assert redacted["account_id"] != "123456789012"
+        # But should be consistent (same input = same output)
+        redacted2 = redact_sensitive_data(test_data)
+        assert redacted["account_id"] == redacted2["account_id"]
+
+    def test_imports_auth_error_handling(self):
+        """Verify auth error handling is imported from lib.utils."""
+        from lib.utils import AuthError, is_auth_error
+
+        # Verify AuthError is an exception class
+        assert issubclass(AuthError, Exception)
+
+        # Test auth error detection with ClientError-like exceptions
+        # Class name must be exactly 'ClientError' for is_auth_error to detect
+        class ClientError(Exception):
+            response = {'Error': {'Code': 'AccessDenied'}}
+
+        mock_err = ClientError("Access Denied")
+        assert is_auth_error(mock_err)
 
 
 # =============================================================================

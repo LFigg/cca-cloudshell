@@ -13,14 +13,14 @@ Run with: python -m pytest tests/test_large_scale_azure.py -v -s --log-cli-level
 
 Output files will be generated in: tests/large_scale_output_azure/
 """
-import pytest
-from unittest.mock import Mock, MagicMock, patch
-import json
 import os
-import shutil
 import random
-from datetime import datetime, timedelta, timezone
+import shutil
 import sys
+from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock, patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,9 +28,9 @@ from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     generate_run_id,
     get_timestamp,
-    write_json,
-    write_csv,
     print_summary_table,
+    write_csv,
+    write_json,
 )
 
 # =============================================================================
@@ -66,25 +66,25 @@ def setup_large_output_dir():
 def random_tags(completeness=0.7):
     """Generate random tags with configurable completeness (data holes)."""
     tags = {}
-    
+
     if random.random() < completeness:
         tags["Name"] = f"{random.choice(['srv', 'app', 'db', 'cache', 'web', 'api'])}-{random.randint(1, 999):03d}"
-    
+
     if random.random() < completeness * 0.8:
         tags["Environment"] = random.choice(ENVIRONMENTS)
-    
+
     if random.random() < completeness * 0.6:
         tags["Application"] = random.choice(APPLICATIONS)
-    
+
     if random.random() < completeness * 0.5:
         tags["Team"] = random.choice(TEAMS)
-    
+
     if random.random() < completeness * 0.4:
         tags["CostCenter"] = random.choice(COST_CENTERS)
-    
+
     if random.random() < 0.3:
         tags["BackupPolicy"] = random.choice(["daily", "weekly", "monthly", "none"])
-    
+
     return tags if tags else None
 
 
@@ -100,31 +100,31 @@ def create_mock_vms(subscription_id: str, region: str, num_vms: int):
         os_disk_size = random.choice([32, 64, 128, 256, 512])
         data_disk_count = random.randint(0, 4)
         tags = random_tags(completeness=random.uniform(0.3, 1.0))
-        
+
         vm = Mock()
         vm.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Compute/virtualMachines/vm-{i:03d}"
         vm.name = f"vm-{region[:4]}-{i:03d}"
         vm.location = region
         vm.tags = tags
         vm.provisioning_state = random.choice(["Succeeded"] * 9 + ["Failed"])
-        
+
         vm.hardware_profile = Mock()
         vm.hardware_profile.vm_size = vm_size
-        
+
         vm.storage_profile = Mock()
         vm.storage_profile.os_disk = Mock()
         vm.storage_profile.os_disk.disk_size_gb = os_disk_size
         vm.storage_profile.os_disk.os_type = random.choice(["Linux", "Windows"])
-        
+
         vm.storage_profile.data_disks = []
         for j in range(data_disk_count):
             data_disk = Mock()
             data_disk.managed_disk = Mock()
             data_disk.managed_disk.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Compute/disks/datadisk-{i:03d}-{j}"
             vm.storage_profile.data_disks.append(data_disk)
-        
+
         vms.append(vm)
-    
+
     return vms
 
 
@@ -136,7 +136,7 @@ def create_mock_disks(subscription_id: str, region: str, num_disks: int, attache
         sku = random.choice(DISK_SKUS)
         is_attached = random.random() < attached_ratio
         tags = random_tags(completeness=random.uniform(0.2, 0.9))
-        
+
         disk = Mock()
         disk.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Compute/disks/disk-{i:03d}"
         disk.name = f"disk-{region[:4]}-{i:03d}"
@@ -145,20 +145,20 @@ def create_mock_disks(subscription_id: str, region: str, num_disks: int, attache
         disk.disk_state = "Attached" if is_attached else "Unattached"
         disk.tags = tags
         disk.os_type = random.choice([None, "Linux", "Windows"])
-        
+
         disk.sku = Mock()
         disk.sku.name = sku
-        
+
         disk.encryption = Mock()
         disk.encryption.type = "EncryptionAtRestWithPlatformKey"
-        
+
         if is_attached:
             disk.managed_by = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Compute/virtualMachines/vm-{random.randint(0, 50):03d}"
         else:
             disk.managed_by = None
-        
+
         disks.append(disk)
-    
+
     return disks
 
 
@@ -168,7 +168,7 @@ def create_mock_snapshots(subscription_id: str, region: str, num_snapshots: int)
     for i in range(num_snapshots):
         size_gb = random.choice([32, 64, 128, 256, 512])
         tags = random_tags(completeness=random.uniform(0.3, 0.8))
-        
+
         snapshot = Mock()
         snapshot.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Compute/snapshots/snap-{i:03d}"
         snapshot.name = f"snap-{region[:4]}-{i:03d}"
@@ -177,15 +177,15 @@ def create_mock_snapshots(subscription_id: str, region: str, num_snapshots: int)
         snapshot.tags = tags
         snapshot.time_created = (datetime.now(timezone.utc) - timedelta(days=random.randint(1, 90))).isoformat()
         snapshot.provisioning_state = "Succeeded"
-        
+
         snapshot.creation_data = Mock()
         snapshot.creation_data.source_resource_id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Compute/disks/disk-{random.randint(0, 50):03d}"
-        
+
         snapshot.sku = Mock()
         snapshot.sku.name = "Standard_LRS"
-        
+
         snapshots.append(snapshot)
-    
+
     return snapshots
 
 
@@ -196,30 +196,30 @@ def create_mock_storage_accounts(subscription_id: str, region: str, num_accounts
         sku = random.choice(STORAGE_SKUS)
         kind = random.choice(["StorageV2", "BlobStorage", "FileStorage"])
         tags = random_tags(completeness=random.uniform(0.4, 0.9))
-        
+
         account = Mock()
         account.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Storage/storageAccounts/storage{region[:4]}{i:03d}"
         account.name = f"storage{region[:4]}{i:03d}"
         account.location = region
         account.kind = kind
         account.tags = tags
-        
+
         account.sku = Mock()
         account.sku.name = sku
-        
+
         account.primary_endpoints = Mock()
         account.primary_endpoints.blob = f"https://storage{region[:4]}{i:03d}.blob.core.windows.net/"
-        
+
         account.access_tier = random.choice(["Hot", "Cool"])
         account.provisioning_state = "Succeeded"
-        
+
         account.encryption = Mock()
         account.encryption.services = Mock()
         account.encryption.services.blob = Mock()
         account.encryption.services.blob.enabled = True
-        
+
         accounts.append(account)
-    
+
     return accounts
 
 
@@ -227,11 +227,11 @@ def create_mock_sql_databases(subscription_id: str, region: str, num_servers: in
     """Create mock Azure SQL Servers and Databases."""
     servers = []
     databases = []
-    
+
     for i in range(num_servers):
         tags = random_tags(completeness=random.uniform(0.5, 0.9))
         server_name = f"sqlserver-{region[:4]}-{i:03d}"
-        
+
         server = Mock()
         server.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Sql/servers/{server_name}"
         server.name = server_name
@@ -241,12 +241,12 @@ def create_mock_sql_databases(subscription_id: str, region: str, num_servers: in
         server.fully_qualified_domain_name = f"{server_name}.database.windows.net"
         server.version = "12.0"
         servers.append(server)
-        
+
         # Create databases for this server
         for j in range(random.randint(1, dbs_per_server)):
             db_tags = random_tags(completeness=random.uniform(0.3, 0.8))
             db_name = f"{server_name}-db-{j:02d}"
-            
+
             db = Mock()
             db.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Sql/servers/{server_name}/databases/{db_name}"
             db.name = db_name
@@ -255,13 +255,13 @@ def create_mock_sql_databases(subscription_id: str, region: str, num_servers: in
             db.tags = db_tags
             db.status = "Online"
             db.max_size_bytes = random.choice([1073741824, 10737418240, 53687091200, 107374182400]) # 1GB, 10GB, 50GB, 100GB
-            
+
             db.sku = Mock()
             db.sku.name = random.choice(["S0", "S1", "S2", "P1", "P2"])
             db.sku.tier = random.choice(["Standard", "Premium"])
-            
+
             databases.append(db)
-    
+
     return servers, databases
 
 
@@ -270,7 +270,7 @@ def create_mock_cosmosdb_accounts(subscription_id: str, region: str, num_account
     accounts = []
     for i in range(num_accounts):
         tags = random_tags(completeness=random.uniform(0.4, 0.8))
-        
+
         account = Mock()
         account.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-{region[:4]}-{i:03d}"
         account.name = f"cosmos-{region[:4]}-{i:03d}"
@@ -278,17 +278,17 @@ def create_mock_cosmosdb_accounts(subscription_id: str, region: str, num_account
         account.tags = tags
         account.kind = random.choice(["GlobalDocumentDB", "MongoDB"])
         account.provisioning_state = "Succeeded"
-        
+
         account.consistency_policy = Mock()
         account.consistency_policy.default_consistency_level = random.choice(["Session", "Eventual", "Strong"])
-        
+
         account.locations = [Mock(location_name=region, failover_priority=0)]
         if random.random() < 0.3:
             backup_region = random.choice([r for r in REGIONS if r != region])
             account.locations.append(Mock(location_name=backup_region, failover_priority=1))
-        
+
         accounts.append(account)
-    
+
     return accounts
 
 
@@ -297,7 +297,7 @@ def create_mock_aks_clusters(subscription_id: str, region: str, num_clusters: in
     clusters = []
     for i in range(num_clusters):
         tags = random_tags(completeness=random.uniform(0.5, 0.9))
-        
+
         cluster = Mock()
         cluster.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.ContainerService/managedClusters/aks-{region[:4]}-{i:03d}"
         cluster.name = f"aks-{region[:4]}-{i:03d}"
@@ -305,7 +305,7 @@ def create_mock_aks_clusters(subscription_id: str, region: str, num_clusters: in
         cluster.tags = tags
         cluster.provisioning_state = "Succeeded"
         cluster.kubernetes_version = random.choice(["1.28.5", "1.29.2", "1.30.0"])
-        
+
         # Node pools
         cluster.agent_pool_profiles = []
         num_pools = random.randint(1, 3)
@@ -316,9 +316,9 @@ def create_mock_aks_clusters(subscription_id: str, region: str, num_clusters: in
             pool.vm_size = random.choice(VM_SIZES)
             pool.os_disk_size_gb = random.choice([100, 128, 256])
             cluster.agent_pool_profiles.append(pool)
-        
+
         clusters.append(cluster)
-    
+
     return clusters
 
 
@@ -327,7 +327,7 @@ def create_mock_function_apps(subscription_id: str, region: str, num_apps: int):
     apps = []
     for i in range(num_apps):
         tags = random_tags(completeness=random.uniform(0.3, 0.7))
-        
+
         app = Mock()
         app.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Web/sites/func-{region[:4]}-{i:03d}"
         app.name = f"func-{region[:4]}-{i:03d}"
@@ -335,9 +335,9 @@ def create_mock_function_apps(subscription_id: str, region: str, num_apps: int):
         app.tags = tags
         app.state = random.choice(["Running"] * 9 + ["Stopped"])
         app.kind = "functionapp"
-        
+
         apps.append(app)
-    
+
     return apps
 
 
@@ -346,23 +346,23 @@ def create_mock_redis_caches(subscription_id: str, region: str, num_caches: int)
     caches = []
     for i in range(num_caches):
         tags = random_tags(completeness=random.uniform(0.4, 0.8))
-        
+
         cache = Mock()
         cache.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.Cache/Redis/redis-{region[:4]}-{i:03d}"
         cache.name = f"redis-{region[:4]}-{i:03d}"
         cache.location = region
         cache.tags = tags
         cache.provisioning_state = "Succeeded"
-        
+
         cache.sku = Mock()
         cache.sku.name = random.choice(["Basic", "Standard", "Premium"])
         cache.sku.family = random.choice(["C", "P"])
         cache.sku.capacity = random.choice([0, 1, 2, 3, 4])
-        
+
         cache.shard_count = random.choice([0, 2, 4]) if cache.sku.name == "Premium" else 0
-        
+
         caches.append(cache)
-    
+
     return caches
 
 
@@ -371,19 +371,19 @@ def create_mock_recovery_vaults(subscription_id: str, region: str, num_vaults: i
     vaults = []
     for i in range(num_vaults):
         tags = random_tags(completeness=random.uniform(0.5, 0.9))
-        
+
         vault = Mock()
         vault.id = f"/subscriptions/{subscription_id}/resourceGroups/rg-{region}/providers/Microsoft.RecoveryServices/vaults/vault-{region[:4]}-{i:03d}"
         vault.name = f"vault-{region[:4]}-{i:03d}"
         vault.location = region
         vault.tags = tags
         vault.type = "Microsoft.RecoveryServices/vaults"
-        
+
         vault.properties = Mock()
         vault.properties.provisioning_state = "Succeeded"
-        
+
         vaults.append(vault)
-    
+
     return vaults
 
 
@@ -393,13 +393,13 @@ def create_mock_recovery_vaults(subscription_id: str, region: str, num_vaults: i
 
 class TestLargeScaleAzure:
     """Large-scale integration test for Azure with realistic enterprise data."""
-    
+
     @pytest.fixture(autouse=True)
     def setup(self):
         """Setup test fixtures."""
         setup_large_output_dir()
         yield
-    
+
     @patch('azure_collect.RecoveryServicesBackupClient')
     @patch('azure_collect.RecoveryServicesClient')
     @patch('azure_collect.WebSiteManagementClient')
@@ -421,7 +421,7 @@ class TestLargeScaleAzure:
     ):
         """
         Test collection across a large, realistic Azure enterprise environment.
-        
+
         Scale:
         - 4 regions
         - ~50 VMs per region
@@ -438,7 +438,7 @@ class TestLargeScaleAzure:
         print("\n" + "=" * 80)
         print("LARGE-SCALE AZURE INTEGRATION TEST")
         print("=" * 80)
-        
+
         # Configuration - scale factors
         VMS_PER_REGION = 50
         DISKS_PER_REGION = 80
@@ -450,17 +450,17 @@ class TestLargeScaleAzure:
         FUNCTION_APPS_PER_REGION = 15
         REDIS_PER_REGION = 5
         RECOVERY_VAULTS_PER_REGION = 2
-        
+
         subscription_id = "12345678-1234-1234-1234-123456789012"
         subscription_name = "Enterprise Production"
-        
+
         print("\n📦 Creating mock Azure infrastructure...\n")
-        
+
         all_resources = []
-        
+
         for region in REGIONS:
             print(f"  Setting up {region}...")
-            
+
             # Generate mock resources for this region
             vms = create_mock_vms(subscription_id, region, VMS_PER_REGION)
             disks = create_mock_disks(subscription_id, region, DISKS_PER_REGION)
@@ -472,7 +472,7 @@ class TestLargeScaleAzure:
             function_apps = create_mock_function_apps(subscription_id, region, FUNCTION_APPS_PER_REGION)
             redis_caches = create_mock_redis_caches(subscription_id, region, REDIS_PER_REGION)
             recovery_vaults = create_mock_recovery_vaults(subscription_id, region, RECOVERY_VAULTS_PER_REGION)
-            
+
             # Convert to CloudResource objects
             for vm in vms:
                 os_disk_size = vm.storage_profile.os_disk.disk_size_gb if vm.storage_profile and vm.storage_profile.os_disk else 0
@@ -493,7 +493,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for disk in disks:
                 resource = CloudResource(
                     provider="azure",
@@ -512,7 +512,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for snapshot in snapshots:
                 resource = CloudResource(
                     provider="azure",
@@ -530,7 +530,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for account in storage_accounts:
                 resource = CloudResource(
                     provider="azure",
@@ -549,7 +549,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for db in sql_databases:
                 size_gb = db.max_size_bytes / (1024**3) if db.max_size_bytes else 0
                 resource = CloudResource(
@@ -569,7 +569,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for account in cosmosdb_accounts:
                 resource = CloudResource(
                     provider="azure",
@@ -587,7 +587,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for cluster in aks_clusters:
                 total_nodes = sum(pool.count for pool in cluster.agent_pool_profiles) if cluster.agent_pool_profiles else 0
                 resource = CloudResource(
@@ -607,7 +607,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for app in function_apps:
                 resource = CloudResource(
                     provider="azure",
@@ -624,7 +624,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for cache in redis_caches:
                 resource = CloudResource(
                     provider="azure",
@@ -642,7 +642,7 @@ class TestLargeScaleAzure:
                     }
                 )
                 all_resources.append(resource)
-            
+
             for vault in recovery_vaults:
                 resource = CloudResource(
                     provider="azure",
@@ -657,20 +657,20 @@ class TestLargeScaleAzure:
                     metadata={}
                 )
                 all_resources.append(resource)
-            
+
             print(f"    Created {len(vms)} VMs, {len(disks)} disks, {len(snapshots)} snapshots, "
                   f"{len(storage_accounts)} storage accounts, {len(sql_databases)} SQL DBs, "
                   f"{len(cosmosdb_accounts)} CosmosDB, {len(aks_clusters)} AKS clusters")
-        
+
         print("\n✅ Mock infrastructure created\n")
-        
+
         # Generate outputs
         run_id = generate_run_id()
         timestamp = get_timestamp()
-        
+
         # Build sizing summaries
         summaries = aggregate_sizing(all_resources)
-        
+
         inventory_data = {
             'provider': 'azure',
             'run_id': run_id,
@@ -680,7 +680,7 @@ class TestLargeScaleAzure:
             'regions': REGIONS,
             'resources': [r.to_dict() for r in all_resources]
         }
-        
+
         summary_data = {
             'provider': 'azure',
             'run_id': run_id,
@@ -690,15 +690,15 @@ class TestLargeScaleAzure:
             'total_capacity_gb': sum(s.total_gb for s in summaries),
             'summaries': [s.to_dict() for s in summaries]
         }
-        
+
         # Write output files
         file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
         write_json(inventory_data, f"{LARGE_OUTPUT_DIR}/cca_inv_{file_ts}.json")
         write_json(summary_data, f"{LARGE_OUTPUT_DIR}/cca_sum_{file_ts}.json")
-        
+
         csv_data = [s.to_dict() for s in summaries]
         write_csv(csv_data, f"{LARGE_OUTPUT_DIR}/sizing.csv")
-        
+
         # Print statistics
         print("\n" + "=" * 80)
         print("COLLECTION RESULTS")
@@ -706,46 +706,46 @@ class TestLargeScaleAzure:
         print(f"\nSubscription: {subscription_id}")
         print(f"Regions: {len(REGIONS)}")
         print(f"Total Resources: {len(all_resources)}")
-        
+
         # Count by type
         by_type = {}
         for r in all_resources:
             by_type[r.resource_type] = by_type.get(r.resource_type, 0) + 1
-        
+
         print("\nResources by Type:")
         for rtype, count in sorted(by_type.items()):
             print(f"  {rtype}: {count}")
-        
+
         # Count resources with missing names (data holes)
         missing_names = len([r for r in all_resources if not r.name or r.name == "unnamed"])
-        print(f"\nData Quality:")
+        print("\nData Quality:")
         if len(all_resources) > 0:
             print(f"  Resources with missing names: {missing_names} ({missing_names/len(all_resources)*100:.1f}%)")
         else:
             print(f"  Resources with missing names: {missing_names}")
-        
+
         # Count by region
         by_region = {}
         for r in all_resources:
             by_region[r.region] = by_region.get(r.region, 0) + 1
-        
+
         print("\nResources by Region:")
         for region, count in sorted(by_region.items()):
             print(f"  {region}: {count}")
-        
+
         print_summary_table([s.to_dict() for s in summaries])
-        
+
         print(f"\nOutput: {LARGE_OUTPUT_DIR}/")
-        
+
         # Assertions
         assert len(all_resources) > 500, "Should have collected many resources"
         assert len(by_region) == len(REGIONS), "Should have resources from all regions"
-        
+
         # Verify files exist
         import glob
         inv_files = glob.glob(f"{LARGE_OUTPUT_DIR}/cca_inv_*.json")
         assert len(inv_files) >= 1, "Inventory file should exist"
-        
+
         print("\n" + "=" * 80)
         print("TEST COMPLETE")
         print("=" * 80)

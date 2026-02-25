@@ -8,27 +8,28 @@ Auto-detects available cloud credentials and runs appropriate collectors.
 Usage:
     # Auto-detect mode (recommended)
     python collect.py
-    
+
     # Direct cloud selection
     python collect.py --cloud aws
     python collect.py --cloud azure
     python collect.py --cloud gcp
     python collect.py --cloud m365
-    
+
     # Interactive setup wizard
     python collect.py --setup
-    
+
     # Skip permission check (if you know credentials are valid)
     python collect.py --cloud aws --skip-check
-    
+
     # Pass additional arguments to the collector
     python collect.py --cloud aws -- --org-role CCARole --regions us-east-1
 """
 import argparse
 import os
-import sys
 import subprocess
-from typing import Optional, Tuple, List
+import sys
+from typing import Any, Dict, List, Optional, Tuple
+
 
 # ANSI colors for terminal output
 class Colors:
@@ -66,8 +67,198 @@ def print_cloud_menu():
     print(f"  {color('2', Colors.GREEN)}) Azure     - Microsoft Azure")
     print(f"  {color('3', Colors.GREEN)}) GCP       - Google Cloud Platform")
     print(f"  {color('4', Colors.GREEN)}) M365      - Microsoft 365 (SharePoint, OneDrive, Teams)")
+    print()
+    print(color("  Large Organizations:", Colors.BOLD))
+    print(f"  {color('5', Colors.GREEN)}) AWS Org   - AWS Organization (parallel + SSO refresh)")
+    print()
     print(f"  {color('q', Colors.RED)}) Quit")
     print()
+
+
+def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
+    """Prompt for AWS Organization collection options."""
+    print(color("\n=== AWS Organization Collection Setup ===\n", Colors.BOLD))
+    
+    # Get org role name
+    print("Enter the IAM role name deployed to member accounts.")
+    print("(This role should have CCA read permissions and trust the management account)")
+    print()
+    try:
+        org_role = input(color("Role name [CCARole]: ", Colors.CYAN)).strip()
+        if not org_role:
+            org_role = "CCARole"
+        
+        # Ask about parallel workers
+        print()
+        print("Parallel workers speed up collection by running multiple accounts simultaneously.")
+        print("Auto-tunes to 4 for 50+ accounts, 8 for 100+ accounts if not specified.")
+        print()
+        parallel_input = input(color("Parallel workers (Enter for auto, or 1-16) [auto]: ", Colors.CYAN)).strip()
+        parallel_accounts = None
+        if parallel_input:
+            try:
+                parallel_accounts = int(parallel_input)
+                if parallel_accounts < 1 or parallel_accounts > 16:
+                    print(color("Invalid value, using auto-tune", Colors.YELLOW))
+                    parallel_accounts = None
+            except ValueError:
+                print(color("Invalid value, using auto-tune", Colors.YELLOW))
+        
+        # SSO refresh
+        print()
+        print("SSO credentials typically expire after 1 hour.")
+        print("Enable auto-refresh to keep credentials valid during long collections.")
+        print()
+        sso_input = input(color("Enable SSO auto-refresh? [Y/n]: ", Colors.CYAN)).strip().lower()
+        sso_refresh = sso_input != 'n'
+        
+        # Output directory
+        print()
+        output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
+        if not output:
+            output = "./output"
+        
+        # Cost collection
+        print()
+        print("Data protection cost collection analyzes AWS Backup, EBS snapshot,")
+        print("and other backup-related costs from AWS Cost Explorer.")
+        print()
+        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input in ('y', 'yes')
+        
+        cost_opts = {}
+        if collect_costs:
+            # Org costs is always yes for AWS Org collection
+            cost_opts['org_costs'] = True
+        
+        return {
+            'org_role': org_role,
+            'parallel_accounts': parallel_accounts,
+            'sso_refresh': sso_refresh,
+            'output': output,
+            'collect_costs': collect_costs,
+            'cost_opts': cost_opts
+        }
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
+
+
+def prompt_aws_options() -> Optional[Dict[str, Any]]:
+    """Prompt for AWS collection options including cost collection."""
+    print(color("\n=== AWS Collection Options ===\n", Colors.BOLD))
+    
+    try:
+        # Output directory
+        output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
+        if not output:
+            output = "./output"
+        
+        # Cost collection
+        print()
+        print("Data protection cost collection analyzes AWS Backup, EBS snapshot,")
+        print("and other backup-related costs from AWS Cost Explorer.")
+        print()
+        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input in ('y', 'yes')
+        
+        cost_opts = {}
+        if collect_costs:
+            # Org costs option
+            print()
+            print("For AWS Organizations, costs can be broken down by member account.")
+            org_input = input(color("Break down costs by linked account (org)? [y/N]: ", Colors.CYAN)).strip().lower()
+            cost_opts['org_costs'] = org_input in ('y', 'yes')
+        
+        return {
+            'output': output,
+            'collect_costs': collect_costs,
+            'cost_opts': cost_opts
+        }
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
+
+
+def prompt_azure_options() -> Optional[Dict[str, Any]]:
+    """Prompt for Azure collection options including cost collection."""
+    print(color("\n=== Azure Collection Options ===\n", Colors.BOLD))
+    
+    try:
+        # Output directory
+        output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
+        if not output:
+            output = "./output"
+        
+        # Cost collection
+        print()
+        print("Data protection cost collection analyzes Azure Backup vault costs,")
+        print("managed disk snapshots, and recovery services from Cost Management.")
+        print()
+        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input in ('y', 'yes')
+        
+        cost_opts = {}
+        if collect_costs:
+            # Get subscription ID for cost collection
+            print()
+            print("Cost Management API requires a subscription ID to query costs.")
+            sub_id = input(color("Subscription ID for costs (or Enter to auto-detect): ", Colors.CYAN)).strip()
+            cost_opts['subscription_id'] = sub_id if sub_id else None
+        
+        return {
+            'output': output,
+            'collect_costs': collect_costs,
+            'cost_opts': cost_opts
+        }
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
+
+
+def prompt_gcp_options() -> Optional[Dict[str, Any]]:
+    """Prompt for GCP collection options including cost collection."""
+    print(color("\n=== GCP Collection Options ===\n", Colors.BOLD))
+    
+    try:
+        # Output directory
+        output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
+        if not output:
+            output = "./output"
+        
+        # Cost collection
+        print()
+        print("Data protection cost collection requires BigQuery billing export.")
+        print("See: https://cloud.google.com/billing/docs/how-to/export-data-bigquery")
+        print()
+        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input in ('y', 'yes')
+        
+        cost_opts = {}
+        if collect_costs:
+            print()
+            project = input(color("GCP project ID with billing export: ", Colors.CYAN)).strip()
+            if not project:
+                print(color("Project ID is required for cost collection.", Colors.YELLOW))
+                collect_costs = False
+            else:
+                cost_opts['project'] = project
+                
+                billing_table = input(color("BigQuery billing table (project.dataset.table): ", Colors.CYAN)).strip()
+                if not billing_table:
+                    print(color("Billing table is required for cost collection.", Colors.YELLOW))
+                    collect_costs = False
+                else:
+                    cost_opts['billing_table'] = billing_table
+        
+        return {
+            'output': output,
+            'collect_costs': collect_costs,
+            'cost_opts': cost_opts
+        }
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
 
 
 def get_cloud_choice() -> Optional[str]:
@@ -77,20 +268,22 @@ def get_cloud_choice() -> Optional[str]:
         '2': 'azure',
         '3': 'gcp',
         '4': 'm365',
+        '5': 'aws-org',
         'aws': 'aws',
         'azure': 'azure',
         'gcp': 'gcp',
         'm365': 'm365',
+        'aws-org': 'aws-org',
     }
-    
+
     while True:
         try:
-            choice = input(color("Enter choice (1-4 or cloud name): ", Colors.CYAN)).strip().lower()
+            choice = input(color("Enter choice (1-5 or cloud name): ", Colors.CYAN)).strip().lower()
             if choice in ('q', 'quit', 'exit'):
                 return None
             if choice in choices:
                 return choices[choice]
-            print(color("Invalid choice. Please enter 1-4 or a cloud name.", Colors.YELLOW))
+            print(color("Invalid choice. Please enter 1-5 or a cloud name.", Colors.YELLOW))
         except (KeyboardInterrupt, EOFError):
             print()
             return None
@@ -107,14 +300,14 @@ def check_aws_permissions() -> Tuple[bool, str, List[str]]:
     """
     details = []
     try:
-        import boto3  # type: ignore[import-untyped]
+        import boto3
         from botocore.exceptions import ClientError, NoCredentialsError
     except ImportError:
         return False, "boto3 not installed", ["Run: pip install boto3"]
-    
+
     # Check credentials
     try:
-        sts = boto3.client('sts')  # type: ignore[call-overload]
+        sts = boto3.client('sts')
         identity = sts.get_caller_identity()
         account_id = identity['Account']
         arn = identity['Arn']
@@ -130,7 +323,7 @@ def check_aws_permissions() -> Tuple[bool, str, List[str]]:
         ]
     except ClientError as e:
         return False, f"Credential error: {e}", []
-    
+
     # Check basic read permissions
     try:
         ec2 = boto3.client('ec2')  # type: ignore[call-overload]
@@ -143,7 +336,7 @@ def check_aws_permissions() -> Tuple[bool, str, List[str]]:
                 "Add ReadOnlyAccess policy or see docs/PERMISSIONS.md"
             ]
         details.append(f"Region check: {e}")
-    
+
     # Quick check for S3 access
     try:
         s3 = boto3.client('s3')  # type: ignore[call-overload]
@@ -153,7 +346,7 @@ def check_aws_permissions() -> Tuple[bool, str, List[str]]:
         code = e.response.get('Error', {}).get('Code', '')
         if code in ('AccessDenied',):
             details.append("S3:       ✗ No s3:ListAllMyBuckets")
-    
+
     # Check for Organizations access (optional)
     try:
         org = boto3.client('organizations')  # type: ignore[call-overload]
@@ -163,7 +356,7 @@ def check_aws_permissions() -> Tuple[bool, str, List[str]]:
         details.append("Org:      – Single account mode (no Organizations access)")
     except Exception:
         pass
-    
+
     return True, "AWS credentials verified", details
 
 
@@ -174,13 +367,13 @@ def check_azure_permissions() -> Tuple[bool, str, List[str]]:
     """
     details = []
     try:
-        from azure.identity import DefaultAzureCredential  # type: ignore[import-untyped]
-        from azure.mgmt.resource import SubscriptionClient  # type: ignore[import-untyped]
+        from azure.identity import DefaultAzureCredential
+        from azure.mgmt.subscription import SubscriptionClient
     except ImportError:
         return False, "Azure SDK not installed", [
-            "Run: pip install azure-identity azure-mgmt-resource"
+            "Run: pip install azure-identity azure-mgmt-subscription"
         ]
-    
+
     try:
         credential = DefaultAzureCredential()
         # Get token to verify credentials work
@@ -194,7 +387,7 @@ def check_azure_permissions() -> Tuple[bool, str, List[str]]:
             "  - Service principal environment variables",
             "  - Managed identity"
         ]
-    
+
     # List subscriptions
     try:
         sub_client = SubscriptionClient(credential)
@@ -202,7 +395,8 @@ def check_azure_permissions() -> Tuple[bool, str, List[str]]:
         if subs:
             details.append(f"Subs:     {len(subs)} accessible")
             for sub in subs[:3]:
-                details.append(f"          - {sub.display_name} ({sub.subscription_id[:8]}...)")
+                sub_id = sub.subscription_id or 'unknown'
+                details.append(f"          - {sub.display_name} ({sub_id[:8]}...)")
             if len(subs) > 3:
                 details.append(f"          ... and {len(subs) - 3} more")
         else:
@@ -211,7 +405,7 @@ def check_azure_permissions() -> Tuple[bool, str, List[str]]:
             ]
     except Exception as e:
         return False, f"Failed to list subscriptions: {e}", []
-    
+
     return True, "Azure credentials verified", details
 
 
@@ -222,13 +416,13 @@ def check_gcp_permissions() -> Tuple[bool, str, List[str]]:
     """
     details = []
     try:
-        import google.auth  # type: ignore[import-untyped]
-        from google.cloud import resourcemanager_v3  # type: ignore[import-untyped]
+        import google.auth
+        from google.cloud import resourcemanager_v3
     except ImportError:
         return False, "GCP SDK not installed", [
             "Run: pip install google-auth google-cloud-resource-manager"
         ]
-    
+
     try:
         credentials, project = google.auth.default()
         if project:
@@ -242,7 +436,7 @@ def check_gcp_permissions() -> Tuple[bool, str, List[str]]:
             "  - gcloud auth application-default login",
             "  - Service account key file (GOOGLE_APPLICATION_CREDENTIALS)"
         ]
-    
+
     # Try to list projects
     try:
         client = resourcemanager_v3.ProjectsClient()
@@ -258,7 +452,7 @@ def check_gcp_permissions() -> Tuple[bool, str, List[str]]:
     except Exception as e:
         # If resourcemanager_v3 isn't available, try simpler check
         details.append(f"Projects: Could not list ({e})")
-    
+
     return True, "GCP credentials verified", details
 
 
@@ -268,12 +462,12 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
     Returns: (success, message, details)
     """
     details = []
-    
+
     # Check required environment variables
     tenant_id = os.environ.get('MS365_TENANT_ID')
     client_id = os.environ.get('MS365_CLIENT_ID')
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
-    
+
     if not all([tenant_id, client_id, client_secret]):
         missing = []
         if not tenant_id:
@@ -293,22 +487,22 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
             "Note: Requires Azure AD App Registration with Graph API permissions.",
             "See docs/collectors/m365.md for setup instructions."
         ]
-    
+
     # Type narrowing - we know these are strings after the check above
     assert tenant_id is not None and client_id is not None and client_secret is not None
-    
+
     details.append(f"Tenant:   {tenant_id}")
     details.append(f"Client:   {client_id[:8]}...")
-    
+
     # Try to get a token
     try:
-        from azure.identity import ClientSecretCredential  # type: ignore[import-untyped]
-        from msgraph import GraphServiceClient  # type: ignore[import-untyped] # noqa: F401
+        from azure.identity import ClientSecretCredential
+        from msgraph.graph_service_client import GraphServiceClient  # noqa: F401
     except ImportError:
         return False, "msgraph SDK not installed", [
             "Run: pip install msgraph-sdk azure-identity"
         ]
-    
+
     try:
         credential = ClientSecretCredential(
             tenant_id=tenant_id,
@@ -326,7 +520,7 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
             "  - The App Registration has the required API permissions",
             "  - Admin consent has been granted for the permissions"
         ]
-    
+
     return True, "M365 credentials verified", details
 
 
@@ -401,21 +595,21 @@ def detect_m365() -> bool:
 def auto_detect_clouds() -> List[str]:
     """Detect which clouds have credentials configured."""
     detected = []
-    
+
     detectors = [
         ('aws', detect_aws),
         ('azure', detect_azure),
         ('gcp', detect_gcp),
         ('m365', detect_m365),
     ]
-    
+
     for cloud, detector in detectors:
         try:
             if detector():
                 detected.append(cloud)
         except Exception:
             pass  # Ignore detection errors
-    
+
     return detected
 
 
@@ -424,31 +618,31 @@ def verify_permissions(cloud: str) -> bool:
     print(color(f"\n{'─'*60}", Colors.CYAN))
     print(color(f"  Checking {cloud.upper()} permissions...", Colors.BOLD))
     print(color(f"{'─'*60}\n", Colors.CYAN))
-    
+
     checkers = {
         'aws': check_aws_permissions,
         'azure': check_azure_permissions,
         'gcp': check_gcp_permissions,
         'm365': check_m365_permissions,
     }
-    
+
     checker = checkers.get(cloud)
     if not checker:
         print(color(f"Unknown cloud: {cloud}", Colors.RED))
         return False
-    
+
     try:
         success, message, details = checker()
     except Exception as e:
         print(color(f"  ✗ Permission check failed: {e}", Colors.RED))
-        print(color(f"\n    This could indicate missing credentials or SDK issues.", Colors.YELLOW))
+        print(color("\n    This could indicate missing credentials or SDK issues.", Colors.YELLOW))
         return False
-    
+
     if success:
         print(color(f"  ✓ {message}", Colors.GREEN))
     else:
         print(color(f"  ✗ {message}", Colors.RED))
-    
+
     if details:
         print()
         for line in details:
@@ -456,7 +650,7 @@ def verify_permissions(cloud: str) -> bool:
                 print(color(f"    {line}", Colors.CYAN if success else Colors.YELLOW))
             else:
                 print(color(f"    {line}", Colors.CYAN if success else Colors.YELLOW))
-    
+
     print()
     return success
 
@@ -476,36 +670,74 @@ def run_collector(cloud: str, extra_args: List[str]) -> int:
         'gcp': 'gcp_collect.py',
         'm365': 'm365_collect.py',
     }
-    
+
     collector = collectors.get(cloud)
     if not collector:
         print(color(f"Unknown cloud: {cloud}", Colors.RED))
         return 1
-    
+
     # Find collector script relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     collector_path = os.path.join(script_dir, collector)
-    
+
     if not os.path.exists(collector_path):
         print(color(f"Collector not found: {collector_path}", Colors.RED))
         return 1
-    
+
     # Build command
     cmd = [sys.executable, collector_path] + extra_args
-    
+
     print(color(f"\n{'─'*60}", Colors.CYAN))
     print(color(f"  Starting {cloud.upper()} collection...", Colors.BOLD))
     print(color(f"{'─'*60}\n", Colors.CYAN))
-    
+
     if extra_args:
         print(color(f"  Additional args: {' '.join(extra_args)}\n", Colors.CYAN))
-    
+
     # Run collector
     try:
         result = subprocess.run(cmd, cwd=script_dir)
         return result.returncode
     except KeyboardInterrupt:
         print(color("\n\nCollection interrupted by user.", Colors.YELLOW))
+        return 130
+
+
+def run_cost_collector(cloud: str, extra_args: List[str]) -> int:
+    """
+    Run cost_collect.py for the specified cloud.
+    Returns the exit code from the collector.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    collector_path = os.path.join(script_dir, 'cost_collect.py')
+
+    if not os.path.exists(collector_path):
+        print(color(f"Cost collector not found: {collector_path}", Colors.RED))
+        return 1
+
+    # Map cloud name to cost_collect flag
+    cloud_flags = {
+        'aws': '--aws',
+        'azure': '--azure',
+        'gcp': '--gcp',
+    }
+
+    flag = cloud_flags.get(cloud)
+    if not flag:
+        print(color(f"Cost collection not supported for: {cloud}", Colors.YELLOW))
+        return 1
+
+    cmd = [sys.executable, collector_path, flag] + extra_args
+
+    print(color(f"\n{'─'*60}", Colors.CYAN))
+    print(color(f"  Starting {cloud.upper()} cost collection...", Colors.BOLD))
+    print(color(f"{'─'*60}\n", Colors.CYAN))
+
+    try:
+        result = subprocess.run(cmd, cwd=script_dir)
+        return result.returncode
+    except KeyboardInterrupt:
+        print(color("\n\nCost collection interrupted by user.", Colors.YELLOW))
         return 130
 
 
@@ -527,19 +759,19 @@ def show_collector_help(cloud: str):
         'gcp': 'gcp_collect.py',
         'm365': 'm365_collect.py',
     }
-    
+
     collector = collectors.get(cloud)
     if not collector:
         return
-    
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     collector_path = os.path.join(script_dir, collector)
-    
+
     # Run help first
     subprocess.run([sys.executable, collector_path, '--help'])
-    
+
     print(color(f"\n{'─'*60}", Colors.CYAN))
-    print(color(f"  Tip: Pass arguments with '--'", Colors.BOLD))
+    print(color("  Tip: Pass arguments with '--'", Colors.BOLD))
     print(color(f"{'─'*60}\n", Colors.CYAN))
     print(color(f"  python collect.py --cloud {cloud} -- [options]\n", Colors.CYAN))
 
@@ -553,17 +785,17 @@ def run_setup_wizard():
     print(color("\n" + "="*60, Colors.CYAN))
     print(color("  CCA CloudShell - Setup Wizard", Colors.BOLD))
     print(color("="*60 + "\n", Colors.CYAN))
-    
+
     print("This wizard will help you configure cloud credentials and verify permissions.\n")
-    
+
     # Detect what's already configured
     detected = auto_detect_clouds()
-    
+
     if detected:
         print(color(f"✓ Detected credentials for: {', '.join(c.upper() for c in detected)}\n", Colors.GREEN))
     else:
         print(color("No cloud credentials detected.\n", Colors.YELLOW))
-    
+
     # Ask which clouds to set up
     print(color("Which clouds do you want to collect from?\n", Colors.BOLD))
     print(f"  {color('1', Colors.GREEN)}) AWS       {'✓ credentials found' if 'aws' in detected else ''}")
@@ -572,17 +804,17 @@ def run_setup_wizard():
     print(f"  {color('4', Colors.GREEN)}) M365      {'✓ credentials found' if 'm365' in detected else ''}")
     print(f"  {color('a', Colors.GREEN)}) All detected ({', '.join(detected) if detected else 'none'})")
     print()
-    
+
     try:
         choice = input(color("Enter choice(s) (e.g., 1,2 or 'a' for all detected): ", Colors.CYAN)).strip().lower()
     except (KeyboardInterrupt, EOFError):
         print(color("\n\nSetup cancelled.", Colors.YELLOW))
         return
-    
+
     if choice in ('q', 'quit', 'exit'):
         print(color("\nSetup cancelled.", Colors.YELLOW))
         return
-    
+
     selected = []
     if choice == 'a':
         selected = detected.copy()
@@ -592,38 +824,36 @@ def run_setup_wizard():
         for c in choice.replace(',', ' ').split():
             if c.strip() in choice_map:
                 selected.append(choice_map[c.strip()])
-    
+
     if not selected:
         print(color("\nNo clouds selected. Exiting setup.", Colors.YELLOW))
         return
-    
+
     print(color(f"\nSelected: {', '.join(c.upper() for c in selected)}\n", Colors.CYAN))
-    
+
     # Test each selected cloud
-    all_passed = True
     ready_clouds = []
-    
+
     for cloud in selected:
         success = verify_permissions(cloud)
         if success:
             ready_clouds.append(cloud)
         else:
-            all_passed = False
             print(color(f"\n  Setup instructions for {cloud.upper()}:\n", Colors.YELLOW))
             _show_setup_instructions(cloud)
-    
+
     # Summary
     print(color("\n" + "="*60, Colors.CYAN))
     print(color("  Setup Summary", Colors.BOLD))
     print(color("="*60 + "\n", Colors.CYAN))
-    
+
     if ready_clouds:
         print(color(f"✓ Ready to collect: {', '.join(c.upper() for c in ready_clouds)}", Colors.GREEN))
-    
+
     failed = [c for c in selected if c not in ready_clouds]
     if failed:
         print(color(f"✗ Need configuration: {', '.join(c.upper() for c in failed)}", Colors.RED))
-    
+
     if ready_clouds:
         print()
         try:
@@ -680,7 +910,7 @@ def _show_setup_instructions(cloud: str):
             "See: docs/collectors/m365.md"
         ]
     }
-    
+
     for line in instructions.get(cloud, ["See docs/ for setup instructions."]):
         print(f"    {line}")
 
@@ -702,7 +932,7 @@ Examples:
   python collect.py --cloud aws -- --org-role CCARole  # Pass args to collector
 """
     )
-    
+
     parser.add_argument(
         '--cloud', '-c',
         choices=['aws', 'azure', 'gcp', 'm365'],
@@ -733,14 +963,14 @@ Examples:
         action='store_true',
         help='Show help for the specific cloud collector'
     )
-    
+
     # Parse known args, rest goes to collector
     args, extra_args = parser.parse_known_args()
-    
+
     # Remove '--' separator if present
     if extra_args and extra_args[0] == '--':
         extra_args = extra_args[1:]
-    
+
     # Handle --generate-config
     if args.generate_config:
         # Import here to avoid circular imports
@@ -748,17 +978,17 @@ Examples:
         from lib.config import generate_sample_config
         print(generate_sample_config())
         sys.exit(0)
-    
+
     # Handle --setup
     if args.setup:
         print_banner()
         run_setup_wizard()
         sys.exit(0)
-    
+
     # Pass --config to collector if specified
     if args.config:
         extra_args = ['--config', args.config] + extra_args
-    
+
     # Show collector help if requested
     if args.help_collector:
         if not args.cloud:
@@ -766,9 +996,9 @@ Examples:
             sys.exit(1)
         show_collector_help(args.cloud)
         sys.exit(0)
-    
+
     print_banner()
-    
+
     # Auto-detect or use specified cloud
     if args.cloud:
         cloud = args.cloud
@@ -776,20 +1006,63 @@ Examples:
         # Auto-detect available clouds
         print(color("Detecting cloud credentials...\n", Colors.CYAN))
         detected = auto_detect_clouds()
-        
+
         if not detected:
-            print(color("No cloud credentials detected.\n", Colors.YELLOW))
-            print("Run the setup wizard to configure credentials:")
-            print(color("  python collect.py --setup\n", Colors.GREEN))
-            print("Or configure credentials manually:")
-            print("  AWS:   aws configure")
-            print("  Azure: az login")
-            print("  GCP:   gcloud auth application-default login")
-            print("  M365:  Set MS365_* environment variables")
+            print(color("No cloud credentials auto-detected.\n", Colors.YELLOW))
+            print("Select an option:\n")
+            print_cloud_menu()
+            cloud = get_cloud_choice()
+            
+            if cloud is None:
+                print(color("\nExiting.", Colors.CYAN))
+                sys.exit(0)
+            
+            # Handle AWS Organization collection
+            if cloud == 'aws-org':
+                aws_org_opts = prompt_aws_org_options()
+                if aws_org_opts is None:
+                    print(color("\nExiting.", Colors.CYAN))
+                    sys.exit(0)
+                
+                # Build extra args for AWS collector with org options
+                extra_args = ['--org-role', aws_org_opts['org_role']]
+                if aws_org_opts['sso_refresh']:
+                    extra_args.append('--sso-refresh')
+                if aws_org_opts['parallel_accounts']:
+                    extra_args.extend(['--parallel-accounts', str(aws_org_opts['parallel_accounts'])])
+                extra_args.extend(['-o', aws_org_opts['output']])
+                
+                print(color(f"\nStarting AWS Organization collection...\n", Colors.CYAN))
+                exit_code = run_collector('aws', extra_args)
+                
+                if exit_code == 0:
+                    print(color(f"\n✓ AWS Organization collection completed successfully!\n", Colors.GREEN))
+                else:
+                    print(color(f"\n✗ Collection exited with code {exit_code}\n", Colors.RED))
+                
+                # Run cost collection if requested
+                if aws_org_opts.get('collect_costs') and exit_code == 0:
+                    cost_extra_args = ['--org-costs', '-o', aws_org_opts['output']]
+                    cost_exit_code = run_cost_collector('aws', cost_extra_args)
+                    
+                    if cost_exit_code == 0:
+                        print(color(f"\n✓ AWS cost collection completed successfully!\n", Colors.GREEN))
+                    else:
+                        print(color(f"\n✗ Cost collection exited with code {cost_exit_code}\n", Colors.RED))
+                        if exit_code == 0:
+                            exit_code = cost_exit_code
+                
+                sys.exit(exit_code)
+            
+            # For single-cloud selection, show setup instructions
+            print(color(f"\n{cloud.upper()} selected but credentials not auto-detected.\n", Colors.YELLOW))
+            print("Configure credentials first:")
+            _show_setup_instructions(cloud)
+            print()
             sys.exit(1)
-        
+
         print(color(f"✓ Found credentials for: {', '.join(c.upper() for c in detected)}\n", Colors.GREEN))
-        
+
         if len(detected) == 1:
             # Only one cloud detected - use it automatically
             cloud = detected[0]
@@ -801,16 +1074,29 @@ Examples:
                 print(f"  {color(str(i), Colors.GREEN)}) {c.upper()}")
             print(f"  {color('a', Colors.GREEN)}) All (run each sequentially)")
             print()
-            
+
             try:
                 choice = input(color("Enter choice: ", Colors.CYAN)).strip().lower()
             except (KeyboardInterrupt, EOFError):
                 print(color("\n\nExiting.", Colors.CYAN))
                 sys.exit(0)
-            
+
             if choice == 'a':
+                # Ask about cost collection for multi-cloud run
+                print()
+                print("Data protection cost collection can analyze backup-related spending")
+                print("from Cost Explorer (AWS), Cost Management (Azure), or BigQuery (GCP).")
+                print()
+                try:
+                    cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
+                    collect_all_costs = cost_input in ('y', 'yes')
+                except (KeyboardInterrupt, EOFError):
+                    print()
+                    collect_all_costs = False
+                
                 # Run all detected clouds
                 all_exit_codes = []
+                cost_exit_codes = []
                 for c in detected:
                     if not args.skip_check:
                         if not verify_permissions(c):
@@ -818,7 +1104,12 @@ Examples:
                             continue
                     exit_code = run_collector(c, extra_args)
                     all_exit_codes.append((c, exit_code))
-                
+                    
+                    # Run cost collection if requested and main collection succeeded
+                    if collect_all_costs and exit_code == 0 and c in ('aws', 'azure', 'gcp'):
+                        cost_exit = run_cost_collector(c, extra_args)
+                        cost_exit_codes.append((c, cost_exit))
+
                 # Summary
                 print(color("\n" + "="*60, Colors.CYAN))
                 print(color("  Collection Summary", Colors.BOLD))
@@ -827,8 +1118,14 @@ Examples:
                     status = color("✓", Colors.GREEN) if code == 0 else color("✗", Colors.RED)
                     print(f"  {status} {c.upper()}: exit code {code}")
                 
+                if cost_exit_codes:
+                    print(color("\n  Cost Collection:", Colors.BOLD))
+                    for c, code in cost_exit_codes:
+                        status = color("✓", Colors.GREEN) if code == 0 else color("✗", Colors.RED)
+                        print(f"  {status} {c.upper()}: exit code {code}")
+
                 sys.exit(0 if all(c == 0 for _, c in all_exit_codes) else 1)
-            
+
             try:
                 idx = int(choice) - 1
                 if 0 <= idx < len(detected):
@@ -842,22 +1139,76 @@ Examples:
                 else:
                     print(color("Invalid choice.", Colors.RED))
                     sys.exit(1)
+
+    # Interactive prompts for cloud-specific options (only when not using --cloud flag)
+    collect_costs = False
+    cost_opts = {}
     
+    if not args.cloud and cloud in ('aws', 'azure', 'gcp'):
+        # Prompt for collection options
+        prompt_funcs = {
+            'aws': prompt_aws_options,
+            'azure': prompt_azure_options,
+            'gcp': prompt_gcp_options,
+        }
+        
+        opts = prompt_funcs[cloud]()
+        if opts is None:
+            print(color("\nExiting.", Colors.CYAN))
+            sys.exit(0)
+        
+        # Apply options
+        if opts.get('output'):
+            extra_args = ['-o', opts['output']] + extra_args
+        collect_costs = opts.get('collect_costs', False)
+        cost_opts = opts.get('cost_opts', {})
+
     # Permission check
     if not args.skip_check:
         if not verify_permissions(cloud):
             print(color("Permission check failed. Fix the issues above and try again.", Colors.RED))
-            print(color(f"Or use --skip-check to bypass (not recommended).\n", Colors.YELLOW))
+            print(color("Or use --skip-check to bypass (not recommended).\n", Colors.YELLOW))
             sys.exit(1)
-    
-    # Run collection
+
+    # Run main collection
     exit_code = run_collector(cloud, extra_args)
-    
+
     if exit_code == 0:
         print(color(f"\n✓ {cloud.upper()} collection completed successfully!\n", Colors.GREEN))
     else:
         print(color(f"\n✗ Collection exited with code {exit_code}\n", Colors.RED))
-    
+
+    # Run cost collection if requested
+    if collect_costs and exit_code == 0:
+        cost_extra_args = []
+        
+        # Add cloud-specific cost options
+        if cloud == 'aws' and cost_opts.get('org_costs'):
+            cost_extra_args.append('--org-costs')
+        elif cloud == 'azure' and cost_opts.get('subscription_id'):
+            cost_extra_args.extend(['--subscription-id', cost_opts['subscription_id']])
+        elif cloud == 'gcp':
+            if cost_opts.get('project'):
+                cost_extra_args.extend(['--project', cost_opts['project']])
+            if cost_opts.get('billing_table'):
+                cost_extra_args.extend(['--billing-table', cost_opts['billing_table']])
+        
+        # Use same output directory
+        if '-o' in extra_args:
+            idx = extra_args.index('-o')
+            if idx + 1 < len(extra_args):
+                cost_extra_args.extend(['-o', extra_args[idx + 1]])
+        
+        cost_exit_code = run_cost_collector(cloud, cost_extra_args)
+        
+        if cost_exit_code == 0:
+            print(color(f"\n✓ {cloud.upper()} cost collection completed successfully!\n", Colors.GREEN))
+        else:
+            print(color(f"\n✗ Cost collection exited with code {cost_exit_code}\n", Colors.RED))
+            # Don't fail overall if cost collection fails, but note it
+            if exit_code == 0:
+                exit_code = cost_exit_code
+
     sys.exit(exit_code)
 
 
