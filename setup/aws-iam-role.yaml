@@ -156,6 +156,7 @@ Resources:
               - backup:ListBackupSelections
               - backup:GetBackupSelection
               - backup:ListProtectedResources
+              - backup:DescribeRegionSettings
             Resource: '*'
 
           # Organizations permissions (conditional)

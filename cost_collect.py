@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
-from lib.utils import generate_run_id, get_timestamp, setup_logging, write_csv, write_json
+from lib.utils import generate_run_id, get_timestamp, setup_logging, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -890,17 +890,6 @@ Examples:
 
     write_json(output_data, f"{output_base}/cca_cost_inv_{file_ts}.json")
     write_json(summary_data, f"{output_base}/cca_cost_sum_{file_ts}.json")
-
-    # Write CSV
-    csv_data = []
-    for s in summaries:
-        csv_data.append({
-            'provider': s.provider,
-            'category': s.category,
-            'total_cost': s.total_cost,
-            'currency': s.currency
-        })
-    write_csv(csv_data, f"{output_base}/cca_cost_sizing.csv")
 
     # Print summary
     print(f"\n{'='*60}")

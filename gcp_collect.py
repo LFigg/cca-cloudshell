@@ -1475,7 +1475,6 @@ def main():
         file_ts = timestamp[11:19].replace(":", "")
         inv_file = f"{output_dir}/cca_gcp_inv_{file_ts}.json"
         sum_file = f"{output_dir}/cca_gcp_sum_{file_ts}.json"
-        csv_file = f"{output_dir}/cca_gcp_sizing.csv"
 
         write_json(inventory_data, inv_file)
         write_json(summary_data, sum_file)
@@ -1493,10 +1492,6 @@ def main():
             if not args.include_resource_ids:
                 change_rate_output = redact_sensitive_data(change_rate_output)
             write_json(change_rate_output, change_rate_file)
-
-        # Write CSV for spreadsheet use
-        csv_data = [s.to_dict() for s in sizing]
-        write_csv(csv_data, csv_file)
 
         # Print detailed results (ProgressTracker already showed collection summary)
         print("\nOutput files:")

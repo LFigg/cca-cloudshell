@@ -2,7 +2,7 @@
 Integration test that generates sample output files using mock AWS data.
 
 This test simulates a realistic customer environment and generates the actual
-output files (inventory.json, summary.json, sizing.csv) that would be produced
+output files (inventory.json, summary.json) that would be produced
 when running the collector.
 
 Run with: python -m pytest tests/test_aws_integration.py -v -s --log-cli-level=INFO
@@ -748,9 +748,6 @@ class TestAWSIntegrationWithOutput:
         write_json(inventory_data, f"{SAMPLE_OUTPUT_DIR}/cca_inv_{file_ts}.json")
         write_json(summary_data, f"{SAMPLE_OUTPUT_DIR}/cca_sum_{file_ts}.json")
 
-        csv_data = [s.to_dict() for s in summaries]
-        write_csv(csv_data, f"{SAMPLE_OUTPUT_DIR}/sizing.csv")
-
         # Print summary to console (same as real collector)
         print(f"\n{'='*60}")
         print("AWS Cloud Assessment Complete")
@@ -773,7 +770,6 @@ class TestAWSIntegrationWithOutput:
         sum_files = glob.glob(f"{SAMPLE_OUTPUT_DIR}/cca_sum_*.json")
         assert len(inv_files) >= 1, "No inventory file found"
         assert len(sum_files) >= 1, "No summary file found"
-        assert os.path.exists(f"{SAMPLE_OUTPUT_DIR}/sizing.csv")
 
         # Verify inventory structure (use most recent file)
         inv_file = sorted(inv_files)[-1]

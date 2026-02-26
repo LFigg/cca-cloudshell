@@ -16,6 +16,9 @@ python3 aws_collect.py -o ./my_output/
 
 # Output to S3
 python3 aws_collect.py --output s3://my-bucket/assessments/
+
+# Include full resource IDs/ARNs (default: redact for privacy)
+python3 aws_collect.py --include-resource-ids
 ```
 
 ## Command Line Options
@@ -30,6 +33,12 @@ python3 aws_collect.py --output s3://my-bucket/assessments/
 | `--org-role NAME` | Role name for Organizations discovery |
 | `--external-id ID` | External ID for role assumption |
 | `--skip-accounts IDS` | Account IDs to skip (comma-separated) |
+| `--include-resource-ids` | Include full resource IDs/ARNs (default: redact) |
+| `--include-change-rate` | Collect change rate metrics from CloudWatch |
+| `--change-rate-days N` | Days to sample for change rate (default: 7) |
+| `--skip-pvc` | Skip PVC collection from EKS clusters |
+| `--parallel-accounts N` | Parallel workers for multi-account (default: auto) |
+| `--parallel-regions N` | Parallel workers for regions (default: 4) |
 | `--log-level LEVEL` | Logging level (default: INFO) |
 
 ## Multi-Account Collection

@@ -4,7 +4,7 @@ This guide covers running the CCA collectors from a local workstation or admin m
 
 ## Prerequisites
 
-- Python 3.8 or higher
+- Python 3.9 or higher
 - Git (optional, for cloning)
 - Network access to cloud provider APIs
 
@@ -102,6 +102,9 @@ python3 aws_collect.py -o ./output/
 
 # Output directly to S3
 python3 aws_collect.py --output s3://my-bucket/cca-assessments/
+
+# Include full resource IDs/ARNs (default: redact for privacy)
+python3 aws_collect.py --include-resource-ids
 ```
 
 ### Multi-Account Collection
@@ -190,6 +193,12 @@ python3 azure_collect.py --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 # Custom output directory
 python3 azure_collect.py -o ./output/
+
+# Include full resource IDs (default: redact for privacy)
+python3 azure_collect.py --include-resource-ids
+
+# Include individual recovery points (can be slow for large backup environments)
+python3 azure_collect.py --include-recovery-points
 ```
 
 ### Required Permissions
@@ -250,6 +259,9 @@ python3 gcp_collect.py --output ./output/
 
 # Output to GCS
 python3 gcp_collect.py --output gs://my-bucket/assessments/
+
+# Include full resource IDs (default: redact for privacy)
+python3 gcp_collect.py --include-resource-ids
 ```
 
 ### Required Permissions
@@ -342,15 +354,25 @@ Each collector generates three files:
 |------|-------------|
 | `cca_<cloud>_inv_<HHMMSS>.json` | Full resource inventory |
 | `cca_<cloud>_sum_<HHMMSS>.json` | Aggregated summary |
-| `cca_<cloud>_sizing.csv` | Spreadsheet-ready sizing |
 
-### Generate Protection Report
+### Generate Reports
 
 ```bash
-# Generate Excel report from inventory
+# Generate protection status report from inventory
 python3 scripts/generate_protection_report.py \
     ./output/cca_aws_inv_143052.json \
     ./output/protection_report.xlsx
+
+# Generate comprehensive assessment report (multi-tab Excel)
+python3 scripts/generate_assessment_report.py \
+    ./output/cca_aws_inv_*.json \
+    -o ./output/assessment_report.xlsx
+
+# Include cost data in assessment report
+python3 scripts/generate_assessment_report.py \
+    ./output/cca_aws_inv_*.json \
+    --cost ./output/cca_cost_*.json \
+    -o ./output/assessment_report.xlsx
 ```
 
 ---
@@ -486,7 +508,6 @@ The merge script:
 - Deduplicates resources by `account_id:resource_id`
 - Re-aggregates summary totals correctly
 - Merges cost data if present
-- Generates a combined sizing CSV
 
 ### Recommended Workflow for 100+ Accounts
 
@@ -531,8 +552,7 @@ assessments/
 │   └── ...
 └── merged/
     ├── org1-production/
-    │   ├── cca_aws_inv_150000_merged.json
-    │   └── cca_aws_sizing_merged.csv
+    │   └── cca_aws_inv_150000_merged.json
     └── org2-development/
         └── ...
 ```

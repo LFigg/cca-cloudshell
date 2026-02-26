@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.utils import generate_run_id, get_timestamp, write_csv, write_json
+from lib.utils import generate_run_id, get_timestamp, write_json
 
 
 def find_inventory_files(folder: Path) -> List[Path]:
@@ -347,33 +347,6 @@ def merge_cost_files(cost_files: List[Path]) -> Tuple[Dict[str, Any], Dict[str, 
     return merged, stats
 
 
-def generate_sizing_csv(inv_data: Dict[str, Any], output_path: Path) -> None:
-    """Generate sizing CSV from merged inventory."""
-    if not inv_data or not inv_data.get("resources"):
-        return
-
-    provider = inv_data.get("provider", "aws")
-
-    # Prepare CSV rows
-    rows = []
-    for resource in inv_data.get("resources", []):
-        rows.append({
-            "provider": provider,
-            "account_id": resource.get("account_id", ""),
-            "region": resource.get("region", ""),
-            "resource_type": resource.get("resource_type", ""),
-            "service_family": resource.get("service_family", ""),
-            "resource_id": resource.get("resource_id", ""),
-            "name": resource.get("name", ""),
-            "size_gb": resource.get("size_gb", 0),
-        })
-
-    # Sort by account, region, type
-    rows.sort(key=lambda r: (r["account_id"], r["region"], r["resource_type"]))
-
-    write_csv(rows, str(output_path))
-
-
 def process_folder(
     folder: Path,
     output_dir: Optional[Path] = None,
@@ -454,13 +427,6 @@ def process_folder(
             write_json(merged_sum, str(sum_path))
             print(f"  Wrote: {sum_path.name}")
             results["summary"] = {"file": str(sum_path)}
-
-        # Generate sizing CSV
-        print("\nGenerating sizing CSV...")
-        csv_path = output_dir / f"cca_{provider}_sizing_merged.csv"
-        generate_sizing_csv(merged_inv, csv_path)
-        print(f"  Wrote: {csv_path.name}")
-        results["sizing_csv"] = {"file": str(csv_path)}
 
     # Merge cost files if present
     if cost_files:
@@ -567,16 +533,12 @@ Examples:
                 write_json(merged_inv, str(inv_path))
                 print(f"Wrote: {inv_path}")
 
-                # Summary and CSV
+                # Summary
                 merged_sum = merge_summary_files(all_sum_files, merged_inv)
                 if merged_sum:
                     sum_path = out / f"cca_{provider}_sum_{timestamp}_merged.json"
                     write_json(merged_sum, str(sum_path))
                     print(f"Wrote: {sum_path}")
-
-                csv_path = out / f"cca_{provider}_sizing_merged.csv"
-                generate_sizing_csv(merged_inv, csv_path)
-                print(f"Wrote: {csv_path}")
 
     # Final summary
     print(f"\n{'='*60}")

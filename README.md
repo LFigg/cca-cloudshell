@@ -11,6 +11,7 @@ Collects cloud resource inventory including:
 - Snapshots and backups
 - Protection status analysis
 - Backup/snapshot cost analysis
+- Data change rate metrics (optional)
 
 ## Quick Start
 
@@ -62,7 +63,6 @@ python3 collect.py --cloud aws --help-collector
 Each collector generates:
 - `cca_<cloud>_inv_<time>.json` - Full resource inventory
 - `cca_<cloud>_sum_<time>.json` - Aggregated summary
-- `cca_<cloud>_sizing.csv` - Spreadsheet-ready sizing
 - `cca_log_<time>.log` - Collection log for troubleshooting
 
 ## Features
@@ -107,6 +107,12 @@ python3 gcp_collect.py --all-projects
 # Custom output directory
 python3 aws_collect.py -o ./my_output/
 
+# Include full resource IDs/ARNs in output (default: redact for privacy)
+python3 aws_collect.py --include-resource-ids
+
+# Azure - include individual recovery points (slow for large environments)
+python3 azure_collect.py --include-recovery-points
+
 # Include change rate metrics (for sizing tool DCR overrides)
 python3 aws_collect.py --include-change-rate --change-rate-days 14
 
@@ -114,6 +120,10 @@ python3 aws_collect.py --include-change-rate --change-rate-days 14
 python3 cost_collect.py --aws --org-costs  # Break down by linked account
 python3 cost_collect.py --aws --start-date 2026-01-01
 ```
+
+### Cost Collection via Interactive Menu
+
+When using `python3 collect.py` in interactive mode, you'll be prompted for cost collection options after selecting a cloud platform. This enables collecting both inventory and backup/snapshot costs in a single workflow.
 
 ### Change Rate Collection
 
@@ -176,6 +186,25 @@ Generate an Excel report with protection status analysis:
 python scripts/generate_protection_report.py inventory.json report.xlsx
 ```
 
+## Assessment Report
+
+Generate a comprehensive multi-tab Excel report combining inventory and cost data:
+
+```bash
+# Single inventory file
+python scripts/generate_assessment_report.py cca_aws_inv_*.json assessment.xlsx
+
+# Multiple inventory files (multi-cloud)
+python scripts/generate_assessment_report.py cca_*_inv_*.json --cost cca_cost_*.json -o assessment.xlsx
+```
+
+The assessment report includes:
+- Executive summary with sizing overview
+- Regional distribution for cluster placement
+- Protection analysis and unprotected resources
+- TCO inputs for Cohesity sizing calculator
+- Multi-account breakdown
+
 ## Compatibility Check
 
 Verify your environment has the required dependencies:
@@ -207,12 +236,34 @@ cca-cloudshell/
 ├── cost_collect.py         # Cost analyzer
 ├── gcp_collect.py          # GCP collector
 ├── m365_collect.py         # M365 collector
+├── pyproject.toml          # Project config (mypy, pytest, ruff)
 ├── setup/                  # IAM/permission setup scripts
 ├── config-examples/        # YAML config file examples
 ├── lib/                    # Shared models and utilities
+│   ├── constants.py        # Centralized constants
+│   ├── models.py           # Resource data models
+│   ├── utils.py            # Common utilities
+│   └── ...
 ├── scripts/                # Report generators
+│   ├── generate_assessment_report.py
+│   ├── generate_protection_report.py
+│   ├── generate_cost_report.py
+│   └── merge_batch_outputs.py
 ├── docs/                   # Documentation
 └── tests/                  # Test suite
+```
+
+## Development
+
+```bash
+# Run tests
+pytest tests/
+
+# Type checking
+mypy aws_collect.py azure_collect.py gcp_collect.py
+
+# Linting
+ruff check .
 ```
 
 ## License

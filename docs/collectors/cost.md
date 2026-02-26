@@ -6,6 +6,19 @@ The cost collector (`cost_collect.py`) gathers backup and snapshot spending data
 > to gather resource data, and `cost_collect.py` to gather spending data. They have different
 > permission requirements and should be run independently.
 
+## Interactive Collection
+
+When using `python3 collect.py` in interactive mode, you'll be prompted to include cost collection after selecting a cloud platform:
+
+```
+Data protection cost collection analyzes AWS Backup, EBS snapshot,
+and other backup-related costs from AWS Cost Explorer.
+
+Also collect data protection costs? [y/N]:
+```
+
+This enables collecting both inventory and backup costs in a single workflow.
+
 ## Basic Usage
 
 ```bash
@@ -81,7 +94,6 @@ Records are categorized into:
 |------|-------------|
 | `cca_cost_inv_<time>.json` | Detailed cost records |
 | `cca_cost_sum_<time>.json` | Aggregated summaries |
-| `cca_cost_sizing.csv` | Spreadsheet-ready summary |
 
 ## Example Output
 
@@ -242,7 +254,14 @@ python3 cost_collect.py --aws --org-costs -o ./assessment/
 
 # 3. Generate reports
 python3 scripts/generate_protection_report.py ./assessment/cca_aws_inv_*.json ./assessment/protection_report.xlsx
-python3 scripts/generate_cost_report.py -i ./assessment/cca_cost_inv_*.json -s ./assessment/cca_cost_sum_*.json -o ./assessment/cost_report.xlsx
+
+# 4. Generate comprehensive assessment report (includes TCO inputs if cost data present)
+python3 scripts/generate_assessment_report.py ./assessment/cca_aws_inv_*.json \
+    --cost ./assessment/cca_cost_*.json -o ./assessment/assessment_report.xlsx
+
+# 5. Or generate a cost-specific report
+python3 scripts/generate_cost_report.py -i ./assessment/cca_cost_inv_*.json \
+    -s ./assessment/cca_cost_sum_*.json -o ./assessment/cost_report.xlsx
 ```
 
 **Note:** If running inventory collection via SSO to member accounts, you'll need separate

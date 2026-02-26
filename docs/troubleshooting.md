@@ -226,6 +226,41 @@ python3 m365_collect.py --skip-onedrive --skip-exchange --skip-teams
 
 ---
 
+## Cost Collection Issues
+
+### AWS: Empty Cost Data
+
+**Issue:** Cost collection returns no records
+
+**Solutions:**
+1. **Must run from the management account** - Cost Explorer API is only accessible from the payer account
+2. Enable Cost Explorer in AWS Console → Billing → Cost Explorer (may take 24 hours to activate)
+3. Verify permissions: `ce:GetCostAndUsage`
+
+```bash
+# Test Cost Explorer access
+aws ce get-cost-and-usage \
+    --time-period Start=2026-01-01,End=2026-01-02 \
+    --granularity DAILY \
+    --metrics UnblendedCost
+```
+
+### Azure: Cost Management Access Denied
+
+**Solutions:**
+1. Assign **Cost Management Reader** role at subscription level
+2. Check subscription ID is correct
+3. Verify Cost Management API is enabled
+
+### GCP: BigQuery Billing Table Not Found
+
+**Solutions:**
+1. Enable BigQuery billing export in Billing → Billing export
+2. Verify the billing table path format: `project.dataset.table`
+3. Ensure your identity has BigQuery Data Viewer role
+
+---
+
 ## General Issues
 
 ### Import Errors

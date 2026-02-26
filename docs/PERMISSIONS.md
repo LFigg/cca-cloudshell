@@ -7,6 +7,23 @@ This document details the minimum permissions required to run each cloud collect
 - [Azure Permissions](#azure-permissions)
 - [GCP Permissions](#gcp-permissions)
 - [Microsoft 365 Permissions](#microsoft-365-permissions)
+- [Change Rate Collection Permissions](#change-rate-collection-permissions-optional)
+- [Kubernetes PVC Collection Permissions](#kubernetes-pvc-collection-permissions-optional)
+- [Cost Collector Permissions](#cost-collector-permissions)
+
+## Security and Privacy
+
+By default, the CCA collectors **redact sensitive identifiers** (resource IDs, ARNs, subscription IDs) in output files for privacy. This reduces the sensitivity of output files when sharing with third parties.
+
+To include full resource identifiers in the output, use the `--include-resource-ids` flag:
+
+```bash
+python3 aws_collect.py --include-resource-ids
+python3 azure_collect.py --include-resource-ids
+python3 gcp_collect.py --include-resource-ids
+```
+
+All timestamps in output files use **UTC (ISO 8601 format)** for consistency across time zones.
 
 ---
 
@@ -98,7 +115,8 @@ If you need a least-privilege policy, use the following:
                 "backup:GetBackupPlan",
                 "backup:ListBackupSelections",
                 "backup:GetBackupSelection",
-                "backup:ListProtectedResources"
+                "backup:ListProtectedResources",
+                "backup:DescribeRegionSettings"
             ],
             "Resource": "*"
         }
@@ -214,6 +232,7 @@ This permission is only needed in the management account (or delegated admin).
 | | `backup:ListBackupSelections` | List backup selections |
 | | `backup:GetBackupSelection` | Get selection details |
 | | `backup:ListProtectedResources` | List protected resources |
+| | `backup:DescribeRegionSettings` | Get backup region settings |
 
 ---
 

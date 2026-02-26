@@ -866,9 +866,6 @@ class TestLargeScaleGCP:
         write_json(inventory_data, f"{LARGE_OUTPUT_DIR}/cca_inv_{file_ts}.json")
         write_json(summary_data, f"{LARGE_OUTPUT_DIR}/cca_sum_{file_ts}.json")
 
-        csv_data = [s.to_dict() for s in summaries]
-        write_csv(csv_data, f"{LARGE_OUTPUT_DIR}/sizing.csv")
-
         # Print statistics
         print("\n" + "=" * 80)
         print("COLLECTION RESULTS")

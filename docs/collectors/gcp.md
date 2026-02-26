@@ -16,6 +16,9 @@ python3 gcp_collect.py --all-projects
 
 # Custom output directory
 python3 gcp_collect.py --output ./my_output/
+
+# Include full resource IDs (default: redact for privacy)
+python3 gcp_collect.py --include-resource-ids
 ```
 
 ## Command Line Options
@@ -25,6 +28,12 @@ python3 gcp_collect.py --output ./my_output/
 | `--project PROJECT_ID` | Specific project to collect from |
 | `--all-projects` | Collect from all accessible projects |
 | `--output PATH` | Output directory |
+| `--regions REGIONS` | Filter to specific regions (comma-separated) |
+| `--include-resource-ids` | Include full resource IDs (default: redact) |
+| `--include-change-rate` | Collect change rate metrics from Cloud Monitoring |
+| `--change-rate-days N` | Days to sample for change rate (default: 7) |
+| `--parallel-resources N` | Parallel workers for resources (default: 4) |
+| `--skip-pvc` | Skip PVC collection from GKE clusters |
 | `--log-level LEVEL` | Logging level (default: INFO) |
 
 ## Authentication

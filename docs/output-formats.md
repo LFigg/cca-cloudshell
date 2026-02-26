@@ -1,18 +1,17 @@
 # Output Formats
 
-Each collector generates three output files:
+Each collector generates two output files:
 - **Inventory JSON** - Complete resource details
 - **Summary JSON** - Aggregated sizing data
-- **Sizing CSV** - Spreadsheet-ready format
 
 ## File Naming Convention
 
-| Cloud | Inventory | Summary | Sizing CSV |
-|-------|-----------|---------|------------|
-| AWS | `cca_aws_inv_<HHMMSS>.json` | `cca_aws_sum_<HHMMSS>.json` | `cca_aws_sizing.csv` |
-| Azure | `cca_azure_inv_<HHMMSS>.json` | `cca_azure_sum_<HHMMSS>.json` | `cca_azure_sizing.csv` |
-| GCP | `cca_gcp_inv_<HHMMSS>.json` | `cca_gcp_sum_<HHMMSS>.json` | `cca_gcp_sizing.csv` |
-| M365 | `cca_m365_inv_<HHMMSS>.json` | `cca_m365_sum_<HHMMSS>.json` | - |
+| Cloud | Inventory | Summary |
+|-------|-----------|----------|
+| AWS | `cca_aws_inv_<HHMMSS>.json` | `cca_aws_sum_<HHMMSS>.json` |
+| Azure | `cca_azure_inv_<HHMMSS>.json` | `cca_azure_sum_<HHMMSS>.json` |
+| GCP | `cca_gcp_inv_<HHMMSS>.json` | `cca_gcp_sum_<HHMMSS>.json` |
+| M365 | `cca_m365_inv_<HHMMSS>.json` | `cca_m365_sum_<HHMMSS>.json` |
 
 The `<HHMMSS>` timestamp ensures unique filenames for multiple runs.
 
@@ -37,7 +36,7 @@ The inventory file contains the complete resource data:
             "region": "us-east-1",
             "resource_type": "aws:ec2:instance",
             "service_family": "EC2",
-            "resource_id": "i-0123456789abcdef0",
+            "resource_id": "[REDACTED]",
             "name": "web-server-01",
             "tags": {
                 "Environment": "production",
@@ -49,13 +48,17 @@ The inventory file contains the complete resource data:
                 "instance_type": "t3.large",
                 "state": "running",
                 "platform": "linux",
-                "vpc_id": "vpc-12345",
-                "attached_volumes": ["vol-abc123", "vol-def456"]
+                "vpc_id": "[REDACTED]",
+                "attached_volumes": ["[REDACTED]", "[REDACTED]"]
             }
         }
     ]
 }
 ```
+
+> **Note on Privacy:** By default, resource IDs and ARNs are redacted in output for privacy. Use `--include-resource-ids` flag to include full identifiers when needed for detailed analysis.
+
+> **Timestamps:** All timestamps use UTC (ISO 8601 format with `Z` suffix) for consistency across time zones.
 
 ### Resource Object Fields
 
@@ -140,31 +143,6 @@ The summary file contains aggregated statistics:
 
 ---
 
-## Sizing CSV Format
-
-The CSV file is optimized for spreadsheet analysis:
-
-```csv
-provider,service_family,resource_type,resource_count,total_gb
-aws,EC2,aws:ec2:instance,50,0.0
-aws,EBS,aws:ec2:volume,80,8000.0
-aws,EBSSnapshot,aws:ec2:snapshot,120,7000.5
-aws,RDS,aws:rds:instance,15,2000.0
-aws,S3,aws:s3:bucket,40,0.0
-```
-
-### CSV Columns
-
-| Column | Description |
-|--------|-------------|
-| `provider` | Cloud provider |
-| `service_family` | Logical grouping for sizing |
-| `resource_type` | Full resource type identifier |
-| `resource_count` | Number of resources of this type |
-| `total_gb` | Total size in gigabytes |
-
----
-
 ## Protection Report (Excel)
 
 Generate an Excel protection report from the inventory:
@@ -190,6 +168,33 @@ python scripts/generate_protection_report.py cca_aws_inv_143052.json protection_
 | In Backup Plan | Yellow | Assigned to backup plan, no snapshots yet |
 | Unprotected | Red | No snapshots or backup coverage |
 | No Storage | Gray | Resource has no associated storage |
+
+---
+
+## Assessment Report (Excel)
+
+Generate a comprehensive multi-tab report for sizing and TCO analysis:
+
+```bash
+python scripts/generate_assessment_report.py cca_aws_inv_*.json assessment.xlsx
+
+# Include cost data
+python scripts/generate_assessment_report.py cca_*_inv_*.json --cost cca_cost_*.json -o assessment.xlsx
+```
+
+### Assessment Report Tabs
+
+| Tab | Description |
+|-----|-------------|
+| **Executive Summary** | Environment overview, sizing summary, protection status |
+| **Sizing Inputs** | Workload inventory by type for Cohesity sizing calculator |
+| **Regional Distribution** | Resources by region for cluster placement planning |
+| **Protection Analysis** | Coverage percentages and snapshot analysis |
+| **Unprotected Resources** | Prioritized list for protection planning |
+| **TCO Inputs** | Current backup costs and Cohesity TCO calculator inputs |
+| **M365 Summary** | Microsoft 365 workload summary (if M365 data included) |
+| **Account Detail** | Multi-account/subscription breakdown |
+| **Raw Data** | Full resource inventory for reference |
 
 ---
 
@@ -232,7 +237,4 @@ import json
 with open('cca_aws_sum_143052.json') as f:
     data = json.load(f)
 df = pd.DataFrame(data['summaries'])
-
-# Or load CSV directly
-df = pd.read_csv('cca_aws_sizing.csv')
 ```

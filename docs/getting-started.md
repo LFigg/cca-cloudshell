@@ -4,7 +4,7 @@ This guide covers installation and running your first collection.
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Access to cloud environment (AWS, Azure, GCP, or M365)
 - Appropriate permissions (see [Required Permissions](PERMISSIONS.md))
 
@@ -60,7 +60,21 @@ python3 collect.py --cloud m365
 The unified collector will:
 1. Auto-detect which cloud credentials are configured
 2. Verify your credentials and permissions
-3. Run the appropriate collector(s) automatically
+3. Prompt for optional cost collection (backup spending analysis)
+4. Run the appropriate collector(s) automatically
+
+### Interactive Cost Collection
+
+When using the interactive menu, you'll be prompted to include data protection cost collection after selecting a cloud platform:
+
+```
+Data protection cost collection analyzes AWS Backup, EBS snapshot,
+and other backup-related costs from AWS Cost Explorer.
+
+Also collect data protection costs? [y/N]:
+```
+
+This enables collecting both inventory and backup costs in a single workflow.
 
 ## Quick Start by Cloud
 
@@ -156,7 +170,6 @@ Each collector generates:
 |------|-------------|
 | `cca_<cloud>_inv_<time>.json` | Full resource inventory |
 | `cca_<cloud>_sum_<time>.json` | Aggregated summary |
-| `cca_<cloud>_sizing.csv` | Spreadsheet-ready sizing data |
 | `cca_log_<time>.log` | Collection log for troubleshooting |
 
 ## Progress Display
@@ -176,6 +189,36 @@ When output is piped (non-TTY), plain text progress messages are shown instead.
 - [Azure Collector](collectors/azure.md) - Subscriptions, resource types
 - [GCP Collector](collectors/gcp.md) - Projects, regions, resources
 - [M365 Collector](collectors/m365.md) - App registration, permissions
+- [Cost Collector](collectors/cost.md) - Backup/snapshot spending
 - [Output Formats](output-formats.md) - JSON schema, CSV fields
 - [Required Permissions](PERMISSIONS.md) - IAM policies for each cloud
 - [Setup Scripts](../setup/README.md) - Automated permission configuration
+
+## Report Generation
+
+After collection, generate reports for analysis:
+
+```bash
+# Protection status report
+python scripts/generate_protection_report.py cca_aws_inv_*.json protection_report.xlsx
+
+# Comprehensive assessment report (multi-tab Excel)
+python scripts/generate_assessment_report.py cca_*_inv_*.json assessment.xlsx
+
+# Include cost data in assessment
+python scripts/generate_assessment_report.py cca_aws_inv_*.json --cost cca_cost_*.json -o assessment.xlsx
+```
+
+## Privacy and Security
+
+By default, resource IDs are redacted in output files for privacy. Use these flags to control what's included:
+
+```bash
+# Include full resource IDs/ARNs in output
+python3 aws_collect.py --include-resource-ids
+python3 azure_collect.py --include-resource-ids
+python3 gcp_collect.py --include-resource-ids
+
+# Azure - include individual recovery points (verbose, can be slow)
+python3 azure_collect.py --include-recovery-points
+```

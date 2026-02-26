@@ -13,6 +13,12 @@ python3 azure_collect.py --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 # Custom output directory
 python3 azure_collect.py -o ./my_output/
+
+# Include full resource IDs (default: redact for privacy)
+python3 azure_collect.py --include-resource-ids
+
+# Include individual recovery points (can be slow for large environments)
+python3 azure_collect.py --include-recovery-points
 ```
 
 ## Command Line Options
@@ -21,6 +27,13 @@ python3 azure_collect.py -o ./my_output/
 |--------|-------------|
 | `--subscription-id ID` | Specific subscription to collect from |
 | `-o, --output PATH` | Output directory |
+| `--regions REGIONS` | Filter to specific regions (comma-separated) |
+| `--include-resource-ids` | Include full resource IDs (default: redact) |
+| `--include-recovery-points` | Include individual recovery points (slow) |
+| `--include-change-rate` | Collect change rate metrics from Azure Monitor |
+| `--change-rate-days N` | Days to sample for change rate (default: 7) |
+| `--parallel-resources N` | Parallel workers for resources (default: 4) |
+| `--skip-pvc` | Skip PVC collection from AKS clusters |
 | `--log-level LEVEL` | Logging level (default: INFO) |
 
 ## Authentication

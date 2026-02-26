@@ -3574,9 +3574,6 @@ Large Environment Examples:
                 change_rate_output = redact_sensitive_data(change_rate_output)
             write_json(change_rate_output, f"{batch_output}/cca_aws_change_rates_{file_ts}.json")
 
-        csv_data = [s.to_dict() for s in batch_summaries]
-        write_csv(csv_data, f"{batch_output}/cca_aws_sizing.csv")
-
         # Track for final summary
         all_collected_accounts.extend(batch_collected)
         all_summaries.extend(batch_summaries)
