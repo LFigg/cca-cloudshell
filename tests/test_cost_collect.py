@@ -19,10 +19,8 @@ import pytest
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from lib.constants import AWS_BACKUP_FILTERS, AZURE_BACKUP_FILTERS, GCP_BACKUP_FILTERS
 from cost_collect import (
-    AWS_BACKUP_FILTERS,
-    AZURE_BACKUP_FILTERS,
-    GCP_BACKUP_FILTERS,
     CostRecord,
     CostSummary,
     aggregate_costs,

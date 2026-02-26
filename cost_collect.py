@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
+from lib.constants import AWS_BACKUP_FILTERS, AZURE_BACKUP_FILTERS, GCP_BACKUP_FILTERS
 from lib.utils import generate_run_id, get_timestamp, setup_logging, validate_bigquery_table, write_json
 
 logger = logging.getLogger(__name__)
@@ -108,47 +109,6 @@ def get_last_full_month() -> tuple:
 # =============================================================================
 # AWS Cost Explorer
 # =============================================================================
-
-# Backup and snapshot related usage types
-# Reference: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ce-default-reports.html
-AWS_BACKUP_FILTERS = {
-    'services': [
-        'AWS Backup',
-        'EC2 - Other',  # Contains EBS snapshot costs
-        'Amazon Elastic Block Store',
-        'Amazon RDS',
-        'Amazon S3',  # S3 backup storage
-        'Amazon EFS',  # EFS backup
-        'Amazon FSx',  # FSx backup
-        'Amazon DynamoDB',  # DynamoDB backup
-    ],
-    'usage_types': [
-        # EBS Snapshots
-        'SnapshotUsage',
-        'TimedStorage-Snapshot',
-        # AWS Backup vault storage (warm)
-        'WarmStorage',
-        'BackupStorage',
-        'Storage-ByteHrs',
-        # AWS Backup vault storage (cold)
-        'ColdStorage',
-        # AWS Backup general
-        'Backup',
-        'ChargedBackupUsage',
-        'BackupUsage',
-        'VaultStorage',
-        # RDS automated backups
-        'BackupStorage',
-        'ChargedBackup',
-        # EFS backup via AWS Backup
-        'EFS-Backup',
-        'EFS-ByteHrs-Backup',
-        # FSx backup via AWS Backup
-        'FSx-Backup',
-        'FSxBackup',
-        # Catches region-prefixed usage types like "USE1-BackupStorage"
-    ]
-}
 
 
 def collect_aws_costs(
@@ -296,21 +256,6 @@ def categorize_aws_usage(service: str, usage_type: str) -> str:
 # =============================================================================
 # Azure Cost Management
 # =============================================================================
-
-AZURE_BACKUP_FILTERS = {
-    'service_names': [
-        'Azure Backup',
-        'Storage',
-        'Azure Site Recovery',
-        'Azure NetApp Files',  # NetApp Files backup/snapshot costs
-    ],
-    'meter_categories': [
-        'Backup',
-        'Storage',
-        'Site Recovery',
-        'Azure NetApp Files',  # NetApp snapshot/replication costs
-    ]
-}
 
 
 def collect_azure_costs(
@@ -486,22 +431,6 @@ def categorize_azure_cost(service: str, meter_category: str) -> str:
 # =============================================================================
 # GCP BigQuery Billing
 # =============================================================================
-
-GCP_BACKUP_FILTERS = {
-    'services': [
-        'Compute Engine',
-        'Cloud Storage',
-        'Cloud SQL',
-        'Backup and DR Service',
-    ],
-    'sku_keywords': [
-        'snapshot',
-        'backup',
-        'nearline',
-        'coldline',
-        'archive',
-    ]
-}
 
 
 def collect_gcp_costs(

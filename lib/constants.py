@@ -243,6 +243,85 @@ SERVICE_ENTRA_ID = "EntraID"
 
 
 # =============================================================================
+# Cost Collection Filters (for cost_collect.py)
+# =============================================================================
+
+# AWS Backup and snapshot related usage types
+# Reference: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ce-default-reports.html
+AWS_BACKUP_FILTERS = {
+    'services': [
+        'AWS Backup',
+        'EC2 - Other',  # Contains EBS snapshot costs
+        'Amazon Elastic Block Store',
+        'Amazon RDS',
+        'Amazon S3',  # S3 backup storage
+        'Amazon EFS',  # EFS backup
+        'Amazon FSx',  # FSx backup
+        'Amazon DynamoDB',  # DynamoDB backup
+    ],
+    'usage_types': [
+        # EBS Snapshots
+        'SnapshotUsage',
+        'TimedStorage-Snapshot',
+        # AWS Backup vault storage (warm)
+        'WarmStorage',
+        'BackupStorage',
+        'Storage-ByteHrs',
+        # AWS Backup vault storage (cold)
+        'ColdStorage',
+        # AWS Backup general
+        'Backup',
+        'ChargedBackupUsage',
+        'BackupUsage',
+        'VaultStorage',
+        # RDS automated backups
+        'BackupStorage',
+        'ChargedBackup',
+        # EFS backup via AWS Backup
+        'EFS-Backup',
+        'EFS-ByteHrs-Backup',
+        # FSx backup via AWS Backup
+        'FSx-Backup',
+        'FSxBackup',
+        # Catches region-prefixed usage types like "USE1-BackupStorage"
+    ]
+}
+
+# Azure backup-related service and meter filters
+AZURE_BACKUP_FILTERS = {
+    'service_names': [
+        'Azure Backup',
+        'Storage',
+        'Azure Site Recovery',
+        'Azure NetApp Files',  # NetApp Files backup/snapshot costs
+    ],
+    'meter_categories': [
+        'Backup',
+        'Storage',
+        'Site Recovery',
+        'Azure NetApp Files',  # NetApp snapshot/replication costs
+    ]
+}
+
+# GCP backup-related service and SKU filters
+GCP_BACKUP_FILTERS = {
+    'services': [
+        'Compute Engine',
+        'Cloud Storage',
+        'Cloud SQL',
+        'Backup and DR Service',
+    ],
+    'sku_keywords': [
+        'snapshot',
+        'backup',
+        'nearline',
+        'coldline',
+        'archive',
+    ]
+}
+
+
+# =============================================================================
 # Helper Functions
 # =============================================================================
 
