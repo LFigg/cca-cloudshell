@@ -736,5 +736,84 @@ class TestEndToEndFlow:
         assert summaries[0].total_cost == 220.00
 
 
+# =============================================================================
+# Security Tests - BigQuery Table Validation (CC-001)
+# =============================================================================
+
+class TestValidateBigQueryTable:
+    """Tests for BigQuery table name validation to prevent SQL injection."""
+
+    def test_valid_table_format(self):
+        """Test valid BigQuery table references are accepted."""
+        from lib.utils import validate_bigquery_table
+
+        # Standard format
+        result = validate_bigquery_table('my-project.billing_dataset.gcp_billing_export')
+        assert result == 'my-project.billing_dataset.gcp_billing_export'
+
+        # With underscores
+        result = validate_bigquery_table('my_project.my_dataset.my_table')
+        assert result == 'my_project.my_dataset.my_table'
+
+        # With hyphens
+        result = validate_bigquery_table('project-123.dataset-name.table-name')
+        assert result == 'project-123.dataset-name.table-name'
+
+    def test_valid_wildcard_table(self):
+        """Test wildcard table references are accepted."""
+        from lib.utils import validate_bigquery_table
+
+        result = validate_bigquery_table('my-project.billing.gcp_billing_export_*')
+        assert result == 'my-project.billing.gcp_billing_export_*'
+
+    def test_empty_table_rejected(self):
+        """Test empty table name raises ValueError."""
+        from lib.utils import validate_bigquery_table
+
+        with pytest.raises(ValueError, match="cannot be empty"):
+            validate_bigquery_table('')
+
+        with pytest.raises(ValueError, match="cannot be empty"):
+            validate_bigquery_table(None)
+
+    def test_sql_injection_attempts_rejected(self):
+        """Test SQL injection attempts are rejected."""
+        from lib.utils import validate_bigquery_table
+
+        # SQL injection with comment
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("project.dataset.table; DROP TABLE users; --")
+
+        # SQL injection with union
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("project.dataset.table UNION SELECT * FROM passwords")
+
+        # Backtick escape attempt
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("project`.`dataset`.`table")
+
+    def test_invalid_formats_rejected(self):
+        """Test invalid table formats are rejected."""
+        from lib.utils import validate_bigquery_table
+
+        # Missing components
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("just_a_table")
+
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("project.table")
+
+        # Extra components
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("project.dataset.schema.table")
+
+        # Special characters
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("project.dataset.table$special")
+
+        with pytest.raises(ValueError, match="Invalid BigQuery table format"):
+            validate_bigquery_table("project.dataset.table@version")
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

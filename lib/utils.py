@@ -18,6 +18,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -472,6 +473,47 @@ def check_and_raise_auth_error(exc: Exception, context: str, provider: str) -> N
             provider=provider,
             original_error=exc
         ) from exc
+
+
+# BigQuery table name pattern: project.dataset.table or project.dataset.table_*
+# Only allows alphanumeric chars, underscores, and hyphens in each component
+_BIGQUERY_TABLE_PATTERN = re.compile(r'^[\w-]+\.[\w-]+\.[\w-]+\*?$')
+
+
+def validate_bigquery_table(table: str) -> str:
+    """
+    Validate BigQuery table reference format to prevent SQL injection.
+
+    BigQuery doesn't support parameterized table names, so we must validate
+    the table reference format strictly before using it in queries.
+
+    Args:
+        table: BigQuery table reference (project.dataset.table)
+
+    Returns:
+        The validated table string (unchanged if valid)
+
+    Raises:
+        ValueError: If the table format is invalid
+
+    Example:
+        >>> validate_bigquery_table('my-project.billing.gcp_billing_export')
+        'my-project.billing.gcp_billing_export'
+        >>> validate_bigquery_table('my-project.billing.gcp_billing_export_*')
+        'my-project.billing.gcp_billing_export_*'
+        >>> validate_bigquery_table('DROP TABLE; --')
+        ValueError: Invalid BigQuery table format...
+    """
+    if not table:
+        raise ValueError("BigQuery table name cannot be empty")
+
+    if not _BIGQUERY_TABLE_PATTERN.match(table):
+        raise ValueError(
+            f"Invalid BigQuery table format: {table}. "
+            "Expected format: project.dataset.table (alphanumeric, underscore, hyphen only)"
+        )
+
+    return table
 
 
 def parallel_collect(

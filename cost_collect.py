@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
-from lib.utils import generate_run_id, get_timestamp, setup_logging, write_json
+from lib.utils import generate_run_id, get_timestamp, setup_logging, validate_bigquery_table, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -529,14 +529,9 @@ def collect_gcp_costs(
 
         client = bigquery.Client(project=project_id)
 
-        # Validate billing_table format to prevent injection
-        # Expected format: project.dataset.table or project.dataset.table_*
-        import re
-        if not re.match(r'^[\w-]+\.[\w-]+\.[\w-]+\*?$', billing_table):
-            raise ValueError(
-                f"Invalid billing_table format: {billing_table}. "
-                "Expected format: project.dataset.table"
-            )
+        # Validate billing_table format to prevent SQL injection
+        # BigQuery doesn't support parameterized table names
+        validate_bigquery_table(billing_table)
 
         # Build service filter using parameterized query
         # Note: BigQuery doesn't support parameterized table names, but we validated above
