@@ -790,3 +790,105 @@ def finalize_change_rate_output(
             ]
         }
     }
+
+
+def load_change_rate_files(paths: List[str]) -> Dict[str, Any]:
+    """
+    Load and merge change rate data from JSON files.
+
+    This is the standard way to load previously collected change rate data
+    for use in assessment reports and sizer input generation.
+
+    Args:
+        paths: List of paths to change rate JSON files (cca_*_change_rates_*.json)
+
+    Returns:
+        Dict with structure:
+        {
+            'change_rates': {
+                'aws:rds-mysql': {
+                    'provider': 'aws',
+                    'service_family': 'rds-mysql',
+                    'resource_count': 10,
+                    'total_size_gb': 500,
+                    'data_change': {'daily_change_gb': 5.0, 'daily_change_percent': 1.0, ...},
+                    'transaction_logs': {'daily_generation_gb': 25, ...}  # optional
+                },
+                ...
+            },
+            'has_actual_data': True/False
+        }
+    """
+    import json
+
+    merged: Dict[str, Any] = {
+        'change_rates': {},
+        'has_actual_data': False,
+    }
+
+    for path in paths:
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load change rates from {path}: {e}")
+            continue
+
+        # Handle both formats: direct change_rates dict or wrapped
+        change_rates = data.get('change_rates', data)
+        if not change_rates or not isinstance(change_rates, dict):
+            continue
+
+        merged['has_actual_data'] = True
+
+        for key, summary in change_rates.items():
+            # Normalize key to provider:service format
+            provider = summary.get('provider', 'unknown')
+            service = summary.get('service_family', key.split(':')[-1] if ':' in key else key)
+            norm_key = f"{provider}:{service}"
+
+            if norm_key not in merged['change_rates']:
+                merged['change_rates'][norm_key] = summary
+            else:
+                # Merge: accumulate counts and sizes
+                existing = merged['change_rates'][norm_key]
+                existing['resource_count'] = existing.get('resource_count', 0) + summary.get('resource_count', 0)
+                existing['total_size_gb'] = existing.get('total_size_gb', 0) + summary.get('total_size_gb', 0)
+
+                # Merge data_change
+                if 'data_change' in summary:
+                    if 'data_change' not in existing:
+                        existing['data_change'] = summary['data_change'].copy()
+                    else:
+                        existing['data_change']['daily_change_gb'] = (
+                            existing['data_change'].get('daily_change_gb', 0) +
+                            summary['data_change'].get('daily_change_gb', 0)
+                        )
+                        existing['data_change']['data_points'] = (
+                            existing['data_change'].get('data_points', 0) +
+                            summary['data_change'].get('data_points', 0)
+                        )
+
+                # Merge transaction_logs
+                if 'transaction_logs' in summary and summary['transaction_logs']:
+                    if 'transaction_logs' not in existing or not existing['transaction_logs']:
+                        existing['transaction_logs'] = summary['transaction_logs'].copy()
+                    else:
+                        existing['transaction_logs']['daily_generation_gb'] = (
+                            existing['transaction_logs'].get('daily_generation_gb', 0) +
+                            summary['transaction_logs'].get('daily_generation_gb', 0)
+                        )
+
+        logger.debug(f"Loaded change rates from {path}: {len(change_rates)} service families")
+
+    # Recalculate percentages after merging
+    for key, summary in merged['change_rates'].items():
+        if 'data_change' in summary and summary.get('total_size_gb', 0) > 0:
+            daily_gb = summary['data_change'].get('daily_change_gb', 0)
+            total_gb = summary['total_size_gb']
+            summary['data_change']['daily_change_percent'] = (daily_gb / total_gb) * 100
+
+    if merged['has_actual_data']:
+        logger.info(f"Loaded change rates for {len(merged['change_rates'])} service families from {len(paths)} file(s)")
+
+    return merged

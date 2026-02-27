@@ -26,6 +26,13 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
+from .constants import (
+    AWS_AUTH_ERROR_CODES,
+    AZURE_AUTH_STATUS_CODES,
+    GCP_AUTH_EXCEPTION_NAMES,
+    M365_AUTH_ERROR_CODES,
+)
+
 # Type checking imports (not imported at runtime)
 if TYPE_CHECKING:
     from rich.console import Console
@@ -385,24 +392,6 @@ class AuthError(Exception):
         self.provider = provider
         self.original_error = original_error
         super().__init__(message)
-
-
-# AWS error codes that indicate auth/permission issues
-AWS_AUTH_ERROR_CODES = {
-    'AccessDenied', 'AccessDeniedException', 'UnauthorizedAccess',
-    'UnauthorizedOperation', 'InvalidClientTokenId', 'ExpiredToken',
-    'ExpiredTokenException', 'AuthFailure', 'InvalidIdentityToken',
-    'CredentialsNotFound', 'SignatureDoesNotMatch',
-}
-
-# Azure error status codes that indicate auth/permission issues
-AZURE_AUTH_STATUS_CODES = {401, 403}
-
-# GCP exception types that indicate auth/permission issues
-GCP_AUTH_EXCEPTION_NAMES = {'PermissionDenied', 'Unauthenticated', 'Forbidden'}
-
-# M365/Graph error codes that indicate auth/permission issues
-M365_AUTH_ERROR_CODES = {'Authorization_RequestDenied', 'InvalidAuthenticationToken'}
 
 
 def is_auth_error(exc: Exception) -> bool:

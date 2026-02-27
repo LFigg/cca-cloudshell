@@ -33,6 +33,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 # Add lib directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from lib.change_rate import load_change_rate_files
+from lib.constants import WORKLOAD_CATEGORIES
 
 
 # =============================================================================
@@ -65,74 +67,6 @@ PROVIDER_COLORS = {
     'Azure': PatternFill(start_color="0078D4", end_color="0078D4", fill_type="solid"),
     'GCP': PatternFill(start_color="4285F4", end_color="4285F4", fill_type="solid"),
     'M365': PatternFill(start_color="D83B01", end_color="D83B01", fill_type="solid"),
-}
-
-# Workload categories for sizing
-WORKLOAD_CATEGORIES = {
-    'compute': {
-        'types': ['aws:ec2:instance', 'azure:vm', 'gcp:compute:instance'],
-        'label': 'Virtual Machines',
-    },
-    'block_storage': {
-        'types': ['aws:ec2:volume', 'azure:disk', 'gcp:compute:disk'],
-        'label': 'Block Storage',
-    },
-    'database': {
-        'types': [
-            # AWS
-            'aws:rds:instance', 'aws:rds:cluster', 'aws:dynamodb:table',
-            # Azure
-            'azure:sql:database', 'azure:sql:managedinstance',
-            'azure:postgresql:flexibleserver', 'azure:mysql:flexibleserver',
-            'azure:mariadb:server', 'azure:cosmosdb:account',
-            'azure:synapse:workspace', 'azure:synapse:sqlpool',
-            # GCP
-            'gcp:sql:instance', 'gcp:spanner:instance', 'gcp:alloydb:cluster',
-            'gcp:alloydb:instance', 'gcp:bigtable:instance',
-        ],
-        'label': 'Databases',
-    },
-    'analytics': {
-        'types': ['gcp:bigquery:dataset'],
-        'label': 'Analytics/Data Warehouse',
-    },
-    'file_storage': {
-        'types': [
-            'aws:efs:filesystem', 'aws:fsx:filesystem',
-            'azure:storage:fileshare', 'azure:netapp:volume',
-            'gcp:filestore:instance',
-        ],
-        'label': 'File Storage',
-    },
-    'object_storage': {
-        'types': ['aws:s3:bucket', 'azure:storage:blob', 'gcp:storage:bucket'],
-        'label': 'Object Storage',
-    },
-    'cache': {
-        'types': ['aws:elasticache:cluster', 'azure:redis:cache', 'gcp:redis:instance'],
-        'label': 'Cache/In-Memory',
-    },
-    'kubernetes': {
-        'types': ['aws:eks:cluster', 'azure:aks:cluster', 'gcp:container:cluster',
-                  'k8s:pvc'],
-        'label': 'Kubernetes/Containers',
-    },
-    'm365_mail': {
-        'types': ['m365:mailbox', 'm365:exchange:mailbox'],
-        'label': 'M365 Mailboxes',
-    },
-    'm365_onedrive': {
-        'types': ['m365:onedrive', 'm365:onedrive:user'],
-        'label': 'M365 OneDrive',
-    },
-    'm365_sharepoint': {
-        'types': ['m365:sharepoint:site'],
-        'label': 'M365 SharePoint',
-    },
-    'm365_teams': {
-        'types': ['m365:teams:team'],
-        'label': 'M365 Teams',
-    },
 }
 
 
@@ -289,71 +223,6 @@ def load_cost_files(paths: List[str]) -> Dict[str, Any]:
 
         if 'records' in data:
             merged['records'].extend(data['records'])
-
-    return merged
-
-
-def load_change_rate_files(paths: List[str]) -> Dict[str, Any]:
-    """Load and merge change rate data files.
-
-    Returns dict with structure:
-    {
-        'change_rates': {
-            'aws:rds-mysql': {
-                'provider': 'aws',
-                'service_family': 'rds-mysql',
-                'resource_count': 10,
-                'total_size_gb': 500,
-                'data_change': {...},
-                'transaction_logs': {'daily_generation_gb': 25, ...}
-            },
-            ...
-        },
-        'has_actual_data': True/False
-    }
-    """
-    merged: Dict[str, Any] = {
-        'change_rates': {},
-        'has_actual_data': False,
-    }
-
-    for path in paths:
-        data = load_json_file(path)
-        if not data:
-            continue
-
-        change_rates = data.get('change_rates', {})
-        if change_rates:
-            merged['has_actual_data'] = True
-
-            for key, summary in change_rates.items():
-                if key not in merged['change_rates']:
-                    merged['change_rates'][key] = summary
-                else:
-                    # Merge: add counts and sizes
-                    existing = merged['change_rates'][key]
-                    existing['resource_count'] = existing.get('resource_count', 0) + summary.get('resource_count', 0)
-                    existing['total_size_gb'] = existing.get('total_size_gb', 0) + summary.get('total_size_gb', 0)
-
-                    # Merge data_change
-                    if 'data_change' in summary:
-                        if 'data_change' not in existing:
-                            existing['data_change'] = summary['data_change']
-                        else:
-                            existing['data_change']['daily_change_gb'] = (
-                                existing['data_change'].get('daily_change_gb', 0) +
-                                summary['data_change'].get('daily_change_gb', 0)
-                            )
-
-                    # Merge transaction_logs
-                    if 'transaction_logs' in summary and summary['transaction_logs']:
-                        if 'transaction_logs' not in existing or not existing['transaction_logs']:
-                            existing['transaction_logs'] = summary['transaction_logs']
-                        else:
-                            existing['transaction_logs']['daily_generation_gb'] = (
-                                existing['transaction_logs'].get('daily_generation_gb', 0) +
-                                summary['transaction_logs'].get('daily_generation_gb', 0)
-                            )
 
     return merged
 
