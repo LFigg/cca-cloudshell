@@ -142,10 +142,13 @@ For least-privilege, you need:
 ```bash
 pip install google-cloud-compute \
     google-cloud-storage \
-    google-cloud-sql \
+    google-api-python-client \
     google-cloud-container \
     google-cloud-functions \
     google-cloud-filestore \
     google-cloud-redis \
     google-cloud-backupdr
 ```
+
+> **Note:** Cloud SQL collection uses the Google Discovery API (`google-api-python-client`) instead of
+> a dedicated SDK, as the Cloud SQL Admin SDK is not available on PyPI.

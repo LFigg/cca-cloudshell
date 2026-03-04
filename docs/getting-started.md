@@ -60,8 +60,8 @@ python3 collect.py --cloud m365
 The unified collector will:
 1. Auto-detect which cloud credentials are configured
 2. Verify your credentials and permissions
-3. Prompt for optional cost collection (backup spending analysis)
-4. Run the appropriate collector(s) automatically
+3. Run the appropriate collector(s) with sensible defaults (cost and change rate collection enabled)
+4. Prompt only for optional configuration
 
 ### Interactive Cost Collection
 
@@ -71,10 +71,10 @@ When using the interactive menu, you'll be prompted to include data protection c
 Data protection cost collection analyzes AWS Backup, EBS snapshot,
 and other backup-related costs from AWS Cost Explorer.
 
-Also collect data protection costs? [y/N]:
+Also collect data protection costs? [Y/n]:
 ```
 
-This enables collecting both inventory and backup costs in a single workflow.
+Cost collection is enabled by default - just press Enter to confirm, or type `n` to skip.
 
 ## Quick Start by Cloud
 

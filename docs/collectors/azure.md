@@ -60,13 +60,13 @@ The collector uses `DefaultAzureCredential` which tries multiple authentication 
 
 | Resource Type | Service Family | Description |
 |---------------|----------------|-------------|
-| `azure:compute:vm` | Compute | Virtual machines |
-| `azure:compute:disk` | ManagedDisk | Managed disks |
-| `azure:compute:snapshot` | DiskSnapshot | Disk snapshots |
-| `azure:storage:account` | Storage | Storage accounts |
+| `azure:vm` | AzureVM | Virtual machines |
+| `azure:disk` | AzureVM | Managed disks |
+| `azure:snapshot` | AzureVM | Disk snapshots |
+| `azure:storage:blob` | AzureStorage | Storage accounts |
 | `azure:storage:fileshare` | AzureFiles | File shares |
 | `azure:sql:database` | AzureSQL | SQL databases |
-| `azure:sql:managed-instance` | AzureSQL | SQL Managed Instances |
+| `azure:sql:managedinstance` | AzureSQL | SQL Managed Instances |
 | `azure:cosmosdb:account` | CosmosDB | Cosmos DB accounts |
 | `azure:postgresql:flexibleserver` | PostgreSQL | PostgreSQL Flexible Servers |
 | `azure:mysql:flexibleserver` | MySQL | MySQL Flexible Servers |
@@ -74,12 +74,12 @@ The collector uses `DefaultAzureCredential` which tries multiple authentication 
 | `azure:synapse:workspace` | Synapse | Synapse Analytics workspaces |
 | `azure:synapse:sqlpool` | Synapse | Dedicated SQL pools |
 | `azure:aks:cluster` | AKS | Kubernetes clusters |
-| `azure:web:functionapp` | Functions | Function apps |
-| `azure:cache:redis` | Redis | Redis cache instances |
-| `azure:recoveryservices:vault` | Backup | Recovery Services vaults |
-| `azure:recoveryservices:policy` | Backup | Backup policies |
-| `azure:recoveryservices:protecteditem` | Backup | Protected items |
-| `azure:recoveryservices:recoverypoint` | Backup | Recovery points |
+| `azure:function:app` | AzureFunctions | Function apps |
+| `azure:redis:cache` | Redis | Redis cache instances |
+| `azure:recoveryservices:vault` | AzureBackup | Recovery Services vaults |
+| `azure:backup:policy` | AzureBackup | Backup policies |
+| `azure:backup:protecteditem` | AzureBackup | Protected items |
+| `azure:backup:recoverypoint` | AzureBackup | Recovery points |
 
 ## Multi-Subscription
 
@@ -87,6 +87,8 @@ The collector automatically iterates all subscriptions your identity has access 
 
 ```bash
 python3 azure_collect.py --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+# Or using the short form:
+python3 azure_collect.py --subscription xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
 ## Example Output
@@ -97,21 +99,21 @@ python3 azure_collect.py --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
     "run_id": "20260211-143052-abc123",
     "timestamp": "2026-02-11T14:30:52.123456Z",
     "provider": "azure",
-    "subscription_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "subscriptions": ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"],
     "total_resources": 180,
     "total_capacity_gb": 12500.0,
     "summaries": [
         {
             "provider": "azure",
-            "service_family": "Compute",
-            "resource_type": "azure:compute:vm",
+            "service_family": "AzureVM",
+            "resource_type": "azure:vm",
             "resource_count": 25,
             "total_gb": 0
         },
         {
             "provider": "azure",
-            "service_family": "ManagedDisk",
-            "resource_type": "azure:compute:disk",
+            "service_family": "AzureVM",
+            "resource_type": "azure:disk",
             "resource_count": 40,
             "total_gb": 8000
         }

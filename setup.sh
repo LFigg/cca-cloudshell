@@ -58,7 +58,7 @@ case $choice in
     3)
         echo "Installing GCP dependencies..."
         pip3 install --quiet google-cloud-compute google-cloud-storage \
-            google-cloud-sql google-cloud-container google-cloud-functions \
+            google-api-python-client google-cloud-container google-cloud-functions \
             google-cloud-resource-manager rich tenacity
         ;;
     4)
@@ -80,23 +80,55 @@ echo "========================================"
 echo "Setup complete!"
 echo "========================================"
 echo ""
-echo "Run the collectors:"
-echo "  AWS:   python3 aws_collect.py --help"
-echo "  Azure: python3 azure_collect.py --help"
-echo "  GCP:   python3 gcp_collect.py --help"
-echo "  M365:  python3 m365_collect.py --help"
+echo "Start collection:"
+echo "  python3 collect.py              # Auto-detect cloud and collect"
+echo "  python3 collect.py --setup      # Interactive setup wizard"
+echo ""
+echo "Direct collector access (advanced):"
+echo "  python3 collect.py --cloud aws"
+echo "  python3 collect.py --cloud azure"
+echo "  python3 collect.py --cloud gcp"
+echo "  python3 collect.py --cloud m365"
 echo ""
 
-# Quick test
+# Environment-specific guidance and offer to run
 if [ "$SHELL_TYPE" = "aws" ]; then
-    echo "AWS CloudShell detected - you can run aws_collect.py immediately"
-    echo "Your AWS credentials are already configured."
+    echo "AWS CloudShell detected - credentials are pre-configured."
+    echo ""
+    read -p "Run collection now? [Y/n]: " run_now
+    run_now=${run_now:-Y}
+    if [[ "$run_now" =~ ^[Yy]$ ]]; then
+        echo ""
+        exec python3 collect.py --cloud aws
+    fi
 elif [ "$SHELL_TYPE" = "azure" ]; then
-    echo "Azure Cloud Shell detected - you can run azure_collect.py immediately"
-    echo "Your Azure credentials are already configured via DefaultAzureCredential."
+    echo "Azure Cloud Shell detected - credentials are pre-configured."
+    echo ""
+    read -p "Run collection now? [Y/n]: " run_now
+    run_now=${run_now:-Y}
+    if [[ "$run_now" =~ ^[Yy]$ ]]; then
+        echo ""
+        exec python3 collect.py --cloud azure
+    fi
 elif [ "$SHELL_TYPE" = "gcp" ]; then
-    echo "Google Cloud Shell detected - you can run gcp_collect.py immediately"
-    echo "Your GCP credentials are already configured via Application Default Credentials."
+    echo "Google Cloud Shell detected - credentials are pre-configured."
+    echo ""
+    read -p "Run collection now? [Y/n]: " run_now
+    run_now=${run_now:-Y}
+    if [[ "$run_now" =~ ^[Yy]$ ]]; then
+        echo ""
+        exec python3 collect.py --cloud gcp
+    fi
+else
+    echo "Local environment detected."
+    echo "Configure credentials for your target cloud before running."
+    echo ""
+    read -p "Run interactive setup wizard? [Y/n]: " run_wizard
+    run_wizard=${run_wizard:-Y}
+    if [[ "$run_wizard" =~ ^[Yy]$ ]]; then
+        echo ""
+        exec python3 collect.py --setup
+    fi
 fi
 
 echo ""

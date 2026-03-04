@@ -46,7 +46,7 @@ pip3 install azure-identity azure-mgmt-compute azure-mgmt-storage \
     azure-mgmt-recoveryservicesbackup rich tenacity
 
 # GCP only
-pip3 install google-cloud-compute google-cloud-storage google-cloud-sql \
+pip3 install google-cloud-compute google-cloud-storage google-api-python-client \
     google-cloud-container google-cloud-functions google-cloud-resource-manager \
     rich tenacity
 

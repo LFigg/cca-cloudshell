@@ -27,9 +27,9 @@ azure-storage-blob>=12.0.0
 msgraph-sdk>=1.0.0
 
 # Google Cloud Platform
+# Core GCP packages (available on PyPI)
 google-cloud-compute>=1.14.0
 google-cloud-storage>=2.10.0
-google-cloud-sql>=1.15.0
 google-cloud-container>=2.31.0
 google-cloud-functions>=1.13.0
 google-cloud-filestore>=1.7.0
@@ -41,6 +41,9 @@ google-cloud-bigquery>=3.0.0
 google-cloud-spanner>=3.0.0
 google-cloud-bigtable>=2.0.0
 google-cloud-alloydb>=0.1.0
+# Discovery API - fallback for Cloud SQL on admin machines
+# (Cloud SQL SDK is only available in GCP Cloud Shell)
+google-api-python-client>=2.0.0
 
 # Kubernetes (for --include-pvc flag)
 kubernetes>=28.0.0

@@ -7,7 +7,7 @@ Optimized for Azure Cloud Shell with minimal dependencies.
 
 Usage:
     python3 azure_collect.py
-    python3 azure_collect.py --subscription <subscription-id>
+    python3 azure_collect.py --subscription-id <subscription-id>
     python3 azure_collect.py --output https://mystorageaccount.blob.core.windows.net/assessments/
 """
 import argparse
@@ -1464,8 +1464,8 @@ def collect_sql_database_backups(credential, subscription_id: str) -> List[Cloud
 
                     # Get long-term retention backups
                     try:
-                        for ltr in sql_client.long_term_retention_backups.list_by_database(
-                            rg, server_name, db_name
+                        for ltr in sql_client.long_term_retention_backups.list_by_resource_group_database(
+                            rg, server_location, server_name, db_name
                         ):
                             ltr_id = getattr(ltr, 'id', None)
                             ltr_name = getattr(ltr, 'name', '')
@@ -1637,16 +1637,17 @@ def _collect_azure_resource_change_rate(
     """
     service_family = resource.service_family
     resource_id = resource.resource_id
+    resource_type = resource.resource_type
 
-    if service_family == 'ManagedDisk':
-        # Azure managed disks
+    # Azure managed disks have service_family='AzureVM' and resource_type='azure:disk'
+    if resource_type == 'azure:disk':
         data_change = get_azure_disk_change_rate(
             monitor_client, resource_id, resource.size_gb, days
         )
         if data_change:
             return {
                 'provider': 'azure',
-                'service_family': 'ManagedDisk',
+                'service_family': 'AzureVM',  # Match what disks are collected with
                 'size_gb': resource.size_gb,
                 'data_change': data_change
             }
@@ -1669,7 +1670,8 @@ def _collect_azure_resource_change_rate(
 
 def main():
     parser = argparse.ArgumentParser(description='CCA CloudShell - Azure Resource Collector')
-    parser.add_argument('--subscription', help='Specific subscription ID (default: all accessible)')
+    parser.add_argument('--subscription-id', '--subscription', dest='subscription_id',
+                        help='Specific subscription ID (default: all accessible)')
     parser.add_argument('--regions', help='Comma-separated list of regions to filter (e.g., eastus,westus2)')
     parser.add_argument('--output', help='Output directory or blob URL', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
@@ -1732,10 +1734,10 @@ def main():
         logger.error("No Azure subscriptions found. Check permissions.")
         sys.exit(1)
 
-    if args.subscription:
-        subscriptions = [s for s in all_subscriptions if s['id'] == args.subscription]
+    if args.subscription_id:
+        subscriptions = [s for s in all_subscriptions if s['id'] == args.subscription_id]
         if not subscriptions:
-            logger.error(f"Subscription {args.subscription} not found")
+            logger.error(f"Subscription {args.subscription_id} not found")
             sys.exit(1)
     else:
         subscriptions = [s for s in all_subscriptions if s['state'] == 'Enabled']

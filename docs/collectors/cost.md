@@ -14,10 +14,10 @@ When using `python3 collect.py` in interactive mode, you'll be prompted to inclu
 Data protection cost collection analyzes AWS Backup, EBS snapshot,
 and other backup-related costs from AWS Cost Explorer.
 
-Also collect data protection costs? [y/N]:
+Also collect data protection costs? [Y/n]:
 ```
 
-This enables collecting both inventory and backup costs in a single workflow.
+Cost collection is enabled by default - just press Enter to confirm, or type `n` to skip.
 
 ## Basic Usage
 

@@ -88,12 +88,26 @@ def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
         if not org_role:
             org_role = "CCARole"
         
-        # Ask about parallel workers
+        # External ID (security best practice)
+        print()
+        print("External ID adds security to cross-account role assumption.")
+        print("Leave blank if your roles don't require an external ID.")
+        print()
+        external_id = input(color("External ID (or Enter to skip): ", Colors.CYAN)).strip()
+        
+        # Regions filter
+        print()
+        print("By default, all enabled regions are collected.")
+        print("Specify regions to limit scope (e.g., us-east-1,us-west-2).")
+        print()
+        regions = input(color("Regions to collect (Enter for all): ", Colors.CYAN)).strip()
+        
+        # Parallel accounts
         print()
         print("Parallel workers speed up collection by running multiple accounts simultaneously.")
         print("Auto-tunes to 4 for 50+ accounts, 8 for 100+ accounts if not specified.")
         print()
-        parallel_input = input(color("Parallel workers (Enter for auto, or 1-16) [auto]: ", Colors.CYAN)).strip()
+        parallel_input = input(color("Parallel account workers (Enter for auto, or 1-16) [auto]: ", Colors.CYAN)).strip()
         parallel_accounts = None
         if parallel_input:
             try:
@@ -104,6 +118,21 @@ def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
             except ValueError:
                 print(color("Invalid value, using auto-tune", Colors.YELLOW))
         
+        # Parallel regions
+        print()
+        print("Parallel region collection speeds up each account (4-8 recommended).")
+        print()
+        parallel_regions_input = input(color("Parallel regions (Enter for default 4, or 1-16): ", Colors.CYAN)).strip()
+        parallel_regions = None
+        if parallel_regions_input:
+            try:
+                parallel_regions = int(parallel_regions_input)
+                if parallel_regions < 1 or parallel_regions > 16:
+                    print(color("Invalid value, using default", Colors.YELLOW))
+                    parallel_regions = None
+            except ValueError:
+                print(color("Invalid value, using default", Colors.YELLOW))
+        
         # SSO refresh
         print()
         print("SSO credentials typically expire after 1 hour.")
@@ -111,6 +140,22 @@ def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
         print()
         sso_input = input(color("Enable SSO auto-refresh? [Y/n]: ", Colors.CYAN)).strip().lower()
         sso_refresh = sso_input != 'n'
+        
+        # Change rate collection
+        print()
+        print("Change rate data helps the sizing tool estimate backup requirements.")
+        print("Queries CloudWatch metrics (adds ~30s per account).")
+        print()
+        change_rate_input = input(color("Collect data change rates? [Y/n]: ", Colors.CYAN)).strip().lower()
+        include_change_rate = change_rate_input != 'n'
+        
+        # Include resource IDs
+        print()
+        print("Resource IDs/ARNs are redacted by default for privacy.")
+        print("Include them for compliance or detailed inventory needs.")
+        print()
+        resource_ids_input = input(color("Include full resource IDs? [y/N]: ", Colors.CYAN)).strip().lower()
+        include_resource_ids = resource_ids_input in ('y', 'yes')
         
         # Output directory
         print()
@@ -123,18 +168,22 @@ def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
         print("Data protection cost collection analyzes AWS Backup, EBS snapshot,")
         print("and other backup-related costs from AWS Cost Explorer.")
         print()
-        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input in ('y', 'yes')
+        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input != 'n'
         
         cost_opts = {}
         if collect_costs:
-            # Org costs is always yes for AWS Org collection
             cost_opts['org_costs'] = True
         
         return {
             'org_role': org_role,
+            'external_id': external_id if external_id else None,
+            'regions': regions if regions else None,
             'parallel_accounts': parallel_accounts,
+            'parallel_regions': parallel_regions,
             'sso_refresh': sso_refresh,
+            'include_change_rate': include_change_rate,
+            'include_resource_ids': include_resource_ids,
             'output': output,
             'collect_costs': collect_costs,
             'cost_opts': cost_opts
@@ -149,7 +198,30 @@ def prompt_aws_options() -> Optional[Dict[str, Any]]:
     print(color("\n=== AWS Collection Options ===\n", Colors.BOLD))
     
     try:
+        # Regions filter
+        print("By default, all enabled regions are collected.")
+        print("Specify regions to limit scope (e.g., us-east-1,us-west-2).")
+        print()
+        regions = input(color("Regions to collect (Enter for all): ", Colors.CYAN)).strip()
+        
+        # Change rate collection
+        print()
+        print("Change rate data helps the sizing tool estimate backup requirements.")
+        print("Queries CloudWatch metrics (adds collection time).")
+        print()
+        change_rate_input = input(color("Collect data change rates? [Y/n]: ", Colors.CYAN)).strip().lower()
+        include_change_rate = change_rate_input != 'n'
+        
+        # Include resource IDs
+        print()
+        print("Resource IDs/ARNs are redacted by default for privacy.")
+        print("Include them for compliance or detailed inventory needs.")
+        print()
+        resource_ids_input = input(color("Include full resource IDs? [y/N]: ", Colors.CYAN)).strip().lower()
+        include_resource_ids = resource_ids_input in ('y', 'yes')
+        
         # Output directory
+        print()
         output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
         if not output:
             output = "./output"
@@ -159,18 +231,20 @@ def prompt_aws_options() -> Optional[Dict[str, Any]]:
         print("Data protection cost collection analyzes AWS Backup, EBS snapshot,")
         print("and other backup-related costs from AWS Cost Explorer.")
         print()
-        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input in ('y', 'yes')
+        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input != 'n'
         
         cost_opts = {}
         if collect_costs:
-            # Org costs option
             print()
             print("For AWS Organizations, costs can be broken down by member account.")
             org_input = input(color("Break down costs by linked account (org)? [y/N]: ", Colors.CYAN)).strip().lower()
             cost_opts['org_costs'] = org_input in ('y', 'yes')
         
         return {
+            'regions': regions if regions else None,
+            'include_change_rate': include_change_rate,
+            'include_resource_ids': include_resource_ids,
             'output': output,
             'collect_costs': collect_costs,
             'cost_opts': cost_opts
@@ -185,7 +259,37 @@ def prompt_azure_options() -> Optional[Dict[str, Any]]:
     print(color("\n=== Azure Collection Options ===\n", Colors.BOLD))
     
     try:
+        # Subscription filter
+        print("By default, all accessible subscriptions are collected.")
+        print("Specify a subscription ID to limit scope.")
+        print()
+        subscription_id = input(color("Subscription ID (Enter for all): ", Colors.CYAN)).strip()
+        
+        # Regions filter
+        print()
+        print("By default, all regions are collected.")
+        print("Specify regions to limit scope (e.g., eastus,westus2).")
+        print()
+        regions = input(color("Regions to collect (Enter for all): ", Colors.CYAN)).strip()
+        
+        # Change rate collection
+        print()
+        print("Change rate data helps the sizing tool estimate backup requirements.")
+        print("Queries Azure Monitor metrics (adds collection time).")
+        print()
+        change_rate_input = input(color("Collect data change rates? [Y/n]: ", Colors.CYAN)).strip().lower()
+        include_change_rate = change_rate_input != 'n'
+        
+        # Include resource IDs
+        print()
+        print("Resource IDs are redacted by default for privacy.")
+        print("Include them for compliance or detailed inventory needs.")
+        print()
+        resource_ids_input = input(color("Include full resource IDs? [y/N]: ", Colors.CYAN)).strip().lower()
+        include_resource_ids = resource_ids_input in ('y', 'yes')
+        
         # Output directory
+        print()
         output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
         if not output:
             output = "./output"
@@ -195,18 +299,19 @@ def prompt_azure_options() -> Optional[Dict[str, Any]]:
         print("Data protection cost collection analyzes Azure Backup vault costs,")
         print("managed disk snapshots, and recovery services from Cost Management.")
         print()
-        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input in ('y', 'yes')
+        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input != 'n'
         
         cost_opts = {}
         if collect_costs:
-            # Get subscription ID for cost collection
-            print()
-            print("Cost Management API requires a subscription ID to query costs.")
-            sub_id = input(color("Subscription ID for costs (or Enter to auto-detect): ", Colors.CYAN)).strip()
-            cost_opts['subscription_id'] = sub_id if sub_id else None
+            # Use same subscription if specified, otherwise auto-detect
+            cost_opts['subscription_id'] = subscription_id if subscription_id else None
         
         return {
+            'subscription_id': subscription_id if subscription_id else None,
+            'regions': regions if regions else None,
+            'include_change_rate': include_change_rate,
+            'include_resource_ids': include_resource_ids,
             'output': output,
             'collect_costs': collect_costs,
             'cost_opts': cost_opts
@@ -221,7 +326,39 @@ def prompt_gcp_options() -> Optional[Dict[str, Any]]:
     print(color("\n=== GCP Collection Options ===\n", Colors.BOLD))
     
     try:
+        # Project scope
+        print("By default, collects from the current project only.")
+        print("Choose 'all' to collect from all accessible projects.")
+        print()
+        project_input = input(color("Project scope - specific ID, 'all', or Enter for current: ", Colors.CYAN)).strip().lower()
+        all_projects = project_input == 'all'
+        project = None if (all_projects or not project_input) else project_input
+        
+        # Regions filter
+        print()
+        print("By default, all regions are collected.")
+        print("Specify regions to limit scope (e.g., us-central1,us-east1).")
+        print()
+        regions = input(color("Regions to collect (Enter for all): ", Colors.CYAN)).strip()
+        
+        # Change rate collection
+        print()
+        print("Change rate data helps the sizing tool estimate backup requirements.")
+        print("Queries Cloud Monitoring metrics (adds collection time).")
+        print()
+        change_rate_input = input(color("Collect data change rates? [Y/n]: ", Colors.CYAN)).strip().lower()
+        include_change_rate = change_rate_input != 'n'
+        
+        # Include resource IDs
+        print()
+        print("Resource IDs are redacted by default for privacy.")
+        print("Include them for compliance or detailed inventory needs.")
+        print()
+        resource_ids_input = input(color("Include full resource IDs? [y/N]: ", Colors.CYAN)).strip().lower()
+        include_resource_ids = resource_ids_input in ('y', 'yes')
+        
         # Output directory
+        print()
         output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
         if not output:
             output = "./output"
@@ -231,18 +368,18 @@ def prompt_gcp_options() -> Optional[Dict[str, Any]]:
         print("Data protection cost collection requires BigQuery billing export.")
         print("See: https://cloud.google.com/billing/docs/how-to/export-data-bigquery")
         print()
-        cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input in ('y', 'yes')
+        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
+        collect_costs = cost_input != 'n'
         
         cost_opts = {}
         if collect_costs:
             print()
-            project = input(color("GCP project ID with billing export: ", Colors.CYAN)).strip()
-            if not project:
+            cost_project = input(color("GCP project ID with billing export: ", Colors.CYAN)).strip()
+            if not cost_project:
                 print(color("Project ID is required for cost collection.", Colors.YELLOW))
                 collect_costs = False
             else:
-                cost_opts['project'] = project
+                cost_opts['project'] = cost_project
                 
                 billing_table = input(color("BigQuery billing table (project.dataset.table): ", Colors.CYAN)).strip()
                 if not billing_table:
@@ -252,9 +389,63 @@ def prompt_gcp_options() -> Optional[Dict[str, Any]]:
                     cost_opts['billing_table'] = billing_table
         
         return {
+            'project': project,
+            'all_projects': all_projects,
+            'regions': regions if regions else None,
+            'include_change_rate': include_change_rate,
+            'include_resource_ids': include_resource_ids,
             'output': output,
             'collect_costs': collect_costs,
             'cost_opts': cost_opts
+        }
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
+
+
+def prompt_m365_options() -> Optional[Dict[str, Any]]:
+    """Prompt for M365 collection options."""
+    print(color("\n=== Microsoft 365 Collection Options ===\n", Colors.BOLD))
+    
+    try:
+        # Workload selection
+        print("Select which M365 workloads to collect:")
+        print("(All are collected by default)")
+        print()
+        
+        sp_input = input(color("Collect SharePoint sites? [Y/n]: ", Colors.CYAN)).strip().lower()
+        skip_sharepoint = sp_input == 'n'
+        
+        od_input = input(color("Collect OneDrive accounts? [Y/n]: ", Colors.CYAN)).strip().lower()
+        skip_onedrive = od_input == 'n'
+        
+        ex_input = input(color("Collect Exchange mailboxes? [Y/n]: ", Colors.CYAN)).strip().lower()
+        skip_exchange = ex_input == 'n'
+        
+        teams_input = input(color("Collect Teams? [Y/n]: ", Colors.CYAN)).strip().lower()
+        skip_teams = teams_input == 'n'
+        
+        # Entra ID (Azure AD)
+        print()
+        print("Entra ID (Azure AD) collection includes users and groups.")
+        print("Useful for identity protection assessment.")
+        print()
+        entra_input = input(color("Include Entra ID users and groups? [y/N]: ", Colors.CYAN)).strip().lower()
+        include_entra = entra_input in ('y', 'yes')
+        
+        # Output directory
+        print()
+        output = input(color("Output directory [./output]: ", Colors.CYAN)).strip()
+        if not output:
+            output = "./output"
+        
+        return {
+            'skip_sharepoint': skip_sharepoint,
+            'skip_onedrive': skip_onedrive,
+            'skip_exchange': skip_exchange,
+            'skip_teams': skip_teams,
+            'include_entra': include_entra,
+            'output': output,
         }
     except (KeyboardInterrupt, EOFError):
         print()
@@ -1026,10 +1217,20 @@ Examples:
                 
                 # Build extra args for AWS collector with org options
                 extra_args = ['--org-role', aws_org_opts['org_role']]
-                if aws_org_opts['sso_refresh']:
+                if aws_org_opts.get('external_id'):
+                    extra_args.extend(['--external-id', aws_org_opts['external_id']])
+                if aws_org_opts.get('regions'):
+                    extra_args.extend(['--regions', aws_org_opts['regions']])
+                if aws_org_opts.get('sso_refresh'):
                     extra_args.append('--sso-refresh')
-                if aws_org_opts['parallel_accounts']:
+                if aws_org_opts.get('parallel_accounts'):
                     extra_args.extend(['--parallel-accounts', str(aws_org_opts['parallel_accounts'])])
+                if aws_org_opts.get('parallel_regions'):
+                    extra_args.extend(['--parallel-regions', str(aws_org_opts['parallel_regions'])])
+                if aws_org_opts.get('include_change_rate'):
+                    extra_args.append('--include-change-rate')
+                if aws_org_opts.get('include_resource_ids'):
+                    extra_args.append('--include-resource-ids')
                 extra_args.extend(['-o', aws_org_opts['output']])
                 
                 print(color(f"\nStarting AWS Organization collection...\n", Colors.CYAN))
@@ -1144,12 +1345,13 @@ Examples:
     collect_costs = False
     cost_opts = {}
     
-    if not args.cloud and cloud in ('aws', 'azure', 'gcp'):
+    if not args.cloud and cloud in ('aws', 'azure', 'gcp', 'm365'):
         # Prompt for collection options
         prompt_funcs = {
             'aws': prompt_aws_options,
             'azure': prompt_azure_options,
             'gcp': prompt_gcp_options,
+            'm365': prompt_m365_options,
         }
         
         opts = prompt_funcs[cloud]()
@@ -1157,9 +1359,39 @@ Examples:
             print(color("\nExiting.", Colors.CYAN))
             sys.exit(0)
         
-        # Apply options
+        # Apply common options
         if opts.get('output'):
             extra_args = ['-o', opts['output']] + extra_args
+        if opts.get('regions'):
+            extra_args = ['--regions', opts['regions']] + extra_args
+        if opts.get('include_change_rate'):
+            extra_args = ['--include-change-rate'] + extra_args
+        if opts.get('include_resource_ids'):
+            extra_args = ['--include-resource-ids'] + extra_args
+        
+        # Cloud-specific options
+        if cloud == 'aws':
+            pass  # All handled by common options
+        elif cloud == 'azure':
+            if opts.get('subscription_id'):
+                extra_args = ['--subscription-id', opts['subscription_id']] + extra_args
+        elif cloud == 'gcp':
+            if opts.get('all_projects'):
+                extra_args = ['--all-projects'] + extra_args
+            elif opts.get('project'):
+                extra_args = ['--project', opts['project']] + extra_args
+        elif cloud == 'm365':
+            if opts.get('skip_sharepoint'):
+                extra_args = ['--skip-sharepoint'] + extra_args
+            if opts.get('skip_onedrive'):
+                extra_args = ['--skip-onedrive'] + extra_args
+            if opts.get('skip_exchange'):
+                extra_args = ['--skip-exchange'] + extra_args
+            if opts.get('skip_teams'):
+                extra_args = ['--skip-teams'] + extra_args
+            if opts.get('include_entra'):
+                extra_args = ['--include-entra'] + extra_args
+        
         collect_costs = opts.get('collect_costs', False)
         cost_opts = opts.get('cost_opts', {})
 

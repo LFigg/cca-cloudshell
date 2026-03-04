@@ -473,39 +473,79 @@ class TestCloudSQLCollection:
     """Tests for GCP Cloud SQL Instance collection."""
 
     def test_collect_sql_instances_basic(self, project_id):
-        """Test collecting Cloud SQL instances."""
-        mock_instances = [
-            create_mock_sql_instance("sql-001", storage_size_gb=10),
-            create_mock_sql_instance("sql-002", storage_size_gb=50, database_version="MYSQL_8_0"),
-        ]
+        """Test collecting Cloud SQL instances via Discovery API."""
+        mock_response = {
+            'items': [
+                {
+                    'name': 'sql-001',
+                    'region': 'us-central1',
+                    'state': 'RUNNABLE',
+                    'databaseVersion': 'POSTGRES_14',
+                    'backendType': 'SECOND_GEN',
+                    'settings': {
+                        'tier': 'db-custom-2-8192',
+                        'dataDiskSizeGb': '10',
+                        'availabilityType': 'ZONAL',
+                        'userLabels': {'env': 'test'},
+                        'backupConfiguration': {'enabled': True},
+                    }
+                },
+                {
+                    'name': 'sql-002',
+                    'region': 'us-central1',
+                    'state': 'RUNNABLE',
+                    'databaseVersion': 'MYSQL_8_0',
+                    'backendType': 'SECOND_GEN',
+                    'settings': {
+                        'tier': 'db-custom-4-16384',
+                        'dataDiskSizeGb': '50',
+                        'availabilityType': 'REGIONAL',
+                        'userLabels': {},
+                        'backupConfiguration': {'enabled': False},
+                    }
+                },
+            ]
+        }
 
-        with patch('gcp_collect.sqladmin_v1') as mock_sqladmin:
-            with patch.dict('sys.modules', {'google.cloud.sql_v1': Mock()}):
-                with patch('google.cloud.sql_v1.SqlInstancesServiceClient') as mock_client_class:
-                    mock_client = Mock()
-                    mock_client.list.return_value = mock_instances
-                    mock_client_class.return_value = mock_client
-                    mock_sqladmin.SqlInstancesListRequest.return_value = Mock()
+        with patch('gcp_collect.google.auth.default') as mock_auth:
+            mock_auth.return_value = (Mock(), project_id)
+            with patch('gcp_collect.discovery_build') as mock_build:
+                mock_service = Mock()
+                mock_instances = Mock()
+                mock_list = Mock()
+                mock_list.execute.return_value = mock_response
+                mock_instances.list.return_value = mock_list
+                mock_instances.list_next.return_value = None
+                mock_service.instances.return_value = mock_instances
+                mock_build.return_value = mock_service
 
-                    resources = collect_cloud_sql_instances(project_id)
+                resources = collect_cloud_sql_instances(project_id)
 
-                    assert len(resources) == 2
-                    assert resources[0].name == "sql-001"
-                    assert resources[0].size_gb == 10.0
+                assert len(resources) == 2
+                assert resources[0].name == "sql-001"
+                assert resources[0].size_gb == 10.0
+                assert resources[1].name == "sql-002"
+                assert resources[1].size_gb == 50.0
 
     def test_collect_sql_instances_empty(self, project_id):
         """Test collecting SQL instances when none exist."""
-        with patch('gcp_collect.sqladmin_v1') as mock_sqladmin:
-            with patch.dict('sys.modules', {'google.cloud.sql_v1': Mock()}):
-                with patch('google.cloud.sql_v1.SqlInstancesServiceClient') as mock_client_class:
-                    mock_client = Mock()
-                    mock_client.list.return_value = []
-                    mock_client_class.return_value = mock_client
-                    mock_sqladmin.SqlInstancesListRequest.return_value = Mock()
+        mock_response = {'items': []}
 
-                    resources = collect_cloud_sql_instances(project_id)
+        with patch('gcp_collect.google.auth.default') as mock_auth:
+            mock_auth.return_value = (Mock(), project_id)
+            with patch('gcp_collect.discovery_build') as mock_build:
+                mock_service = Mock()
+                mock_instances = Mock()
+                mock_list = Mock()
+                mock_list.execute.return_value = mock_response
+                mock_instances.list.return_value = mock_list
+                mock_instances.list_next.return_value = None
+                mock_service.instances.return_value = mock_instances
+                mock_build.return_value = mock_service
 
-                    assert len(resources) == 0
+                resources = collect_cloud_sql_instances(project_id)
+
+                assert len(resources) == 0
 
 
 # =============================================================================
@@ -614,7 +654,7 @@ class TestParallelCollectIntegration:
             # This should use parallel_collect internally
             with patch('gcp_collect.compute_v1'), \
                  patch('gcp_collect.storage'), \
-                 patch('gcp_collect.sqladmin_v1'):
+                 patch('gcp_collect.discovery_build'):
                 try:
                     collect_project(project_id, parallel_resources=4)
                 except Exception:

@@ -597,7 +597,8 @@ Security Note:
                         default=os.environ.get('MS365_CLIENT_ID'),
                         help='Azure AD application (client) ID (or set MS365_CLIENT_ID env var)')
     # Client secret is env-var only for security (no CLI arg to avoid shell history exposure)
-    parser.add_argument('--output-dir', '-o',
+    parser.add_argument('--output', '--output-dir', '-o',
+                        dest='output',
                         default='./cca_m365_output',
                         help='Output directory (default: ./cca_m365_output)')
     parser.add_argument('--include-entra', action='store_true',
@@ -619,7 +620,7 @@ Security Note:
 
     # Setup logging - write to file in output directory
     log_level = 'DEBUG' if args.verbose else args.log_level
-    setup_logging(log_level, output_dir=args.output_dir)
+    setup_logging(log_level, output_dir=args.output)
 
     # Get client secret from environment only (security: not from CLI args)
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
@@ -636,10 +637,10 @@ Security Note:
         sys.exit(1)
 
     # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.output, exist_ok=True)
 
     print(f"Tenant: {args.tenant_id[:8]}...{args.tenant_id[-4:]}")
-    print(f"Output: {args.output_dir}\n")
+    print(f"Output: {args.output}\n")
 
     # Initialize Graph client
     try:
@@ -725,14 +726,14 @@ Security Note:
     inventory = [asdict(r) for r in all_resources]
     # Use HHMMSS format for timestamp in filenames
     file_ts = datetime.now(timezone.utc).strftime('%H%M%S')
-    inventory_file = write_json_file(inventory, f'cca_m365_inv_{file_ts}.json', args.output_dir)
+    inventory_file = write_json_file(inventory, f'cca_m365_inv_{file_ts}.json', args.output)
     print(f"Inventory saved: {inventory_file}")
 
     # Sizing summary
     sizing = aggregate_m365_sizing(all_resources)
     sizing['tenant_id'] = args.tenant_id
     sizing['collection_timestamp'] = timestamp
-    sizing_file = write_json_file(sizing, f'cca_m365_sum_{file_ts}.json', args.output_dir)
+    sizing_file = write_json_file(sizing, f'cca_m365_sum_{file_ts}.json', args.output)
     print(f"Sizing summary saved: {sizing_file}")
 
     # Executive summary
@@ -750,10 +751,10 @@ Security Note:
             'entra_groups': len([r for r in all_resources if r.resource_type == 'entraid:group'])
         }
     }
-    exec_file = write_json_file(exec_summary, f'executive_summary_{timestamp}.json', args.output_dir)
+    exec_file = write_json_file(exec_summary, f'executive_summary_{timestamp}.json', args.output)
     print(f"Executive summary saved: {exec_file}")
 
-    print(f"\nOutput files in: {args.output_dir}")
+    print(f"\nOutput files in: {args.output}")
 
 
 if __name__ == '__main__':

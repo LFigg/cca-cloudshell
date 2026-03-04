@@ -19,15 +19,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 try:
     import google.auth
     from google.api_core.exceptions import NotFound, PermissionDenied  # noqa: F401 - used in exception handlers
-    from google.cloud import compute_v1, sqladmin_v1, storage
-    from google.cloud.sql_v1 import SqlInstancesServiceClient  # noqa: F401 - used in collect functions
+    from google.cloud import compute_v1, storage
+    from googleapiclient.discovery import build as discovery_build
     HAS_GCP_SDK = True
 except ImportError:
     HAS_GCP_SDK = False
     compute_v1: Any = None
     storage: Any = None
-    sqladmin_v1: Any = None
     google: Any = None
+    discovery_build: Any = None
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
@@ -332,53 +332,47 @@ def collect_storage_buckets(project_id: str) -> List[CloudResource]:
 # =============================================================================
 
 def collect_cloud_sql_instances(project_id: str) -> List[CloudResource]:
-    """Collect Cloud SQL instances."""
+    """Collect Cloud SQL instances using Discovery API."""
     resources = []
     try:
-        from google.cloud.sql_v1 import SqlInstancesServiceClient
+        credentials, _ = google.auth.default()
+        service = discovery_build('sqladmin', 'v1beta4', credentials=credentials)
 
-        client = SqlInstancesServiceClient()
+        request = service.instances().list(project=project_id)
+        while request is not None:
+            response = request.execute()
+            for instance in response.get('items', []):
+                settings = instance.get('settings', {})
+                labels = settings.get('userLabels', {})
+                storage_gb = int(settings.get('dataDiskSizeGb', 0))
+                is_read_replica = bool(instance.get('masterInstanceName'))
 
-        request = sqladmin_v1.SqlInstancesListRequest(project=project_id)
-
-        for instance in client.list(request=request):
-            labels = dict(instance.settings.user_labels) if instance.settings and instance.settings.user_labels else {}
-
-            # Get storage size
-            storage_gb = 0
-            if instance.settings and instance.settings.data_disk_size_gb:
-                storage_gb = instance.settings.data_disk_size_gb
-
-            # Check if this is a read replica
-            is_read_replica = bool(instance.master_instance_name)
-
-            resource = CloudResource(
-                provider="gcp",
-                account_id=project_id,
-                region=instance.region,
-                resource_type="gcp:sql:instance",
-                service_family="SQL",
-                resource_id=f"projects/{project_id}/instances/{instance.name}",
-                name=instance.name,
-                tags=labels,
-                size_gb=float(storage_gb),
-                metadata={
-                    'database_version': instance.database_version,
-                    'tier': instance.settings.tier if instance.settings else '',
-                    'state': instance.state,
-                    'backend_type': instance.backend_type,
-                    'availability_type': instance.settings.availability_type if instance.settings else '',
-                    'backup_enabled': instance.settings.backup_configuration.enabled if instance.settings and instance.settings.backup_configuration else False,
-                    'is_read_replica': is_read_replica,
-                    'master_instance_name': instance.master_instance_name or None,
-                    'encrypted': True,  # GCP Cloud SQL data is always encrypted at rest
-                }
-            )
-            resources.append(resource)
+                resource = CloudResource(
+                    provider="gcp",
+                    account_id=project_id,
+                    region=instance.get('region', ''),
+                    resource_type="gcp:sql:instance",
+                    service_family="SQL",
+                    resource_id=f"projects/{project_id}/instances/{instance.get('name')}",
+                    name=instance.get('name', ''),
+                    tags=labels,
+                    size_gb=float(storage_gb),
+                    metadata={
+                        'database_version': instance.get('databaseVersion', ''),
+                        'tier': settings.get('tier', ''),
+                        'state': instance.get('state', ''),
+                        'backend_type': instance.get('backendType', ''),
+                        'availability_type': settings.get('availabilityType', ''),
+                        'backup_enabled': settings.get('backupConfiguration', {}).get('enabled', False),
+                        'is_read_replica': is_read_replica,
+                        'master_instance_name': instance.get('masterInstanceName'),
+                        'encrypted': True,
+                    }
+                )
+                resources.append(resource)
+            request = service.instances().list_next(previous_request=request, previous_response=response)
 
         logger.info(f"Found {len(resources)} Cloud SQL instances")
-    except ImportError:
-        logger.warning("Cloud SQL client not available")
     except Exception as e:
         check_and_raise_auth_error(e, "collect Cloud SQL instances", "gcp")
         logger.error(f"Failed to collect Cloud SQL instances: {e}")
