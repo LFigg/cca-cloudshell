@@ -109,3 +109,6 @@ includedPermissions:
   - backupdr.dataSources.get
   - backupdr.backups.list
   - backupdr.backups.get
+  
+  # Cloud Monitoring (for change rate metrics)
+  - monitoring.timeSeries.list

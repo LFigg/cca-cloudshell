@@ -59,11 +59,11 @@ Parameters:
 
   EnableCostExplorerAccess:
     Type: String
-    Default: 'false'
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
-    Description: Enable Cost Explorer API access (needed for cost_collect.py)
+    Description: Enable Cost Explorer API access (needed for cost collection, enabled by default)
 
 Conditions:
   HasExternalId: !Not [!Equals [!Ref ExternalId, '']]

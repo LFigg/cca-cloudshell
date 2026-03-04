@@ -81,7 +81,11 @@
                             
                             "Microsoft.Synapse/workspaces/read",
                             "Microsoft.Synapse/workspaces/sqlPools/read",
-                            "Microsoft.Synapse/workspaces/bigDataPools/read"
+                            "Microsoft.Synapse/workspaces/bigDataPools/read",
+                            
+                            "Microsoft.Insights/metrics/read",
+                            
+                            "Microsoft.CostManagement/query/read"
                         ],
                         "notActions": [],
                         "dataActions": [],
