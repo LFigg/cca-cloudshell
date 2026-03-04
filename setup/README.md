@@ -2,6 +2,11 @@
 
 This folder contains scripts and templates to set up permissions for each cloud platform.
 
+**Default Permissions Include:**
+- Resource inventory collection (VMs, storage, databases, etc.)
+- Change rate metrics (CloudWatch/Azure Monitor/Cloud Monitoring)
+- Cost collection (Cost Explorer, Cost Management, BigQuery billing)
+
 ## Quick Reference
 
 | Cloud | Setup Script | IAM Template |
@@ -28,8 +33,11 @@ Run the setup script:
 # Deploy to all Organization accounts via StackSet
 ./setup/setup-aws-permissions.sh --stackset --external-id your-secret-id
 
-# Enable Organizations and Cost Explorer access
-./setup/setup-aws-permissions.sh --enable-org --enable-cost
+# Enable Organizations API access (for --org-role)
+./setup/setup-aws-permissions.sh --enable-org
+
+# Disable cost collection (enabled by default)
+./setup/setup-aws-permissions.sh --no-cost
 ```
 
 Or deploy CloudFormation directly:

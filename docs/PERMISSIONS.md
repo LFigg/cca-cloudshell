@@ -7,7 +7,7 @@ This document details the minimum permissions required to run each cloud collect
 - [Azure Permissions](#azure-permissions)
 - [GCP Permissions](#gcp-permissions)
 - [Microsoft 365 Permissions](#microsoft-365-permissions)
-- [Change Rate Collection Permissions](#change-rate-collection-permissions-optional)
+- [Change Rate Collection Permissions](#change-rate-collection-permissions)
 - [Kubernetes PVC Collection Permissions](#kubernetes-pvc-collection-permissions-optional)
 - [Cost Collector Permissions](#cost-collector-permissions)
 
@@ -475,13 +475,15 @@ includedPermissions:
 
 ---
 
-## Change Rate Collection Permissions (Optional)
+## Change Rate Collection Permissions
 
-When using the `--include-change-rate` flag, the collectors query cloud monitoring APIs to estimate daily data change rates. These permissions are **optional** - the collector will work without them, but you won't get change rate metrics.
+Change rate collection queries cloud monitoring APIs to estimate daily data change rates. These permissions are **included in the default setup files** (`setup/aws-iam-role.yaml`, `setup/azure-custom-role.json`, `setup/gcp-custom-role.yaml`).
+
+> **Note:** If you deployed permissions before this update, add the permissions below to enable change rate collection.
 
 ### AWS CloudWatch Permissions
 
-Add these permissions to your IAM policy for change rate collection:
+Already included in the default IAM role template. If upgrading, add:
 
 ```json
 {
@@ -507,7 +509,7 @@ Add these permissions to your IAM policy for change rate collection:
 
 ### Azure Monitor Permissions
 
-Add these permissions to your custom role for change rate collection:
+Already included in the default Azure custom role. If upgrading, add:
 
 ```json
 {
@@ -529,7 +531,7 @@ Add these permissions to your custom role for change rate collection:
 
 ### GCP Cloud Monitoring Permissions
 
-Add these permissions to your custom role for change rate collection:
+Already included in the default GCP custom role. If upgrading, add:
 
 ```yaml
 includedPermissions:
@@ -748,7 +750,9 @@ export MS365_CLIENT_SECRET="your-client-secret"
 
 ## Cost Collector Permissions
 
-The cost collector (`cost_collect.py`) requires additional billing/cost permissions.
+The cost collector (`cost_collect.py`) gathers backup and snapshot spending data. Cost collection permissions are **included in the default setup files** (with `EnableCostExplorerAccess=true` for AWS).
+
+> **Note:** If you deployed permissions before this update, add the permissions below to enable cost collection.
 
 > **Important:** Cost collection is separate from inventory collection. The inventory collector
 > (`aws_collect.py`) gathers resource data and can run from any account, while the cost collector
