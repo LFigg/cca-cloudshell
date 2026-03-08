@@ -51,9 +51,11 @@ case $choice in
         ;;
     2)
         echo "Installing Azure dependencies..."
-        pip3 install --quiet azure-identity azure-mgmt-compute azure-mgmt-storage \
+        pip3 install --user --quiet azure-identity azure-mgmt-compute azure-mgmt-storage \
             azure-mgmt-sql azure-mgmt-cosmosdb azure-mgmt-containerservice \
-            azure-mgmt-web azure-mgmt-resource rich tenacity
+            azure-mgmt-web azure-mgmt-resource rich tenacity \
+            azure-identity azure-mgmt-subscription azure-mgmt-recoveryservices \
+            azure-mgmt-recoveryservicesbackup six
         ;;
     3)
         echo "Installing GCP dependencies..."
