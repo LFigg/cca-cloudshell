@@ -84,6 +84,7 @@ Each collector generates:
 | [M365 Collector](docs/collectors/m365.md) | App registration, Graph API |
 | [Cost Collector](docs/collectors/cost.md) | Backup/snapshot spending |
 | [Required Permissions](docs/PERMISSIONS.md) | IAM policies for each cloud |
+| [AWS CloudFormation & StackSets](docs/aws-cloudformation.md) | IAM role deployment for 100+ accounts |
 | [Permission Setup Scripts](setup/README.md) | Setup scripts for Azure/GCP |
 | [Config Examples](config-examples/README.md) | YAML config file examples |
 | [Output Formats](docs/output-formats.md) | JSON schema, CSV fields |
@@ -224,7 +225,9 @@ aws cloudformation create-stack \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-See [setup/](setup/) for multi-account StackSet deployment and Azure/GCP setup scripts.
+For organizations with 100+ accounts, use CloudFormation StackSets for automated deployment. See [AWS CloudFormation & StackSets](docs/aws-cloudformation.md) for detailed instructions.
+
+See [setup/](setup/) for Azure/GCP permission setup scripts.
 
 ## Project Structure
 

@@ -42,8 +42,11 @@ pip3 install boto3 rich tenacity
 # Azure only
 pip3 install azure-identity azure-mgmt-compute azure-mgmt-storage \
     azure-mgmt-sql azure-mgmt-cosmosdb azure-mgmt-containerservice \
-    azure-mgmt-web azure-mgmt-resource azure-mgmt-recoveryservices \
-    azure-mgmt-recoveryservicesbackup rich tenacity
+    azure-mgmt-web azure-mgmt-resource azure-mgmt-subscription \
+    azure-mgmt-recoveryservices azure-mgmt-recoveryservicesbackup \
+    azure-mgmt-redis azure-mgmt-costmanagement azure-mgmt-rdbms \
+    azure-mgmt-synapse azure-mgmt-netapp azure-storage-blob \
+    rich tenacity
 
 # GCP only
 pip3 install google-cloud-compute google-cloud-storage google-api-python-client \

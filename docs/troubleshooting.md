@@ -118,6 +118,18 @@ az account list --output table
 2. Verify permissions for specific resource types
 3. Some resources may not be supported yet - check collector version
 
+### Pip Install Fails in Azure Cloud Shell
+
+**Error:** `ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied`
+
+**Solutions:**
+1. Use `./setup.sh` - it automatically detects Azure Cloud Shell and uses the `--user` flag
+2. Or manually install with `--user` flag:
+   ```bash
+   pip3 install --user -r requirements.txt
+   ```
+3. The setup script handles this automatically when it detects Azure Cloud Shell
+
 ---
 
 ## GCP Collector

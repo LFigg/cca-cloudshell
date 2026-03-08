@@ -12,6 +12,7 @@ This folder contains scripts and templates to set up permissions for each cloud 
 | Cloud | Setup Script | IAM Template |
 |-------|--------------|--------------|
 | **AWS** | [setup-aws-permissions.sh](setup-aws-permissions.sh) | [aws-iam-role.yaml](aws-iam-role.yaml) |
+| **AWS StackSet** | — | [aws-stackset-member-role.yaml](aws-stackset-member-role.yaml) |
 | **Azure** | [setup-azure-permissions.sh](setup-azure-permissions.sh) | [azure-custom-role.json](azure-custom-role.json) |
 | **GCP** | [setup-gcp-permissions.sh](setup-gcp-permissions.sh) | [gcp-custom-role.yaml](gcp-custom-role.yaml) |
 

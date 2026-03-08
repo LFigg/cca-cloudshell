@@ -86,6 +86,25 @@ python3 aws_collect.py --org-role CCARole --external-id MySecretExternalId
    - Read-only permissions (see [PERMISSIONS.md](../PERMISSIONS.md))
    - Trust policy allowing the source account
 
+### Large-Scale Deployment (100+ Accounts)
+
+For organizations with many accounts, use CloudFormation StackSets for automated IAM role deployment:
+
+```bash
+# Deploy to all member accounts via StackSet
+aws cloudformation create-stack-set \
+  --stack-set-name cca-collector-roles \
+  --template-body file://setup/aws-stackset-member-role.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --permission-model SERVICE_MANAGED \
+  --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
+  --parameters \
+    ParameterKey=TrustedAccountId,ParameterValue=<MGMT_ACCOUNT_ID> \
+    ParameterKey=ExternalId,ParameterValue=<YOUR_EXTERNAL_ID>
+```
+
+See [AWS CloudFormation & StackSets](../aws-cloudformation.md) for complete deployment instructions.
+
 **Example Trust Policy:**
 ```json
 {
