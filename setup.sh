@@ -32,6 +32,13 @@ fi
 PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
 echo "Python version: $PYTHON_VERSION"
 
+# Set pip flags based on environment (Azure Cloud Shell requires --user)
+PIP_FLAGS="--quiet"
+if [ "$SHELL_TYPE" = "azure" ]; then
+    PIP_FLAGS="--quiet --user"
+    echo "Note: Using --user flag for pip (required in Azure Cloud Shell)"
+fi
+
 # Install dependencies based on collector type
 echo ""
 echo "Which collector(s) do you want to set up?"
@@ -47,33 +54,35 @@ choice=${choice:-5}
 case $choice in
     1)
         echo "Installing AWS dependencies..."
-        pip3 install --quiet boto3 rich tenacity
+        pip3 install $PIP_FLAGS boto3 rich tenacity
         ;;
     2)
         echo "Installing Azure dependencies..."
-        pip3 install --user --quiet azure-identity azure-mgmt-compute azure-mgmt-storage \
+        pip3 install $PIP_FLAGS azure-identity azure-mgmt-compute azure-mgmt-storage \
             azure-mgmt-sql azure-mgmt-cosmosdb azure-mgmt-containerservice \
-            azure-mgmt-web azure-mgmt-resource rich tenacity \
-            azure-identity azure-mgmt-subscription azure-mgmt-recoveryservices \
-            azure-mgmt-recoveryservicesbackup six
+            azure-mgmt-web azure-mgmt-resource azure-mgmt-subscription \
+            azure-mgmt-recoveryservices azure-mgmt-recoveryservicesbackup \
+            azure-mgmt-redis azure-mgmt-costmanagement azure-mgmt-rdbms \
+            azure-mgmt-synapse azure-mgmt-netapp azure-storage-blob \
+            rich tenacity
         ;;
     3)
         echo "Installing GCP dependencies..."
-        pip3 install --quiet google-cloud-compute google-cloud-storage \
+        pip3 install $PIP_FLAGS google-cloud-compute google-cloud-storage \
             google-api-python-client google-cloud-container google-cloud-functions \
             google-cloud-resource-manager rich tenacity
         ;;
     4)
         echo "Installing M365 dependencies..."
-        pip3 install --quiet msgraph-sdk azure-identity rich tenacity
+        pip3 install $PIP_FLAGS msgraph-sdk azure-identity rich tenacity
         ;;
     5)
         echo "Installing all dependencies..."
-        pip3 install --quiet -r requirements.txt
+        pip3 install $PIP_FLAGS -r requirements.txt
         ;;
     *)
         echo "Invalid choice. Installing all dependencies..."
-        pip3 install --quiet -r requirements.txt
+        pip3 install $PIP_FLAGS -r requirements.txt
         ;;
 esac
 
