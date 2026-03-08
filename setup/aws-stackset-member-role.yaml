@@ -1,0 +1,207 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  CCA CloudShell - StackSet Template for Member Account IAM Roles
+  
+  Deploy this template as a StackSet to create CCA collector roles across all 
+  member accounts in your AWS Organization. Optimized for large-scale deployments
+  (100+ accounts).
+  
+  Usage:
+    1. Deploy this StackSet from your management account
+    2. Deploy management account role separately (aws-iam-role.yaml with EnableOrganizationsAccess=true)
+    3. Run: python3 collect.py --cloud aws -- --org-role CCACollectorRole --external-id <YOUR_ID>
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Required - Cross-Account Trust
+        Parameters:
+          - TrustedAccountId
+          - ExternalId
+      - Label:
+          default: Role Configuration
+        Parameters:
+          - RoleName
+      - Label:
+          default: Optional Features
+        Parameters:
+          - EnableCostExplorerAccess
+    ParameterLabels:
+      TrustedAccountId:
+        default: Management Account ID
+      ExternalId:
+        default: External ID (Security)
+      RoleName:
+        default: IAM Role Name
+      EnableCostExplorerAccess:
+        default: Enable Cost Explorer Access
+
+Parameters:
+  TrustedAccountId:
+    Type: String
+    Description: AWS Account ID of your management account (where you'll run the collector)
+    AllowedPattern: '[0-9]{12}'
+    ConstraintDescription: Must be a valid 12-digit AWS Account ID
+
+  ExternalId:
+    Type: String
+    Description: External ID for secure cross-account access (use a unique value for your organization)
+    MinLength: 1
+    MaxLength: 256
+
+  RoleName:
+    Type: String
+    Default: CCACollectorRole
+    Description: Name for the IAM role (must be consistent across all accounts)
+    AllowedPattern: '[a-zA-Z0-9+=,.@_-]+'
+    ConstraintDescription: Role name must be alphanumeric with +=,.@_- characters
+
+  EnableCostExplorerAccess:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable Cost Explorer API access for cost collection
+
+Conditions:
+  EnableCostAccess: !Equals [!Ref EnableCostExplorerAccess, 'true']
+
+Resources:
+  # IAM Policy with read-only permissions for CCA collector
+  CCACollectorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${RoleName}-Policy'
+      Description: Read-only permissions for CCA CloudShell AWS collector
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CCAReadOnlyCore
+            Effect: Allow
+            Action:
+              # STS
+              - sts:GetCallerIdentity
+              
+              # EC2
+              - ec2:DescribeRegions
+              - ec2:DescribeInstances
+              - ec2:DescribeVolumes
+              - ec2:DescribeSnapshots
+              
+              # RDS
+              - rds:DescribeDBInstances
+              - rds:DescribeDBClusters
+              - rds:DescribeDBSnapshots
+              - rds:DescribeDBClusterSnapshots
+              
+              # CloudWatch (for change rate metrics)
+              - cloudwatch:GetMetricStatistics
+              
+              # S3
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+              - s3:GetBucketTagging
+              
+              # EFS
+              - elasticfilesystem:DescribeFileSystems
+              
+              # FSx
+              - fsx:DescribeFileSystems
+              
+              # EKS
+              - eks:ListClusters
+              - eks:DescribeCluster
+              - eks:ListNodegroups
+              - eks:DescribeNodegroup
+              
+              # Lambda
+              - lambda:ListFunctions
+              
+              # DynamoDB
+              - dynamodb:ListTables
+              - dynamodb:DescribeTable
+              
+              # ElastiCache
+              - elasticache:DescribeCacheClusters
+              
+              # Redshift
+              - redshift:DescribeClusters
+              
+              # OpenSearch (Elasticsearch)
+              - es:ListDomainNames
+              - es:DescribeDomains
+              
+              # MemoryDB for Redis
+              - memorydb:DescribeClusters
+              
+              # Timestream
+              - timestream:ListDatabases
+              - timestream:ListTables
+              - timestream:DescribeTable
+              
+              # AWS Backup
+              - backup:ListBackupVaults
+              - backup:ListRecoveryPointsByBackupVault
+              - backup:ListBackupPlans
+              - backup:GetBackupPlan
+              - backup:ListBackupSelections
+              - backup:GetBackupSelection
+              - backup:ListProtectedResources
+              - backup:DescribeRegionSettings
+            Resource: '*'
+
+          # Cost Explorer permissions (conditional)
+          - !If
+            - EnableCostAccess
+            - Sid: CCACostExplorerAccess
+              Effect: Allow
+              Action:
+                - ce:GetCostAndUsage
+                - ce:GetCostForecast
+              Resource: '*'
+            - !Ref AWS::NoValue
+
+  # IAM Role for CCA Collector (member account)
+  CCACollectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: IAM role for CCA CloudShell AWS resource collection (StackSet deployed)
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref CCACollectorPolicy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Cross-account trust to management account with required external ID
+          - Sid: AllowManagementAccountAssume
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${TrustedAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+
+      Tags:
+        - Key: Purpose
+          Value: CCA-CloudShell-Collector
+        - Key: ManagedBy
+          Value: CloudFormation-StackSet
+        - Key: TrustedAccount
+          Value: !Ref TrustedAccountId
+
+Outputs:
+  RoleArn:
+    Description: ARN of the CCA Collector IAM Role
+    Value: !GetAtt CCACollectorRole.Arn
+
+  RoleName:
+    Description: Name of the CCA Collector IAM Role
+    Value: !Ref CCACollectorRole
+
+  AccountId:
+    Description: AWS Account ID where this role was created
+    Value: !Ref AWS::AccountId

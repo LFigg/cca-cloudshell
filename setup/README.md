@@ -48,7 +48,7 @@ aws cloudformation create-stack \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-See [aws-cloudformation-README.md](aws-cloudformation-README.md) for multi-account StackSet details.
+See [AWS CloudFormation docs](../docs/aws-cloudformation.md) for multi-account StackSet details.
 
 ---
 
