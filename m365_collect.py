@@ -3,8 +3,16 @@
 CCA CloudShell - Microsoft 365 Collector
 Standalone collector for M365 resources using Microsoft Graph API.
 
-Requirements:
-- Azure AD App Registration with following API permissions (Application type):
+Authentication Options:
+1. DefaultAzureCredential (recommended) - Uses Azure CLI, Managed Identity, etc.
+   - In Azure Cloud Shell: credentials are automatic
+   - Local with Azure CLI: run 'az login' first
+   
+2. App Registration with client secret (for automated/service scenarios)
+   - Create App Registration in Entra ID
+   - Set MS365_TENANT_ID, MS365_CLIENT_ID, MS365_CLIENT_SECRET env vars
+
+Required Azure AD App Permissions (Application type):
   - Sites.Read.All (SharePoint)
   - Files.Read.All (OneDrive storage)
   - User.Read.All (Users, OneDrive, Exchange)
@@ -14,16 +22,15 @@ Requirements:
   - Reports.Read.All (Usage reports for change rate and growth metrics)
 
 Usage:
-    # Set environment variables (client secret MUST be env var for security)
+    # Option 1: Using Azure CLI (recommended)
+    az login
+    python m365_collect.py --use-default-credential
+
+    # Option 2: Using environment variables
     export MS365_TENANT_ID="your-tenant-id"
     export MS365_CLIENT_ID="your-client-id"
     export MS365_CLIENT_SECRET="your-client-secret"
-
-    # Run collector
     python m365_collect.py
-
-    # Override tenant/client IDs via CLI (secret must be env var)
-    python m365_collect.py --tenant-id xxx --client-id xxx
 
     # Include Entra ID collection
     python m365_collect.py --include-entra
@@ -41,7 +48,7 @@ from typing import Any, Dict, List, Optional
 
 # Check for required packages
 try:
-    from azure.identity import ClientSecretCredential
+    from azure.identity import ClientSecretCredential, DefaultAzureCredential
     from msgraph.graph_service_client import GraphServiceClient
 except ImportError:
     print("ERROR: Required packages not found.")
@@ -109,12 +116,32 @@ class ServiceUsageMetrics:
 # =============================================================================
 
 def get_graph_client(tenant_id: str, client_id: str, client_secret: str) -> GraphServiceClient:
-    """Create Microsoft Graph API client."""
+    """Create Microsoft Graph API client using client credentials."""
     credential = ClientSecretCredential(
         tenant_id=tenant_id,
         client_id=client_id,
         client_secret=client_secret
     )
+    scopes = ['https://graph.microsoft.com/.default']
+    return GraphServiceClient(credentials=credential, scopes=scopes)
+
+
+def get_graph_client_default_credential() -> GraphServiceClient:
+    """Create Microsoft Graph API client using DefaultAzureCredential.
+    
+    This uses the Azure Identity credential chain, which tries (in order):
+    1. Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
+    2. Managed Identity (when running on Azure VMs, App Service, etc.)
+    3. Azure CLI credentials (az login)
+    4. Azure PowerShell credentials
+    5. Interactive browser login (if enabled)
+    
+    This is the recommended approach for:
+    - Azure Cloud Shell (uses managed identity automatically)
+    - Azure VMs with managed identity
+    - Local development with Azure CLI login
+    """
+    credential = DefaultAzureCredential()
     scopes = ['https://graph.microsoft.com/.default']
     return GraphServiceClient(credentials=credential, scopes=scopes)
 
@@ -1450,17 +1477,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Using environment variables (client secret MUST be env var)
+    # Option 1: Azure CLI / Managed Identity (recommended)
+    az login
+    python m365_collect.py --use-default-credential
+
+    # Option 2: Environment variables with App Registration
     export MS365_TENANT_ID="your-tenant-id"
     export MS365_CLIENT_ID="your-client-id"
     export MS365_CLIENT_SECRET="your-client-secret"
     python m365_collect.py
 
-    # Override tenant/client IDs via CLI
-    python m365_collect.py --tenant-id xxx --client-id xxx
-
-    # Include Entra ID collection
+    # Include Entra ID users and groups
     python m365_collect.py --include-entra
+
+Authentication:
+    DefaultAzureCredential (--use-default-credential) uses the Azure identity
+    chain: Managed Identity > Azure CLI > Environment variables. This is the
+    recommended approach for Azure Cloud Shell and local development.
 
 Required Azure AD App Permissions (Application type):
     - Sites.Read.All (SharePoint sites)
@@ -1470,10 +1503,6 @@ Required Azure AD App Permissions (Application type):
     - Group.Read.All (Groups, Teams)
     - Team.ReadBasic.All (Teams details)
     - Reports.Read.All (Usage reports for change rate and growth metrics)
-
-Security Note:
-    Client secrets must be provided via MS365_CLIENT_SECRET environment
-    variable to avoid exposing secrets in shell history or process listings.
         """
     )
 
@@ -1484,6 +1513,8 @@ Security Note:
                         default=os.environ.get('MS365_CLIENT_ID'),
                         help='Azure AD application (client) ID (or set MS365_CLIENT_ID env var)')
     # Client secret is env-var only for security (no CLI arg to avoid shell history exposure)
+    parser.add_argument('--use-default-credential', action='store_true',
+                        help='Use Azure DefaultAzureCredential (managed identity, Azure CLI, etc.)')
     parser.add_argument('--output', '--output-dir', '-o',
                         dest='output',
                         default='./cca_m365_output',
@@ -1512,33 +1543,61 @@ Security Note:
     # Get client secret from environment only (security: not from CLI args)
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
 
-    # Validate credentials
-    if not args.tenant_id or not args.client_id or not client_secret:
-        print("ERROR: Missing credentials. Please provide:")
-        print("  --tenant-id or MS365_TENANT_ID environment variable")
-        print("  --client-id or MS365_CLIENT_ID environment variable")
-        print("  MS365_CLIENT_SECRET environment variable (required for security)")
-        print("\nNote: Client secret must be set via environment variable,")
-        print("      not CLI argument, to avoid exposing secrets in shell history.")
-        print("\nRun with --help for more information.")
-        sys.exit(1)
+    # Determine credential mode
+    use_default_credential = args.use_default_credential
+    
+    # Auto-detect: if no explicit credentials provided, try DefaultAzureCredential
+    if not use_default_credential and not (args.tenant_id and args.client_id and client_secret):
+        # Check if we're in Azure Cloud Shell or have Azure CLI logged in
+        logger.info("No explicit credentials provided, attempting DefaultAzureCredential...")
+        use_default_credential = True
+
+    # Validate credentials based on mode
+    if not use_default_credential:
+        if not args.tenant_id or not args.client_id or not client_secret:
+            print("ERROR: Missing credentials. Please either:")
+            print("")
+            print("Option 1: Use Azure CLI / Managed Identity (recommended):")
+            print("  az login")
+            print("  python m365_collect.py --use-default-credential")
+            print("")
+            print("Option 2: Use App Registration with client secret:")
+            print("  export MS365_TENANT_ID=\"your-tenant-id\"")
+            print("  export MS365_CLIENT_ID=\"your-client-id\"")
+            print("  export MS365_CLIENT_SECRET=\"your-secret\"")
+            print("  python m365_collect.py")
+            print("")
+            print("Note: In Azure Cloud Shell, --use-default-credential works automatically.")
+            sys.exit(1)
 
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
 
-    print(f"Tenant: {args.tenant_id[:8]}...{args.tenant_id[-4:]}")
-    print(f"Output: {args.output}\n")
-
     # Initialize Graph client
     try:
-        logger.info("Initializing Microsoft Graph client...")
-        graph_client = get_graph_client(
-            args.tenant_id,
-            args.client_id,
-            client_secret
-        )
+        if use_default_credential:
+            logger.info("Initializing Microsoft Graph client with DefaultAzureCredential...")
+            print("Auth: Using DefaultAzureCredential (Azure CLI / Managed Identity)")
+            graph_client = get_graph_client_default_credential()
+            # For DefaultAzureCredential, we need to discover tenant ID
+            tenant_id = args.tenant_id or "default"
+        else:
+            logger.info("Initializing Microsoft Graph client with client credentials...")
+            print(f"Tenant: {args.tenant_id[:8]}...{args.tenant_id[-4:]}")
+            graph_client = get_graph_client(
+                args.tenant_id,
+                args.client_id,
+                client_secret
+            )
+            tenant_id = args.tenant_id
+        print(f"Output: {args.output}\n")
     except Exception as e:
         print(f"ERROR: Failed to initialize Graph client: {e}")
+        if use_default_credential:
+            print("\nTroubleshooting DefaultAzureCredential:")
+            print("  - Run 'az login' to authenticate with Azure CLI")
+            print("  - In Azure Cloud Shell, credentials should be automatic")
+            print("  - Check that your account has Graph API permissions")
         sys.exit(1)
 
     # Count total collection tasks (add usage reports collection)
@@ -1628,41 +1687,41 @@ Security Note:
 
         if not args.skip_sharepoint:
             tracker.update_task("Collecting SharePoint sites...")
-            resources = collect_sharepoint_sites(graph_client, args.tenant_id)
+            resources = collect_sharepoint_sites(graph_client, tenant_id)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
 
         if not args.skip_onedrive:
             tracker.update_task("Collecting OneDrive accounts...")
-            resources = collect_onedrive_accounts(graph_client, args.tenant_id)
+            resources = collect_onedrive_accounts(graph_client, tenant_id)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
 
         if not args.skip_exchange:
             tracker.update_task("Collecting Exchange mailboxes...")
-            resources = collect_exchange_mailboxes(graph_client, args.tenant_id, mailbox_usage)
+            resources = collect_exchange_mailboxes(graph_client, tenant_id, mailbox_usage)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
 
         if not args.skip_teams:
             tracker.update_task("Collecting Teams...")
-            resources = collect_teams(graph_client, args.tenant_id)
+            resources = collect_teams(graph_client, tenant_id)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
 
         if args.include_entra:
             tracker.update_task("Collecting Entra ID users...")
-            resources = collect_entra_users(graph_client, args.tenant_id)
+            resources = collect_entra_users(graph_client, tenant_id)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
 
             tracker.update_task("Collecting Entra ID groups...")
-            resources = collect_entra_groups(graph_client, args.tenant_id)
+            resources = collect_entra_groups(graph_client, tenant_id)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
@@ -1838,7 +1897,7 @@ Security Note:
 
     # Sizing summary with change rate data
     sizing = aggregate_m365_sizing(all_resources)
-    sizing['tenant_id'] = args.tenant_id
+    sizing['tenant_id'] = tenant_id
     sizing['collection_timestamp'] = timestamp
     sizing['total_user_count'] = total_user_count
     
@@ -1864,7 +1923,7 @@ Security Note:
     # Executive summary
     exec_summary = {
         'collection_timestamp': timestamp,
-        'tenant_id': args.tenant_id,
+        'tenant_id': tenant_id,
         'total_user_count': total_user_count,
         'total_resources': len(all_resources),
         'total_storage_gb': sizing['total_storage_gb'],

@@ -28,7 +28,6 @@ NC='\033[0m' # No Color
 APP_NAME="CCA CloudShell M365 Collector"
 CHECK_ONLY=false
 GRANT_CONSENT_ONLY=false
-OUTPUT_ENV_FILE=""
 SECRET_VALIDITY_YEARS=1
 
 # Microsoft Graph API permission IDs (Application permissions)
@@ -63,10 +62,6 @@ while [[ $# -gt 0 ]]; do
             GRANT_CONSENT_ONLY=true
             shift
             ;;
-        --output-env)
-            OUTPUT_ENV_FILE="$2"
-            shift 2
-            ;;
         --secret-years)
             SECRET_VALIDITY_YEARS="$2"
             shift 2
@@ -78,7 +73,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --app-name NAME      App registration name (default: 'CCA CloudShell M365 Collector')"
             echo "  --check              Check existing app registration and permissions"
             echo "  --grant-consent      Grant admin consent to existing app"
-            echo "  --output-env FILE    Write environment variables to file"
             echo "  --secret-years N     Client secret validity in years (default: 1)"
             echo "  --help               Show this help message"
             echo ""
@@ -323,28 +317,15 @@ echo -e "  App Name:      ${APP_NAME}"
 echo -e "  App ID:        ${APP_ID}"
 echo -e "  Tenant ID:     ${TENANT_ID}"
 echo ""
-echo -e "${BOLD}Environment Variables:${NC}"
+echo -e "${BOLD}Set these environment variables in your current terminal session:${NC}"
 echo ""
 echo -e "${CYAN}export MS365_TENANT_ID=\"${TENANT_ID}\"${NC}"
 echo -e "${CYAN}export MS365_CLIENT_ID=\"${APP_ID}\"${NC}"
 echo -e "${CYAN}export MS365_CLIENT_SECRET=\"${CLIENT_SECRET}\"${NC}"
 echo ""
-
-# Write to env file if requested
-if [ -n "$OUTPUT_ENV_FILE" ]; then
-    cat > "$OUTPUT_ENV_FILE" << EOF
-# CCA CloudShell M365 Credentials
-# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-# App: ${APP_NAME}
-
-export MS365_TENANT_ID="${TENANT_ID}"
-export MS365_CLIENT_ID="${APP_ID}"
-export MS365_CLIENT_SECRET="${CLIENT_SECRET}"
-EOF
-    echo -e "${GREEN}✓ Credentials written to: ${OUTPUT_ENV_FILE}${NC}"
-    echo -e "${YELLOW}  ⚠ Keep this file secure and do not commit to version control${NC}"
-    echo ""
-fi
+echo -e "${YELLOW}⚠  IMPORTANT: Copy the secret above now - it will not be shown again!${NC}"
+echo -e "${YELLOW}⚠  Do NOT save credentials to files or commit to version control.${NC}"
+echo ""
 
 echo -e "${BOLD}Next Steps:${NC}"
 echo "  1. Set the environment variables above (or source the env file)"
