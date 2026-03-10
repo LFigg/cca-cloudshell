@@ -2442,7 +2442,7 @@ def generate_tco_inputs(wb: Workbook, resources: List[Dict],
     set_column_widths(ws, {'A': 35, 'B': 25, 'C': 20})
 
 
-def generate_m365_summary(wb: Workbook, resources: List[Dict], summary_data: Dict[str, Any] = None) -> None:
+def generate_m365_summary(wb: Workbook, resources: List[Dict], summary_data: Optional[Dict[str, Any]] = None) -> None:
     """Generate M365 Summary tab with comprehensive Exchange, SharePoint, and Teams data."""
     ws = wb.create_sheet(title="M365 Summary")
 
