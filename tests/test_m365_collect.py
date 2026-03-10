@@ -18,13 +18,22 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from m365_collect import (
+    calculate_change_rate_and_growth,
     collect_entra_groups,
     collect_entra_users,
     collect_exchange_mailboxes,
+    collect_mailbox_usage_report,
     collect_onedrive_accounts,
     collect_sharepoint_sites,
     collect_teams,
+    generate_exchange_summary,
+    generate_sharepoint_summary,
     get_graph_client,
+    get_total_user_count,
+    _parse_usage_report_csv,
+    _safe_int,
+    _safe_float,
+    _get_csv_field,
 )
 
 # =============================================================================
@@ -333,6 +342,509 @@ class TestExchangeCollection:
         resources = collect_exchange_mailboxes(mock_graph_client, tenant_id)
 
         assert len(resources) == 0
+
+    def test_collect_mailboxes_with_usage_data(self, mock_graph_client, tenant_id):
+        """Test collecting Exchange mailboxes from usage report data."""
+        # Provide comprehensive mailbox usage data (primary source)
+        mailbox_usage = {
+            "john.doe@contoso.com": {
+                "user_principal_name": "john.doe@contoso.com",
+                "display_name": "John Doe",
+                "storage_bytes": 5368709120,  # 5 GB
+                "storage_gb": 5.0,
+                "item_count": 2500,
+                "recipient_type": "UserMailbox",
+                "mailbox_type": "User",
+                "has_archive": True,
+                "is_deleted": False,
+                "deleted_item_count": 50,
+                "deleted_item_size_gb": 0.1,
+                "prohibit_send_receive_quota_gb": 50.0,
+                "quota_usage_percent": 10.0,
+                "last_activity_date": "2026-03-08",
+                "created_date": "2024-01-15",
+            },
+            "jane.smith@contoso.com": {
+                "user_principal_name": "jane.smith@contoso.com",
+                "display_name": "Jane Smith",
+                "storage_bytes": 10737418240,  # 10 GB
+                "storage_gb": 10.0,
+                "item_count": 5000,
+                "recipient_type": "UserMailbox",
+                "mailbox_type": "User",
+                "has_archive": False,
+                "is_deleted": False,
+                "deleted_item_count": 100,
+                "deleted_item_size_gb": 0.2,
+                "prohibit_send_receive_quota_gb": 50.0,
+                "quota_usage_percent": 20.0,
+                "last_activity_date": "2026-03-07",
+                "created_date": "2023-06-20",
+            }
+        }
+
+        resources = collect_exchange_mailboxes(mock_graph_client, tenant_id, mailbox_usage)
+
+        assert len(resources) == 2
+        # Check that resources are created from usage data
+        john = next((r for r in resources if 'john.doe' in r.resource_id), None)
+        assert john is not None
+        assert john.size_gb == pytest.approx(5.0, rel=0.1)
+        assert john.metadata['item_count'] == 2500
+        assert john.metadata['mailbox_type'] == "User"
+        assert john.metadata['has_archive'] is True
+        
+        jane = next((r for r in resources if 'jane.smith' in r.resource_id), None)
+        assert jane is not None
+        assert jane.size_gb == pytest.approx(10.0, rel=0.1)
+        assert jane.metadata['has_archive'] is False
+
+    def test_collect_mailboxes_different_types(self, mock_graph_client, tenant_id):
+        """Test collecting different mailbox types: User, Shared, Room, Group."""
+        mailbox_usage = {
+            "user@contoso.com": {
+                "user_principal_name": "user@contoso.com",
+                "display_name": "Regular User",
+                "storage_gb": 5.0,
+                "item_count": 1000,
+                "recipient_type": "UserMailbox",
+                "mailbox_type": "User",
+                "has_archive": False,
+                "is_deleted": False,
+            },
+            "shared@contoso.com": {
+                "user_principal_name": "shared@contoso.com",
+                "display_name": "HR Shared Mailbox",
+                "storage_gb": 20.0,
+                "item_count": 10000,
+                "recipient_type": "SharedMailbox",
+                "mailbox_type": "Shared",
+                "has_archive": True,
+                "is_deleted": False,
+            },
+            "room@contoso.com": {
+                "user_principal_name": "room@contoso.com",
+                "display_name": "Conference Room A",
+                "storage_gb": 0.5,
+                "item_count": 500,
+                "recipient_type": "RoomMailbox",
+                "mailbox_type": "Room",
+                "has_archive": False,
+                "is_deleted": False,
+            },
+            "group@contoso.com": {
+                "user_principal_name": "group@contoso.com",
+                "display_name": "Project Alpha",
+                "storage_gb": 15.0,
+                "item_count": 8000,
+                "recipient_type": "GroupMailbox",
+                "mailbox_type": "Group",
+                "has_archive": False,
+                "is_deleted": False,
+            },
+        }
+
+        resources = collect_exchange_mailboxes(mock_graph_client, tenant_id, mailbox_usage)
+
+        assert len(resources) == 4
+        
+        # Verify different types
+        types = {r.metadata['mailbox_type'] for r in resources}
+        assert types == {"User", "Shared", "Room", "Group"}
+        
+        # Check shared mailbox
+        shared = next((r for r in resources if r.metadata['mailbox_type'] == 'Shared'), None)
+        assert shared is not None
+        assert shared.metadata['has_archive'] is True
+        assert shared.size_gb == 20.0
+
+    def test_collect_mailboxes_skips_deleted(self, mock_graph_client, tenant_id):
+        """Test that deleted mailboxes are skipped."""
+        mailbox_usage = {
+            "active@contoso.com": {
+                "user_principal_name": "active@contoso.com",
+                "display_name": "Active User",
+                "storage_gb": 5.0,
+                "item_count": 1000,
+                "recipient_type": "UserMailbox",
+                "mailbox_type": "User",
+                "has_archive": False,
+                "is_deleted": False,
+            },
+            "deleted@contoso.com": {
+                "user_principal_name": "deleted@contoso.com",
+                "display_name": "Deleted User",
+                "storage_gb": 2.0,
+                "item_count": 500,
+                "recipient_type": "UserMailbox",
+                "mailbox_type": "User",
+                "has_archive": False,
+                "is_deleted": True,
+            },
+        }
+
+        resources = collect_exchange_mailboxes(mock_graph_client, tenant_id, mailbox_usage)
+
+        assert len(resources) == 1
+        assert resources[0].metadata['display_name'] == "Active User"
+
+
+# =============================================================================
+# Usage Reports & Change Rate Tests
+# =============================================================================
+
+class TestUsageReports:
+    """Tests for usage report parsing and change rate calculation."""
+
+    def test_parse_usage_report_csv_basic(self):
+        """Test parsing CSV from usage reports."""
+        csv_content = """Report Refresh Date,Site URL,Storage Used (Byte)
+2026-03-01,https://contoso.sharepoint.com/sites/hr,5368709120
+2026-03-01,https://contoso.sharepoint.com/sites/eng,10737418240"""
+
+        rows = _parse_usage_report_csv(csv_content)
+
+        assert len(rows) == 2
+        assert rows[0]['Site URL'] == "https://contoso.sharepoint.com/sites/hr"
+        assert rows[0]['Storage Used (Byte)'] == "5368709120"
+
+    def test_parse_usage_report_csv_with_bom(self):
+        """Test parsing CSV with BOM marker."""
+        csv_content = """\ufeffReport Refresh Date,Site URL,Storage Used (Byte)
+2026-03-01,https://contoso.sharepoint.com/sites/hr,5368709120"""
+
+        rows = _parse_usage_report_csv(csv_content)
+
+        assert len(rows) == 1
+        assert 'Report Refresh Date' in rows[0]
+
+    def test_calculate_change_rate_basic(self):
+        """Test change rate calculation with increasing storage."""
+        history = [
+            {'date': '2026-01-01', 'storage_bytes': 1000000000},
+            {'date': '2026-01-02', 'storage_bytes': 1010000000},
+            {'date': '2026-01-03', 'storage_bytes': 1020000000},
+            {'date': '2026-01-04', 'storage_bytes': 1030000000},
+            {'date': '2026-01-05', 'storage_bytes': 1040000000},
+            {'date': '2026-01-06', 'storage_bytes': 1050000000},
+            {'date': '2026-01-07', 'storage_bytes': 1060000000},
+        ]
+
+        result = calculate_change_rate_and_growth(history)
+
+        assert result['daily_change_gb'] > 0
+        assert result['daily_change_percent'] > 0
+        assert result['annual_growth_percent'] > 0
+
+    def test_calculate_change_rate_stable(self):
+        """Test change rate calculation with stable storage."""
+        history = [
+            {'date': '2026-01-01', 'storage_bytes': 1000000000},
+            {'date': '2026-01-02', 'storage_bytes': 1000000000},
+            {'date': '2026-01-03', 'storage_bytes': 1000000000},
+            {'date': '2026-01-04', 'storage_bytes': 1000000000},
+            {'date': '2026-01-05', 'storage_bytes': 1000000000},
+            {'date': '2026-01-06', 'storage_bytes': 1000000000},
+            {'date': '2026-01-07', 'storage_bytes': 1000000000},
+        ]
+
+        result = calculate_change_rate_and_growth(history)
+
+        assert result['daily_change_gb'] == 0.0
+        assert result['daily_change_percent'] == 0.0
+        assert result['annual_growth_percent'] == 0.0
+
+    def test_calculate_change_rate_insufficient_data(self):
+        """Test change rate calculation with insufficient data."""
+        history = [
+            {'date': '2026-01-01', 'storage_bytes': 1000000000},
+            {'date': '2026-01-02', 'storage_bytes': 1010000000},
+        ]
+
+        result = calculate_change_rate_and_growth(history)
+
+        # Should return zeros for insufficient data (< 7 days)
+        assert result['daily_change_gb'] == 0.0
+        assert result['daily_change_percent'] == 0.0
+        assert result['annual_growth_percent'] == 0.0
+
+    def test_calculate_change_rate_empty_history(self):
+        """Test change rate calculation with empty history."""
+        result = calculate_change_rate_and_growth([])
+
+        assert result['daily_change_gb'] == 0.0
+        assert result['daily_change_percent'] == 0.0
+        assert result['annual_growth_percent'] == 0.0
+
+
+class TestHelperFunctions:
+    """Tests for helper functions used in data parsing."""
+
+    def test_safe_int_valid(self):
+        """Test _safe_int with valid inputs."""
+        assert _safe_int("123") == 123
+        assert _safe_int(456) == 456
+        assert _safe_int("0") == 0
+
+    def test_safe_int_invalid(self):
+        """Test _safe_int with invalid inputs."""
+        assert _safe_int(None) == 0
+        assert _safe_int("") == 0
+        assert _safe_int("abc") == 0
+        assert _safe_int(None, default=99) == 99
+
+    def test_safe_float_valid(self):
+        """Test _safe_float with valid inputs."""
+        assert _safe_float("12.5") == 12.5
+        assert _safe_float(45.6) == 45.6
+        assert _safe_float("0") == 0.0
+
+    def test_safe_float_invalid(self):
+        """Test _safe_float with invalid inputs."""
+        assert _safe_float(None) == 0.0
+        assert _safe_float("") == 0.0
+        assert _safe_float("abc") == 0.0
+        assert _safe_float(None, default=1.5) == 1.5
+
+    def test_get_csv_field_single_key(self):
+        """Test _get_csv_field with single key match."""
+        row = {"Field A": "value1", "Field B": "value2"}
+        assert _get_csv_field(row, "Field A") == "value1"
+        assert _get_csv_field(row, "Field B") == "value2"
+
+    def test_get_csv_field_multiple_keys(self):
+        """Test _get_csv_field with multiple possible keys."""
+        row = {"Storage Used (Byte)": "5000"}
+        # Try multiple key variants
+        result = _get_csv_field(row, "storageUsedInBytes", "Storage Used (Byte)", "Storage Used (Bytes)")
+        assert result == "5000"
+
+    def test_get_csv_field_missing(self):
+        """Test _get_csv_field with missing keys."""
+        row = {"Field A": "value1"}
+        assert _get_csv_field(row, "Missing") is None
+        assert _get_csv_field(row, "Also Missing", "Nope") is None
+
+    def test_get_csv_field_empty_value(self):
+        """Test _get_csv_field skips empty values."""
+        row = {"Field A": "", "Field B": "value2"}
+        assert _get_csv_field(row, "Field A", "Field B") == "value2"
+
+
+class TestMailboxUsageReportParsing:
+    """Tests for comprehensive mailbox usage report parsing."""
+
+    def test_parse_mailbox_report_with_all_fields(self):
+        """Test parsing mailbox usage report with all available fields."""
+        csv_content = """Report Refresh Date,User Principal Name,Display Name,Is Deleted,Deleted Date,Created Date,Last Activity Date,Item Count,Storage Used (Byte),Issue Warning Quota (Byte),Prohibit Send Quota (Byte),Prohibit Send/Receive Quota (Byte),Deleted Item Count,Deleted Item Size (Byte),Deleted Item Quota (Byte),Has Archive,Recipient Type,Report Period
+2026-03-09,john@contoso.com,John Doe,No,,2024-01-15,2026-03-08,2500,5368709120,49392123904,50331648000,53687091200,50,104857600,31457280000,Yes,UserMailbox,180
+2026-03-09,shared@contoso.com,HR Shared,No,,2023-06-20,2026-03-07,10000,21474836480,49392123904,50331648000,53687091200,100,209715200,31457280000,No,SharedMailbox,180
+2026-03-09,room@contoso.com,Conf Room A,No,,2022-08-01,2026-03-06,500,536870912,49392123904,50331648000,53687091200,10,10485760,31457280000,No,RoomMailbox,180"""
+
+        rows = _parse_usage_report_csv(csv_content)
+
+        assert len(rows) == 3
+        
+        # Check John's mailbox
+        john = rows[0]
+        assert john['User Principal Name'] == "john@contoso.com"
+        assert john['Display Name'] == "John Doe"
+        assert john['Has Archive'] == "Yes"
+        assert john['Recipient Type'] == "UserMailbox"
+        assert john['Storage Used (Byte)'] == "5368709120"
+        
+        # Check shared mailbox
+        shared = rows[1]
+        assert shared['Recipient Type'] == "SharedMailbox"
+        assert shared['Has Archive'] == "No"
+        
+        # Check room mailbox
+        room = rows[2]
+        assert room['Recipient Type'] == "RoomMailbox"
+
+    def test_parse_mailbox_report_recipient_types(self):
+        """Test that different recipient types are preserved."""
+        csv_content = """User Principal Name,Recipient Type,Storage Used (Byte)
+user@contoso.com,UserMailbox,1000
+shared@contoso.com,SharedMailbox,2000
+room@contoso.com,RoomMailbox,500
+equipment@contoso.com,EquipmentMailbox,300
+group@contoso.com,GroupMailbox,5000"""
+
+        rows = _parse_usage_report_csv(csv_content)
+
+        types = [row['Recipient Type'] for row in rows]
+        assert types == ["UserMailbox", "SharedMailbox", "RoomMailbox", "EquipmentMailbox", "GroupMailbox"]
+
+
+# =============================================================================
+# Summary Generation Tests
+# =============================================================================
+
+class TestExchangeSummaryGeneration:
+    """Tests for Exchange summary generation."""
+
+    def test_generate_exchange_summary_user_mailboxes(self):
+        """Test Exchange summary with user mailboxes."""
+        mailbox_usage = {
+            "user1@contoso.com": {
+                "recipient_type": "UserMailbox",
+                "mailbox_type": "User",
+                "is_deleted": False,
+                "has_archive": True,
+                "item_count": 1000,
+                "storage_gb": 5.0,
+                "deleted_item_count": 50,
+                "deleted_item_size_gb": 0.1,
+            },
+            "user2@contoso.com": {
+                "recipient_type": "UserMailbox",
+                "mailbox_type": "User",
+                "is_deleted": False,
+                "has_archive": False,
+                "item_count": 2000,
+                "storage_gb": 10.0,
+                "deleted_item_count": 100,
+                "deleted_item_size_gb": 0.2,
+            },
+        }
+
+        summary = generate_exchange_summary(mailbox_usage)
+
+        assert summary['user_active']['count'] == 2
+        assert summary['user_active']['item_count'] == 3000
+        assert summary['user_active']['item_size_gib'] == 15.0
+        assert summary['user_archive_enabled']['count'] == 1
+
+    def test_generate_exchange_summary_mixed_types(self):
+        """Test Exchange summary with mixed mailbox types."""
+        mailbox_usage = {
+            "user@contoso.com": {
+                "recipient_type": "UserMailbox",
+                "is_deleted": False,
+                "has_archive": False,
+                "item_count": 1000,
+                "storage_gb": 5.0,
+                "deleted_item_count": 0,
+                "deleted_item_size_gb": 0.0,
+            },
+            "shared@contoso.com": {
+                "recipient_type": "SharedMailbox",
+                "is_deleted": False,
+                "has_archive": False,
+                "item_count": 500,
+                "storage_gb": 2.0,
+                "deleted_item_count": 0,
+                "deleted_item_size_gb": 0.0,
+            },
+            "group@contoso.com": {
+                "recipient_type": "GroupMailbox",
+                "is_deleted": False,
+                "has_archive": False,
+                "item_count": 200,
+                "storage_gb": 1.0,
+                "deleted_item_count": 0,
+                "deleted_item_size_gb": 0.0,
+            },
+            "room@contoso.com": {
+                "recipient_type": "RoomMailbox",
+                "is_deleted": False,
+                "has_archive": False,
+                "item_count": 100,
+                "storage_gb": 0.5,
+                "deleted_item_count": 0,
+                "deleted_item_size_gb": 0.0,
+            },
+        }
+
+        summary = generate_exchange_summary(mailbox_usage)
+
+        assert summary['user_active']['count'] == 1
+        assert summary['shared_active']['count'] == 1
+        assert summary['group_active']['count'] == 1
+        assert summary['room_equipment_active']['count'] == 1
+        assert summary['totals_all']['count'] == 4
+
+    def test_generate_exchange_summary_soft_deleted(self):
+        """Test Exchange summary categorizes soft-deleted mailboxes."""
+        mailbox_usage = {
+            "active@contoso.com": {
+                "recipient_type": "UserMailbox",
+                "is_deleted": False,
+                "has_archive": False,
+                "item_count": 1000,
+                "storage_gb": 5.0,
+                "deleted_item_count": 0,
+                "deleted_item_size_gb": 0.0,
+            },
+            "deleted@contoso.com": {
+                "recipient_type": "UserMailbox",
+                "is_deleted": True,
+                "has_archive": False,
+                "item_count": 500,
+                "storage_gb": 2.0,
+                "deleted_item_count": 0,
+                "deleted_item_size_gb": 0.0,
+            },
+        }
+
+        summary = generate_exchange_summary(mailbox_usage)
+
+        assert summary['user_active']['count'] == 1
+        assert summary['softdeleted_active']['count'] == 1
+
+
+class TestSharePointSummaryGeneration:
+    """Tests for SharePoint summary generation."""
+
+    def test_generate_sharepoint_summary_basic(self):
+        """Test SharePoint summary with mixed site types."""
+        site_usage = {
+            "https://contoso.sharepoint.com/sites/hr": {
+                "storage_gb": 100.0,
+                "is_team_site": False,
+                "is_deleted": False,
+            },
+            "https://contoso.sharepoint.com/sites/engineering": {
+                "storage_gb": 200.0,
+                "is_team_site": True,
+                "is_deleted": False,
+            },
+            "https://contoso.sharepoint.com/teams/marketing": {
+                "storage_gb": 150.0,
+                "is_team_site": True,
+                "is_deleted": False,
+            },
+        }
+
+        summary = generate_sharepoint_summary(site_usage)
+
+        assert summary['sharepoint_sites']['count'] == 1
+        assert summary['sharepoint_sites']['storage_gib'] == 100.0
+        assert summary['team_sites']['count'] == 2
+        assert summary['team_sites']['storage_gib'] == 350.0
+        assert summary['total']['count'] == 3
+
+    def test_generate_sharepoint_summary_with_deleted(self):
+        """Test SharePoint summary excludes deleted sites from total."""
+        site_usage = {
+            "https://contoso.sharepoint.com/sites/active": {
+                "storage_gb": 100.0,
+                "is_team_site": False,
+                "is_deleted": False,
+            },
+            "https://contoso.sharepoint.com/sites/deleted": {
+                "storage_gb": 50.0,
+                "is_team_site": False,
+                "is_deleted": True,
+            },
+        }
+
+        summary = generate_sharepoint_summary(site_usage)
+
+        assert summary['total']['count'] == 1  # Excludes deleted
+        assert summary['deleted_sites']['count'] == 1
+        assert summary['deleted_sites']['storage_gib'] == 50.0
 
 
 # =============================================================================

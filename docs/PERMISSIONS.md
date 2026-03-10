@@ -712,7 +712,8 @@ The M365 collector requires an Azure AD App Registration with Microsoft Graph AP
 | `Mail.Read` | Application | Read mailbox metadata |
 | `Team.ReadBasic.All` | Application | Read Teams information |
 | `Group.Read.All` | Application | Read group membership |
-| `Directory.Read.All` | Application | Read Entra ID users/groups |
+| `Reports.Read.All` | Application | Usage reports for change rate and growth metrics |
+| `Directory.Read.All` | Application | Read Entra ID users/groups (optional) |
 
 ### App Registration Setup
 
@@ -744,6 +745,7 @@ export MS365_CLIENT_SECRET="your-client-secret"
 | OneDrive | `Files.Read.All`, `User.Read.All` |
 | Exchange Mailboxes | `User.Read.All`, `Mail.Read` |
 | Microsoft Teams | `Team.ReadBasic.All`, `Group.Read.All` |
+| Change Rate & Growth | `Reports.Read.All` |
 | Entra ID (optional) | `Directory.Read.All`, `User.Read.All`, `Group.Read.All` |
 
 ---

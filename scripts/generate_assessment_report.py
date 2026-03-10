@@ -165,6 +165,54 @@ def load_summary_files(paths: List[str]) -> Dict[str, Any]:
     return merged
 
 
+def load_m365_summary_data(inventory_files: List[str]) -> Dict[str, Any]:
+    """
+    Load M365-specific summary data from summary files.
+    
+    Looks for corresponding summary files for M365 inventory files and extracts
+    enhanced M365 metadata like exchange_mailbox_breakdown, sharepoint_site_breakdown,
+    and teams_activity.
+    """
+    m365_data = {
+        'exchange_mailbox_breakdown': None,
+        'sharepoint_site_breakdown': None,
+        'teams_activity': None,
+        'change_rates': None,
+        'total_user_count': 0,
+    }
+    
+    for inv_path in inventory_files:
+        # Check if this is an M365 file
+        if 'm365' not in inv_path.lower() and 'microsoft365' not in inv_path.lower():
+            continue
+            
+        # Try to find corresponding summary file
+        # Convert cca_inv_*.json or cca_m365_inv_*.json to cca_sum_*.json or cca_m365_sum_*.json
+        sum_path = inv_path.replace('_inv_', '_sum_')
+        
+        data = load_json_file(sum_path)
+        if not data:
+            continue
+        
+        # Extract M365-specific breakdowns
+        if 'exchange_mailbox_breakdown' in data and data['exchange_mailbox_breakdown']:
+            m365_data['exchange_mailbox_breakdown'] = data['exchange_mailbox_breakdown']
+        
+        if 'sharepoint_site_breakdown' in data and data['sharepoint_site_breakdown']:
+            m365_data['sharepoint_site_breakdown'] = data['sharepoint_site_breakdown']
+        
+        if 'teams_activity' in data and data['teams_activity']:
+            m365_data['teams_activity'] = data['teams_activity']
+        
+        if 'change_rates' in data and data['change_rates']:
+            m365_data['change_rates'] = data['change_rates']
+        
+        if 'total_user_count' in data:
+            m365_data['total_user_count'] = data['total_user_count']
+    
+    return m365_data
+
+
 def load_cost_files(paths: List[str]) -> Dict[str, Any]:
     """Load and merge cost data files."""
     merged = {
@@ -2394,8 +2442,8 @@ def generate_tco_inputs(wb: Workbook, resources: List[Dict],
     set_column_widths(ws, {'A': 35, 'B': 25, 'C': 20})
 
 
-def generate_m365_summary(wb: Workbook, resources: List[Dict]) -> None:
-    """Generate M365 Summary tab."""
+def generate_m365_summary(wb: Workbook, resources: List[Dict], summary_data: Dict[str, Any] = None) -> None:
+    """Generate M365 Summary tab with comprehensive Exchange, SharePoint, and Teams data."""
     ws = wb.create_sheet(title="M365 Summary")
 
     row = 1
@@ -2427,6 +2475,10 @@ def generate_m365_summary(wb: Workbook, resources: List[Dict]) -> None:
             cat = 'SharePoint Sites'
         elif 'teams' in rtype:
             cat = 'Teams'
+        elif 'user' in rtype:
+            cat = 'Users (Entra ID)'
+        elif 'group' in rtype:
+            cat = 'Groups (Entra ID)'
         else:
             cat = 'Other'
 
@@ -2437,7 +2489,7 @@ def generate_m365_summary(wb: Workbook, resources: List[Dict]) -> None:
     row += 1
 
     total_size = 0
-    for category in ['Exchange Mailboxes', 'OneDrive Accounts', 'SharePoint Sites', 'Teams', 'Other']:
+    for category in ['Exchange Mailboxes', 'OneDrive Accounts', 'SharePoint Sites', 'Teams', 'Users (Entra ID)', 'Groups (Entra ID)', 'Other']:
         data = m365_categories.get(category, {'count': 0, 'size_gb': 0})
         if data['count'] > 0:
             total_size += data['size_gb']
@@ -2456,11 +2508,167 @@ def generate_m365_summary(wb: Workbook, resources: List[Dict]) -> None:
     ws.cell(row=row, column=4, value=round(total_size / 1024, 2)).font = Font(bold=True)
     row += 3
 
-    # === Licensing Info (if available) ===
-    row = write_section_header(ws, row, "M365 License Information",
-                                "(From collected metadata)")
+    # === Exchange Mailbox Breakdown ===
+    mailbox_resources = [r for r in m365_resources if 'mailbox' in r.get('resource_type', '')]
+    if mailbox_resources:
+        row = write_section_header(ws, row, "Exchange Mailbox Breakdown",
+                                    "(By mailbox type)")
 
-    # Count license types
+        # Analyze mailboxes by type
+        mailbox_types = defaultdict(lambda: {'count': 0, 'size_gb': 0})
+        archive_count = 0
+        deleted_count = 0
+
+        for r in mailbox_resources:
+            metadata = r.get('metadata', {}) or {}
+            mtype = metadata.get('mailbox_type', 'Unknown')
+            mailbox_types[mtype]['count'] += 1
+            mailbox_types[mtype]['size_gb'] += r.get('size_gb', 0) or 0
+
+            if metadata.get('has_archive'):
+                archive_count += 1
+            if metadata.get('is_deleted'):
+                deleted_count += 1
+
+        write_header_row(ws, row, ["Mailbox Type", "Count", "Size (GB)", "Size (TB)"])
+        row += 1
+
+        mailbox_total_size = 0
+        for mtype in ['User', 'Shared', 'Room', 'Equipment', 'Group', 'Discovery', 'Unknown']:
+            data = mailbox_types.get(mtype, {'count': 0, 'size_gb': 0})
+            if data['count'] > 0:
+                mailbox_total_size += data['size_gb']
+                write_data_row(ws, row, [
+                    mtype,
+                    data['count'],
+                    round(data['size_gb'], 1),
+                    round(data['size_gb'] / 1024, 2)
+                ])
+                row += 1
+
+        # Total
+        ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
+        ws.cell(row=row, column=2, value=len(mailbox_resources)).font = Font(bold=True)
+        ws.cell(row=row, column=3, value=round(mailbox_total_size, 1)).font = Font(bold=True)
+        ws.cell(row=row, column=4, value=round(mailbox_total_size / 1024, 2)).font = Font(bold=True)
+        row += 2
+
+        # Archive and deleted status
+        ws.cell(row=row, column=1, value="Archive Enabled:")
+        ws.cell(row=row, column=2, value=archive_count)
+        row += 1
+        ws.cell(row=row, column=1, value="Soft Deleted:")
+        ws.cell(row=row, column=2, value=deleted_count)
+        row += 3
+
+    # === SharePoint Site Breakdown ===
+    sharepoint_resources = [r for r in m365_resources if 'sharepoint' in r.get('resource_type', '')]
+    if sharepoint_resources:
+        row = write_section_header(ws, row, "SharePoint Site Breakdown",
+                                    "(By site type)")
+
+        # Analyze sites by type
+        site_types = defaultdict(lambda: {'count': 0, 'size_gb': 0})
+        deleted_sites = 0
+
+        for r in sharepoint_resources:
+            metadata = r.get('metadata', {}) or {}
+            stype = metadata.get('site_type', 'Unknown')
+            site_types[stype]['count'] += 1
+            site_types[stype]['size_gb'] += r.get('size_gb', 0) or 0
+
+            if metadata.get('is_deleted'):
+                deleted_sites += 1
+
+        write_header_row(ws, row, ["Site Type", "Count", "Size (GB)", "Size (TB)"])
+        row += 1
+
+        site_total_size = 0
+        for stype in ['Personal', 'Team Site', 'Communication Site', 'Group Site', 'Unknown']:
+            data = site_types.get(stype, {'count': 0, 'size_gb': 0})
+            if data['count'] > 0:
+                site_total_size += data['size_gb']
+                write_data_row(ws, row, [
+                    stype if stype != 'Personal' else 'Personal (OneDrive)',
+                    data['count'],
+                    round(data['size_gb'], 1),
+                    round(data['size_gb'] / 1024, 2)
+                ])
+                row += 1
+
+        # Total
+        ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
+        ws.cell(row=row, column=2, value=len(sharepoint_resources)).font = Font(bold=True)
+        ws.cell(row=row, column=3, value=round(site_total_size, 1)).font = Font(bold=True)
+        ws.cell(row=row, column=4, value=round(site_total_size / 1024, 2)).font = Font(bold=True)
+        row += 2
+
+        # Deleted sites
+        ws.cell(row=row, column=1, value="Deleted Sites:")
+        ws.cell(row=row, column=2, value=deleted_sites)
+        row += 3
+
+    # === OneDrive Summary ===
+    onedrive_resources = [r for r in m365_resources if 'onedrive' in r.get('resource_type', '')]
+    if onedrive_resources:
+        row = write_section_header(ws, row, "OneDrive Summary")
+
+        onedrive_total = sum(r.get('size_gb', 0) or 0 for r in onedrive_resources)
+
+        write_header_row(ws, row, ["Metric", "Value"])
+        row += 1
+        write_data_row(ws, row, ["Total Accounts", len(onedrive_resources)])
+        row += 1
+        write_data_row(ws, row, ["Total Storage (GB)", round(onedrive_total, 1)])
+        row += 1
+        write_data_row(ws, row, ["Total Storage (TB)", round(onedrive_total / 1024, 2)])
+        row += 1
+        if onedrive_resources:
+            avg_size = onedrive_total / len(onedrive_resources)
+            write_data_row(ws, row, ["Avg per Account (GB)", round(avg_size, 1)])
+            row += 1
+        row += 2
+
+    # === Teams Activity (from summary data) ===
+    teams_activity = None
+    if summary_data and 'teams_activity' in summary_data:
+        teams_activity = summary_data['teams_activity']
+    
+    teams_resources = [r for r in m365_resources if 'teams' in r.get('resource_type', '')]
+    if teams_resources or teams_activity:
+        row = write_section_header(ws, row, "Microsoft Teams Summary")
+
+        if teams_resources:
+            archived_teams = len([r for r in teams_resources 
+                                  if (r.get('metadata', {}) or {}).get('is_archived')])
+            
+            write_header_row(ws, row, ["Metric", "Value"])
+            row += 1
+            write_data_row(ws, row, ["Total Teams", len(teams_resources)])
+            row += 1
+            write_data_row(ws, row, ["Active Teams", len(teams_resources) - archived_teams])
+            row += 1
+            write_data_row(ws, row, ["Archived Teams", archived_teams])
+            row += 1
+
+        if teams_activity:
+            row += 1
+            ws.cell(row=row, column=1, value="Teams Activity Metrics:").font = SECTION_FONT
+            row += 1
+            write_data_row(ws, row, ["Active Users", teams_activity.get('active_users', 0)])
+            row += 1
+            write_data_row(ws, row, ["Team Chat Messages", teams_activity.get('team_chat_messages', 0)])
+            row += 1
+            write_data_row(ws, row, ["Private Chat Messages", teams_activity.get('private_chat_messages', 0)])
+            row += 1
+            write_data_row(ws, row, ["Calls", teams_activity.get('calls', 0)])
+            row += 1
+            write_data_row(ws, row, ["Meetings", teams_activity.get('meetings', 0)])
+            row += 1
+
+        row += 2
+
+    # === Licensing Info (if available) ===
     license_counts = defaultdict(int)
     for r in m365_resources:
         metadata = r.get('metadata', {}) or {}
@@ -2473,6 +2681,8 @@ def generate_m365_summary(wb: Workbook, resources: List[Dict]) -> None:
             license_counts[lic_name] += 1
 
     if license_counts:
+        row = write_section_header(ws, row, "M365 License Information",
+                                    "(From collected metadata)")
         write_header_row(ws, row, ["License Type", "User Count"])
         row += 1
 
@@ -2480,8 +2690,49 @@ def generate_m365_summary(wb: Workbook, resources: List[Dict]) -> None:
             write_data_row(ws, row, [lic_type, count])
             row += 1
 
+        row += 2
+
+    # === M365 Sizing Summary ===
+    row = write_section_header(ws, row, "M365 Sizing Summary",
+                                "(For Cohesity DataProtect input)")
+
+    # Data for sizing
+    exchange_size = sum(r.get('size_gb', 0) or 0 for r in mailbox_resources) if mailbox_resources else 0
+    onedrive_size = sum(r.get('size_gb', 0) or 0 for r in onedrive_resources) if onedrive_resources else 0
+    sharepoint_size = sum(r.get('size_gb', 0) or 0 for r in sharepoint_resources) if sharepoint_resources else 0
+
+    write_header_row(ws, row, ["Workload", "Size (TB)", "Recommended Protection"])
+    row += 1
+    write_data_row(ws, row, ["Exchange Online", round(exchange_size / 1024, 2), "Daily backup, 30-day retention"])
+    row += 1
+    write_data_row(ws, row, ["OneDrive for Business", round(onedrive_size / 1024, 2), "Daily backup, 30-day retention"])
+    row += 1
+    write_data_row(ws, row, ["SharePoint Online", round(sharepoint_size / 1024, 2), "Daily backup, 30-day retention"])
+    row += 1
+    write_data_row(ws, row, ["Microsoft Teams", "Included in SharePoint", "Backed up via SharePoint"])
+    row += 1
+
+    # Total
+    total_m365_tb = (exchange_size + onedrive_size + sharepoint_size) / 1024
+    ws.cell(row=row, column=1, value="TOTAL M365 DATA").font = Font(bold=True)
+    ws.cell(row=row, column=2, value=round(total_m365_tb, 2)).font = Font(bold=True)
+    row += 3
+
+    # === Change Rate Estimates ===
+    row = write_section_header(ws, row, "Estimated Change Rates",
+                                "(Based on typical M365 workloads)")
+    
+    write_header_row(ws, row, ["Workload", "Daily Change Rate", "Notes"])
+    row += 1
+    write_data_row(ws, row, ["Exchange Online", "2-3%", "Email and calendar changes"])
+    row += 1
+    write_data_row(ws, row, ["OneDrive for Business", "3-5%", "User file modifications"])
+    row += 1
+    write_data_row(ws, row, ["SharePoint Online", "2-4%", "Document library changes"])
+    row += 1
+
     # Set column widths
-    set_column_widths(ws, {'A': 30, 'B': 15, 'C': 15, 'D': 15})
+    set_column_widths(ws, {'A': 35, 'B': 20, 'C': 35, 'D': 15})
 
 
 def generate_account_detail(wb: Workbook, resources: List[Dict]) -> None:
@@ -2663,6 +2914,11 @@ def generate_report(inventory_files: List[str], cost_files: List[str],
         else:
             print("  No change rate data found in files")
 
+    # Load M365 summary data (for enhanced breakdowns)
+    m365_summary_data = load_m365_summary_data(inventory_files)
+    if m365_summary_data.get('teams_activity') or m365_summary_data.get('exchange_mailbox_breakdown'):
+        print("  Found M365 enhanced summary data")
+
     print("Generating report...")
 
     # Create workbook
@@ -2676,7 +2932,7 @@ def generate_report(inventory_files: List[str], cost_files: List[str],
     generate_snapshot_analysis(wb, resources)
     generate_unprotected_resources(wb, resources)
     generate_tco_inputs(wb, resources, cost_data)
-    generate_m365_summary(wb, resources)
+    generate_m365_summary(wb, resources, m365_summary_data)
     generate_account_detail(wb, resources)
     generate_raw_data(wb, resources)
 

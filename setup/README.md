@@ -15,6 +15,7 @@ This folder contains scripts and templates to set up permissions for each cloud 
 | **AWS StackSet** | — | [aws-stackset-member-role.yaml](aws-stackset-member-role.yaml) |
 | **Azure** | [setup-azure-permissions.sh](setup-azure-permissions.sh) | [azure-custom-role.json](azure-custom-role.json) |
 | **GCP** | [setup-gcp-permissions.sh](setup-gcp-permissions.sh) | [gcp-custom-role.yaml](gcp-custom-role.yaml) |
+| **M365** | [setup-m365-permissions.sh](setup-m365-permissions.sh) | — (uses Entra ID App Registration) |
 
 ---
 
@@ -157,12 +158,96 @@ gcloud iam roles create CCACloudShellReader \
 
 ## Microsoft 365 Setup
 
-M365 requires an Azure AD App Registration. See [docs/collectors/m365.md](../docs/collectors/m365.md) for:
-- Creating an App Registration
-- Granting Microsoft Graph API permissions
-- Admin consent requirements
+M365 requires an Azure AD (Entra ID) App Registration with Microsoft Graph API permissions.
 
-No IAM scripts needed - permissions are granted through Azure AD portal.
+### Prerequisites
+
+- Azure CLI installed and logged in (`az login`)
+- **Global Administrator** or **Application Administrator** role in your Entra ID tenant
+
+### Quick Setup (Recommended)
+
+Run the setup script:
+```bash
+# Interactive setup - creates app registration and grants permissions
+./setup/setup-m365-permissions.sh
+
+# Custom app name
+./setup/setup-m365-permissions.sh --app-name "My CCA Collector"
+
+# Check existing setup
+./setup/setup-m365-permissions.sh --check
+
+# Grant admin consent to existing app
+./setup/setup-m365-permissions.sh --grant-consent
+
+# Output credentials to file
+./setup/setup-m365-permissions.sh --output-env ~/.cca-m365-credentials
+```
+
+The script will:
+1. Create an Azure AD App Registration
+2. Configure Microsoft Graph API permissions
+3. Create a client secret
+4. Grant admin consent
+5. Output the environment variables needed
+
+### Required Permissions
+
+The script configures these Microsoft Graph API permissions:
+
+| Permission | Purpose |
+|------------|---------|
+| `Sites.Read.All` | Read SharePoint sites |
+| `Files.Read.All` | Read OneDrive files/storage |
+| `User.Read.All` | Read user profiles & mailbox info |
+| `Mail.Read` | Read mailbox metadata |
+| `Team.ReadBasic.All` | Read Teams information |
+| `Group.Read.All` | Read group membership |
+| `Reports.Read.All` | Usage reports for sizing/growth metrics |
+| `Directory.Read.All` | Read Entra ID users/groups |
+
+### Manual Setup (Azure Portal)
+
+If you prefer manual setup:
+
+1. Go to **Azure Portal** → **Microsoft Entra ID** → **App registrations**
+2. Click **New registration**
+3. Name: `CCA CloudShell M365 Collector`
+4. Supported account types: **Single tenant**
+5. Click **Register**
+6. Note the **Application (client) ID** and **Directory (tenant) ID**
+7. Go to **Certificates & secrets** → **New client secret**
+8. Note the secret value (shown only once)
+9. Go to **API permissions** → **Add a permission** → **Microsoft Graph** → **Application permissions**
+10. Add each permission from the table above
+11. Click **Grant admin consent for [Your Tenant]**
+
+### Environment Variables
+
+After setup, configure these environment variables:
+```bash
+export MS365_TENANT_ID="your-tenant-id"
+export MS365_CLIENT_ID="your-client-id"
+export MS365_CLIENT_SECRET="your-client-secret"
+```
+
+Or source the credentials file if you used `--output-env`:
+```bash
+source ~/.cca-m365-credentials
+```
+
+### Running the Collector
+
+```bash
+# Run M365 collector
+python m365_collect.py
+
+# Or use unified collector
+python collect.py --cloud m365
+```
+
+See [docs/collectors/m365.md](../docs/collectors/m365.md) for detailed usage options.
 
 ---
 

@@ -1,45 +1,45 @@
 {
   "provider": "gcp",
-  "run_id": "20260304-192214-1693aea3",
-  "timestamp": "2026-03-04T19:22:14.438940Z",
+  "run_id": "20260310-150221-b3fc33f6",
+  "timestamp": "2026-03-10T15:02:21.339499Z",
   "project_id": "enterprise-project-12345",
   "total_resources": 1172,
-  "total_capacity_gb": 502779.53,
+  "total_capacity_gb": 510584.04,
   "summaries": [
     {
       "provider": "gcp",
       "service_family": "ComputeSnapshot",
       "resource_type": "gcp:compute:snapshot",
       "resource_count": 100,
-      "total_gb": 14850.0
+      "total_gb": 15320.0
     },
     {
       "provider": "gcp",
       "service_family": "CloudStorage",
       "resource_type": "gcp:storage:bucket",
       "resource_count": 40,
-      "total_gb": 16340.2
+      "total_gb": 35908.8
     },
     {
       "provider": "gcp",
       "service_family": "Compute",
       "resource_type": "gcp:compute:instance",
       "resource_count": 200,
-      "total_gb": 88000.0
+      "total_gb": 88610.0
     },
     {
       "provider": "gcp",
       "service_family": "PersistentDisk",
       "resource_type": "gcp:compute:disk",
       "resource_count": 320,
-      "total_gb": 170070.0
+      "total_gb": 153460.0
     },
     {
       "provider": "gcp",
       "service_family": "CloudSQL",
       "resource_type": "gcp:sql:instance",
       "resource_count": 60,
-      "total_gb": 8390.0
+      "total_gb": 7300.0
     },
     {
       "provider": "gcp",
@@ -60,21 +60,21 @@
       "service_family": "Filestore",
       "resource_type": "gcp:filestore:instance",
       "resource_count": 20,
-      "total_gb": 139264.0
+      "total_gb": 160768.0
     },
     {
       "provider": "gcp",
       "service_family": "Memorystore",
       "resource_type": "gcp:redis:instance",
       "resource_count": 20,
-      "total_gb": 300.0
+      "total_gb": 212.0
     },
     {
       "provider": "gcp",
       "service_family": "Backup",
       "resource_type": "gcp:backupdr:vault",
       "resource_count": 12,
-      "total_gb": 39829.0
+      "total_gb": 26093.0
     },
     {
       "provider": "gcp",
@@ -88,14 +88,14 @@
       "service_family": "Backup",
       "resource_type": "gcp:backupdr:datasource",
       "resource_count": 80,
-      "total_gb": 20667.0
+      "total_gb": 18259.0
     },
     {
       "provider": "gcp",
       "service_family": "Backup",
       "resource_type": "gcp:backupdr:backup",
       "resource_count": 200,
-      "total_gb": 5069.330000000002
+      "total_gb": 4653.239999999999
     }
   ]
 }

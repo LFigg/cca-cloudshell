@@ -11,7 +11,4 @@ scripts/generate_sizer_input.py
 # Test fixtures - sizer outputs
 tests/sample_output/sizer_*.json
 
-# Internal docs
-docs/TECH_DEBT.md
-docs/ROADMAP.md
-docs/CODE_REVIEW.md
+

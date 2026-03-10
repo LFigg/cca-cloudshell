@@ -1,24 +1,24 @@
 {
   "provider": "azure",
-  "run_id": "20260304-192214-57226ddb",
-  "timestamp": "2026-03-04T19:22:14.399584Z",
+  "run_id": "20260310-150221-525be4b2",
+  "timestamp": "2026-03-10T15:02:21.300184Z",
   "subscription_id": "12345678-1234-1234-1234-123456789012",
-  "total_resources": 947,
-  "total_capacity_gb": 269642.0,
+  "total_resources": 952,
+  "total_capacity_gb": 247533.0,
   "summaries": [
     {
       "provider": "azure",
       "service_family": "AzureVM",
       "resource_type": "azure:vm",
       "resource_count": 200,
-      "total_gb": 39744.0
+      "total_gb": 40224.0
     },
     {
       "provider": "azure",
       "service_family": "AzureDisk",
       "resource_type": "azure:disk",
       "resource_count": 320,
-      "total_gb": 188320.0
+      "total_gb": 166272.0
     },
     {
       "provider": "azure",
@@ -38,8 +38,8 @@
       "provider": "azure",
       "service_family": "AzureSQLDB",
       "resource_type": "azure:sql:database",
-      "resource_count": 67,
-      "total_gb": 2922.0
+      "resource_count": 72,
+      "total_gb": 2381.0
     },
     {
       "provider": "azure",
