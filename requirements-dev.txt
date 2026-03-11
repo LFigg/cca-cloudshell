@@ -1,0 +1,17 @@
+# CCA CloudShell - Development Dependencies
+# Install with: pip install -r requirements-dev.txt
+
+# Production dependencies
+-r requirements.txt
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+moto[all]>=5.0.0
+
+# Linting
+ruff>=0.1.0
+
+# Type stubs (for IDE/linter support)
+boto3-stubs>=1.26.0
+botocore-stubs>=1.29.0

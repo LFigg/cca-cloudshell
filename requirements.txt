@@ -21,6 +21,7 @@ azure-mgmt-costmanagement>=4.0.0
 azure-mgmt-rdbms>=10.0.0
 azure-mgmt-synapse>=2.0.0
 azure-mgmt-netapp>=10.0.0
+azure-mgmt-monitor>=6.0.0
 azure-storage-blob>=12.0.0
 
 # Microsoft 365 / Graph API
@@ -58,12 +59,3 @@ rich>=13.0.0
 
 # Retry logic
 tenacity>=8.0.0
-
-# Testing
-pytest>=7.0.0
-moto[all]>=5.0.0
-ruff>=0.1.0
-
-# Type stubs (for IDE/linter support)
-boto3-stubs>=1.26.0
-botocore-stubs>=1.29.0
