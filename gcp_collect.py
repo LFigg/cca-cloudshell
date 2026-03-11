@@ -1276,9 +1276,9 @@ def main():
     parser.add_argument('--output', help='Output directory or GCS path', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
     parser.add_argument(
-        '--include-change-rate',
+        '--skip-change-rate',
         action='store_true',
-        help='Collect data change rates from Cloud Monitoring (for sizing tool DCR overrides)'
+        help='Skip collecting change rates from Cloud Monitoring'
     )
     parser.add_argument(
         '--skip-pvc',
@@ -1370,9 +1370,9 @@ def main():
         # Aggregate sizing
         sizing = aggregate_sizing(all_resources)
 
-        # Collect change rates if requested
+        # Collect change rates by default
         change_rate_data = None
-        if args.include_change_rate:
+        if not args.skip_change_rate:
             logger.info("Collecting change rate metrics from Cloud Monitoring...")
             print("Collecting change rate metrics from Cloud Monitoring...")
             all_change_rates = {}

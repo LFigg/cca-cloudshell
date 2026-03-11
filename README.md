@@ -114,8 +114,8 @@ python3 aws_collect.py --include-resource-ids
 # Azure - include individual recovery points (slow for large environments)
 python3 azure_collect.py --include-recovery-points
 
-# Include change rate metrics (for sizing tool DCR overrides)
-python3 aws_collect.py --include-change-rate --change-rate-days 14
+# Skip change rate metrics (faster collection)
+python3 aws_collect.py --skip-change-rate
 
 # Analyze backup/snapshot costs (requires management account for AWS Organizations)
 python3 cost_collect.py --aws --org-costs  # Break down by linked account
@@ -128,12 +128,12 @@ When using `python3 collect.py` in interactive mode, you'll be prompted for cost
 
 ### Change Rate Collection
 
-Use `--include-change-rate` to collect data change rate metrics from CloudWatch/Monitor:
+Change rate metrics are collected by default from CloudWatch/Monitor. Use `--skip-change-rate` or `--change-rate-days` to customize:
 
 ```bash
-python3 aws_collect.py --include-change-rate      # Default: 7-day sample
-python3 azure_collect.py --include-change-rate --change-rate-days 14  # 14-day sample
-python3 gcp_collect.py --include-change-rate
+python3 aws_collect.py --change-rate-days 14     # Use 14-day sample instead of 7
+python3 azure_collect.py --skip-change-rate       # Skip for faster collection
+python3 gcp_collect.py --skip-change-rate
 ```
 
 This outputs a separate `cca_*_change_rates_*.json` file with estimated daily change rates by service family. Use these values to override default DCR assumptions in sizing tools.

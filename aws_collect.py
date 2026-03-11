@@ -559,10 +559,11 @@ def run_parallel_account_collection(
         base_cmd.extend(['--regions', args.regions])
     if args.parallel_regions:
         base_cmd.extend(['--parallel-regions', str(args.parallel_regions)])
-    if args.include_storage_sizes:
-        base_cmd.append('--include-storage-sizes')
-    if args.include_change_rate:
-        base_cmd.extend(['--include-change-rate'])
+    if args.skip_storage_sizes:
+        base_cmd.append('--skip-storage-sizes')
+    if args.skip_change_rate:
+        base_cmd.append('--skip-change-rate')
+    else:
         base_cmd.extend(['--change-rate-days', str(args.change_rate_days)])
     if args.skip_pvc:
         base_cmd.append('--skip-pvc')
@@ -961,6 +962,34 @@ def collect_ebs_snapshots(session: boto3.Session, region: str, account_id: str) 
 # RDS Collectors
 # =============================================================================
 
+def _get_tde_option_groups(rds_client) -> set:
+    """Get set of option group names that have TDE enabled.
+
+    TDE (Transparent Data Encryption) is enabled via Option Groups for:
+    - SQL Server: TRANSPARENT_DATA_ENCRYPTION option
+    - Oracle: TDE or TDE_HSM option
+
+    Returns:
+        Set of option group names with TDE enabled
+    """
+    tde_option_groups = set()
+    tde_options = {'TRANSPARENT_DATA_ENCRYPTION', 'TDE', 'TDE_HSM'}
+
+    try:
+        paginator = rds_client.get_paginator('describe_option_groups')
+        for page in paginator.paginate():
+            for og in page.get('OptionGroupsList', []):
+                og_name = og.get('OptionGroupName', '')
+                for option in og.get('Options', []):
+                    if option.get('OptionName', '').upper() in tde_options:
+                        tde_option_groups.add(og_name)
+                        break
+    except Exception as e:
+        logger.debug(f"Failed to check option groups for TDE: {e}")
+
+    return tde_option_groups
+
+
 def collect_rds_instances(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
     """Collect RDS database instances."""
     resources = []
@@ -968,11 +997,29 @@ def collect_rds_instances(session: boto3.Session, region: str, account_id: str) 
         rds = session.client('rds', region_name=region)
         paginator = rds.get_paginator('describe_db_instances')
 
+        # Cache option groups with TDE enabled for this region
+        tde_option_groups = _get_tde_option_groups(rds)
+
         for page in paginator.paginate():
             for db in page['DBInstances']:
                 # Check if this is a read replica
                 replica_source = db.get('ReadReplicaSourceDBInstanceIdentifier')
                 replica_ids = db.get('ReadReplicaDBInstanceIdentifiers', [])
+
+                # Check for TDE (SQL Server/Oracle use Option Groups, others use StorageEncrypted)
+                engine = db.get('Engine', '').lower()
+                option_group_name = None
+                for og in db.get('OptionGroupMemberships', []):
+                    option_group_name = og.get('OptionGroupName')
+                    break
+
+                # Determine TDE status
+                tde_enabled = False
+                if engine in ['sqlserver-ee', 'sqlserver-se', 'oracle-ee', 'oracle-se2']:
+                    # SQL Server Enterprise/Standard and Oracle use Option Groups for TDE
+                    if option_group_name and option_group_name in tde_option_groups:
+                        tde_enabled = True
+                # Note: Aurora and other engines don't support TDE, only storage encryption
 
                 resource = CloudResource(
                     provider="aws",
@@ -991,6 +1038,8 @@ def collect_rds_instances(session: boto3.Session, region: str, account_id: str) 
                         'status': db.get('DBInstanceStatus'),
                         'multi_az': db.get('MultiAZ', False),
                         'encrypted': db.get('StorageEncrypted', False),
+                        'tde_enabled': tde_enabled,
+                        'option_group': option_group_name,
                         'is_read_replica': bool(replica_source),
                         'read_replica_source': replica_source,
                         'read_replica_ids': replica_ids,
@@ -2916,8 +2965,8 @@ Large Environment Examples:
   # Parallel region collection (4x-8x faster)
   python3 aws_collect.py --org-role CCARole --parallel-regions 8
 
-  # Parallel regions + change rate collection
-  python3 aws_collect.py --org-role CCARole --parallel-regions 8 --include-change-rate
+  # Faster collection without change rates (skip CloudWatch metrics)
+  python3 aws_collect.py --org-role CCARole --parallel-regions 8 --skip-change-rate
 
   # Resume after credential timeout (uses checkpoint.json)
   python3 aws_collect.py --org-role CCARole --resume ./collection/checkpoint.json
@@ -2954,14 +3003,14 @@ Large Environment Examples:
 
     # Data collection options
     parser.add_argument(
-        '--include-storage-sizes',
+        '--skip-storage-sizes',
         action='store_true',
-        help='Query CloudWatch for S3 bucket sizes (slower but accurate)'
+        help='Skip querying CloudWatch for S3 bucket sizes (faster but shows 0 for bucket sizes)'
     )
     parser.add_argument(
-        '--include-change-rate',
+        '--skip-change-rate',
         action='store_true',
-        help='Collect data change rates from CloudWatch (for sizing tool DCR overrides)'
+        help='Skip collecting change rates from CloudWatch'
     )
     parser.add_argument(
         '--skip-pvc',
@@ -3098,9 +3147,9 @@ Large Environment Examples:
     except Exception as e:
         logger.warning(f"Could not load config file: {e}")
 
-    # Ensure include_storage_sizes has a default
-    if not hasattr(args, 'include_storage_sizes'):
-        args.include_storage_sizes = False
+    # Ensure skip_storage_sizes has a default
+    if not hasattr(args, 'skip_storage_sizes'):
+        args.skip_storage_sizes = False
 
     # Create base session
     try:
@@ -3302,7 +3351,7 @@ Large Environment Examples:
             print("       python3 aws_collect.py ... --parallel-regions 8")
             print("")
             print("     Estimated speedup: ~{:.0f}x faster".format(min(8 / args.parallel_regions, num_regions)))
-            if args.include_change_rate:
+            if not args.skip_change_rate:
                 print("     (Change rate collection will also be parallelized)")
             print("=" * 70 + "\n")
     elif is_running_in_cloudshell() and (num_accounts >= 50 or total_region_calls >= 500):
@@ -3415,7 +3464,7 @@ Large Environment Examples:
 
                     account_resources = collect_account(
                         session, account_id, regions, tracker,
-                        include_storage_sizes=args.include_storage_sizes,
+                        include_storage_sizes=not args.skip_storage_sizes,
                         parallel_regions=args.parallel_regions
                     )
                     batch_resources.extend(account_resources)
@@ -3451,9 +3500,9 @@ Large Environment Examples:
         # Generate summaries for this batch
         batch_summaries = aggregate_sizing(batch_resources)
 
-        # Collect change rates if requested
+        # Collect change rates by default
         change_rate_data = None
-        if args.include_change_rate:
+        if not args.skip_change_rate:
             logger.info("Collecting change rate metrics from CloudWatch...")
             print("Collecting change rate metrics from CloudWatch...")
             all_change_rates = {}

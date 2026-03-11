@@ -46,6 +46,7 @@ from lib.change_rate import (
     get_azure_disk_change_rate,
     get_azure_monitor_client,
     get_azure_sql_transaction_log_rate,
+    get_azure_storage_account_capacity,
     merge_change_rates,
 )
 from lib.k8s import collect_aks_pvcs
@@ -264,6 +265,35 @@ def collect_storage_accounts(credential, subscription_id: str) -> List[CloudReso
 # SQL Database Collectors
 # =============================================================================
 
+def _check_azure_sql_tde(sql_client, resource_group: str, server_name: str, db_name: str) -> bool:
+    """Check if TDE (Transparent Data Encryption) is enabled for an Azure SQL database.
+
+    Azure SQL TDE is enabled by default since 2017, but can be disabled.
+    This checks the actual TDE status via the API.
+
+    Args:
+        sql_client: SqlManagementClient instance
+        resource_group: Resource group name
+        server_name: SQL server name
+        db_name: Database name
+
+    Returns:
+        True if TDE is enabled, False otherwise
+    """
+    try:
+        # The transparent_data_encryptions.get() returns TDE status
+        # "current" is the TDE configuration name
+        tde = sql_client.transparent_data_encryptions.get(
+            resource_group, server_name, db_name, "current"
+        )
+        # state is 'Enabled' or 'Disabled'
+        return getattr(tde, 'state', None) == 'Enabled'
+    except Exception as e:
+        # If we can't check, assume TDE is enabled (Azure default since 2017)
+        logger.debug(f"Could not check TDE status for {server_name}/{db_name}: {e}")
+        return True
+
+
 def collect_sql_servers(credential, subscription_id: str) -> List[CloudResource]:
     """Collect Azure SQL Servers and Databases."""
     resources = []
@@ -297,6 +327,9 @@ def collect_sql_servers(credential, subscription_id: str) -> List[CloudResource]
                     secondary_type = getattr(db, 'secondary_type', None)
                     is_read_replica = secondary_type is not None and secondary_type != 'None'
 
+                    # Check TDE status via API
+                    tde_enabled = _check_azure_sql_tde(sql_client, rg, server_name, db_name)
+
                     resource = CloudResource(
                         provider="azure",
                         subscription_id=subscription_id,
@@ -317,7 +350,7 @@ def collect_sql_servers(credential, subscription_id: str) -> List[CloudResource]
                             'collation': getattr(db, 'collation', None),
                             'is_read_replica': is_read_replica,
                             'secondary_type': secondary_type,
-                            'encrypted': True,  # Azure SQL TDE is enabled by default
+                            'tde_enabled': tde_enabled,
                         }
                     )
                     resources.append(resource)
@@ -364,7 +397,7 @@ def collect_sql_managed_instances(credential, subscription_id: str) -> List[Clou
                     'vcores': getattr(mi, 'v_cores', None),
                     'state': getattr(mi, 'state', None),
                     'is_read_replica': False,  # Managed instances don't have read replicas concept
-                    'encrypted': True,  # Azure SQL MI has TDE enabled by default
+                    'tde_enabled': True,  # Azure SQL MI has TDE enabled by default and cannot be disabled
                 }
             )
             resources.append(resource)
@@ -410,7 +443,7 @@ def collect_cosmosdb_accounts(credential, subscription_id: str) -> List[CloudRes
                     'consistency_policy': str(account.consistency_policy.default_consistency_level) if account.consistency_policy else 'unknown',
                     'provisioning_state': account.provisioning_state,
                     'is_read_replica': False,  # Cosmos DB regions are multi-master, not replicas
-                    'encrypted': True,  # Cosmos DB data is encrypted at rest by default
+                    # Note: Cosmos DB uses server-side encryption only (no TDE)
                 }
             )
             resources.append(resource)
@@ -1665,6 +1698,14 @@ def _collect_azure_resource_change_rate(
                 'transaction_logs': tlog_metrics
             }
 
+    elif service_family == 'AzureStorage':
+        # Azure Storage Accounts - get actual used capacity from Monitor
+        capacity_gb = get_azure_storage_account_capacity(monitor_client, resource_id)
+        if capacity_gb is not None:
+            # Update resource size_gb with actual capacity
+            resource.size_gb = capacity_gb
+            logger.debug(f"Storage account {resource.name}: {capacity_gb:.2f} GB")
+
     return None
 
 
@@ -1676,9 +1717,9 @@ def main():
     parser.add_argument('--output', help='Output directory or blob URL', default='.')
     parser.add_argument('--log-level', help='Logging level', default='INFO')
     parser.add_argument(
-        '--include-change-rate',
+        '--skip-change-rate',
         action='store_true',
-        help='Collect data change rates from Azure Monitor (for sizing tool DCR overrides)'
+        help='Skip collecting change rates and storage account capacity from Azure Monitor'
     )
     parser.add_argument(
         '--skip-pvc',
@@ -1780,14 +1821,11 @@ def main():
         all_resources = [r for r in all_resources if r.region and r.region.lower() in region_filter]
         logger.info(f"Filtered to {len(all_resources)} resources in regions: {', '.join(sorted(region_filter))} (from {original_count} total)")
 
-    # Generate summaries
-    summaries = aggregate_sizing(all_resources)
-
-    # Collect change rates if requested
+    # Collect change rates by default (do this BEFORE aggregate_sizing so storage capacities are included)
     change_rate_data = None
-    if args.include_change_rate:
-        logger.info("Collecting change rate metrics from Azure Monitor...")
-        print("Collecting change rate metrics from Azure Monitor...")
+    if not args.skip_change_rate:
+        logger.info("Collecting change rate metrics and storage capacities from Azure Monitor...")
+        print("Collecting change rate metrics and storage capacities from Azure Monitor...")
         all_change_rates = {}
         for sub in subscriptions:
             if sub['id'] not in subscription_ids:
@@ -1805,6 +1843,9 @@ def main():
                 all_change_rates, args.change_rate_days, "Azure Monitor"
             )
             logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+
+    # Generate summaries (after change rate collection so storage capacities are included)
+    summaries = aggregate_sizing(all_resources)
 
     # Collect PVCs from AKS clusters (automatic when clusters are discovered)
     aks_clusters = [r for r in all_resources if r.resource_type == 'azure:aks:cluster']

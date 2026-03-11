@@ -107,12 +107,19 @@ def load_inventory_files(paths: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
         'timestamps': [],
         'providers': set(),
         'accounts': set(),
+        'orgs': set(),  # Orgs (AWS) or Tenants (Azure) based on parent directory
     }
 
     for path in paths:
         data = load_json_file(path)
         if not data:
             continue
+
+        # Track org/tenant from parent directory name
+        from pathlib import Path
+        parent_dir = Path(path).parent.name
+        if parent_dir:
+            metadata['orgs'].add(parent_dir)
 
         # Extract resources
         resources = data.get('resources', [])
@@ -126,13 +133,16 @@ def load_inventory_files(paths: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
         if data.get('provider'):
             metadata['providers'].add(data['provider'])
 
-        # Extract accounts from resources
+        # Extract accounts from resources (account_id for AWS, subscription_id for Azure)
         for r in resources:
             if r.get('account_id'):
                 metadata['accounts'].add(r['account_id'])
+            elif r.get('subscription_id'):
+                metadata['accounts'].add(r['subscription_id'])
 
     metadata['providers'] = list(metadata['providers'])
     metadata['accounts'] = list(metadata['accounts'])
+    metadata['orgs'] = list(metadata['orgs'])
 
     return all_resources, metadata
 
@@ -442,7 +452,7 @@ def analyze_protection_status(resources: List[Dict]) -> Dict[str, Any]:
     - Snapshots: Existence of recent snapshots (within 30 days) for volumes
     - DLM: aws:dlm:lifecycle-policy-id tag on snapshots
     - RDS: Automated backup retention > 0
-    - Azure: Recovery vault membership
+    - Azure: Protected item resources (azure:backup:protecteditem) with source_resource_id
     """
     # Identify protectable resources (exclude snapshots, backup plans, etc.)
     protectable_types = []
@@ -473,6 +483,28 @@ def analyze_protection_status(resources: List[Dict]) -> Dict[str, Any]:
     dlm_protected_vols: set = set()
     recent_snapshot_vols: set = set()  # Volumes with snapshots in last 30 days
     rds_automated_backup_dbs: set = set()  # RDS databases with automated backups
+    azure_protected_resources: set = set()  # Azure resources protected by Recovery Services vault
+    azure_protected_names: set = set()  # Fallback: extracted resource names from protected items
+    azure_protected_sub_name: set = set()  # Fallback: (subscription, resource_name) pairs
+
+    # Build Azure protected resource index from protected items
+    for r in resources:
+        if r.get('resource_type') == 'azure:backup:protecteditem':
+            meta = r.get('metadata', {}) or {}
+            source_id = meta.get('source_resource_id', '')
+            if source_id:
+                # Normalize to lowercase for case-insensitive matching
+                azure_protected_resources.add(source_id.lower())
+                # Also extract resource name for fallback matching (last path component)
+                # e.g., /subscriptions/.../virtualMachines/my-vm -> my-vm
+                parts = source_id.lower().split('/')
+                if len(parts) > 1:
+                    azure_protected_names.add(parts[-1])
+                    # Also track subscription+name pair (handles resource group hash inconsistency)
+                    if 'subscriptions' in parts:
+                        sub_idx = parts.index('subscriptions') + 1
+                        if sub_idx < len(parts):
+                            azure_protected_sub_name.add((parts[sub_idx], parts[-1]))
 
     for r in resources:
         rtype = r.get('resource_type', '')
@@ -547,7 +579,25 @@ def analyze_protection_status(resources: List[Dict]) -> Dict[str, Any]:
             is_protected = True
         elif metadata.get('protected_by'):
             is_protected = True
-            metadata.get('protected_by')
+
+        # Check Azure protected items index (cross-reference by resource_id or name)
+        elif rtype.startswith('azure:') and rid:
+            if rid.lower() in azure_protected_resources:
+                is_protected = True
+            else:
+                # Fallback: match by subscription + resource name (handles resource group hash inconsistency)
+                rid_parts = rid.lower().split('/')
+                if len(rid_parts) > 1:
+                    # Try subscription+name matching first (more precise than name-only)
+                    if 'subscriptions' in rid_parts:
+                        sub_idx = rid_parts.index('subscriptions') + 1
+                        if sub_idx < len(rid_parts):
+                            sub_name_key = (rid_parts[sub_idx], rid_parts[-1])
+                            if sub_name_key in azure_protected_sub_name:
+                                is_protected = True
+                    # Last resort: name-only matching
+                    if not is_protected and rid_parts[-1] in azure_protected_names:
+                        is_protected = True
 
         # For EC2 volumes, check snapshot coverage
         elif rtype == 'aws:ec2:volume':
@@ -651,7 +701,8 @@ def analyze_accounts(resources: List[Dict]) -> Dict[str, Dict[str, Any]]:
     accounts: Dict[str, Dict[str, Any]] = {}
 
     for r in resources:
-        account = r.get('account_id', 'unknown')
+        # Use account_id (AWS) or subscription_id (Azure) or 'unknown'
+        account = r.get('account_id') or r.get('subscription_id') or 'unknown'
         provider = get_provider(r.get('resource_type', ''))
         rtype = r.get('resource_type', 'unknown')
         size = r.get('size_gb', 0) or 0
@@ -1098,6 +1149,7 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
 
     overview_data = [
         ("Total Resources", len(resources)),
+        ("Total Orgs/Tenants", len(metadata.get('orgs', []))),
         ("Total Accounts/Subscriptions", len(metadata.get('accounts', []))),
         ("Cloud Providers", ', '.join(sorted(provider_counts.keys()))),
     ]
@@ -1603,13 +1655,38 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
             category = cat
             size_gb = r.get('size_gb', 0) or 0
 
-        # Check encryption status
+        # Check encryption status - TDE and guest-level encryption affect dedupe/compression
+        # Server-side encryption (Azure EncryptionAtRestWithPlatformKey, AWS KMS, GCP default)
+        # is transparent and does NOT affect Cohesity dedupe
         is_encrypted = False
-        if rtype in ['aws:ec2:volume', 'aws:rds:instance', 'aws:rds:cluster',
+
+        # Check for TDE on database resources
+        # Azure SQL has TDE enabled by default since 2017
+        if rtype in ['azure:sql:database', 'azure:sql:managedinstance']:
+            is_encrypted = meta.get('tde_enabled', True)  # Default True for Azure SQL
+        elif meta.get('tde_enabled', False):
+            is_encrypted = True
+        elif rtype in ['aws:ec2:volume', 'aws:rds:instance', 'aws:rds:cluster',
                      'aws:efs:filesystem', 'aws:fsx:filesystem']:
-            is_encrypted = meta.get('encrypted', False)
-        elif rtype.startswith('azure:') or rtype.startswith('gcp:'):
-            is_encrypted = meta.get('encrypted', True)  # Azure/GCP default encrypted
+            # AWS: Check for guest-level encryption indicators
+            # Server-side KMS encryption (encrypted=True) does NOT affect dedupe
+            # Only guest-level (LUKS, BitLocker) would affect dedupe - not detectable from API
+            is_encrypted = False  # AWS server-side encryption is transparent
+        elif rtype.startswith('azure:'):
+            # Azure: Server-side encryption (EncryptionAtRestWithPlatformKey/CustomerKey) is transparent
+            # Only Azure Disk Encryption (ADE) with BitLocker/dm-crypt affects dedupe
+            enc_type = meta.get('encryption_type', '')
+            # ADE would show different encryption_type, platform keys are server-side
+            is_encrypted = enc_type and enc_type not in [
+                'EncryptionAtRestWithPlatformKey',
+                'EncryptionAtRestWithCustomerKey',
+                'EncryptionAtRestWithPlatformAndCustomerKeys',
+                ''
+            ]
+        elif rtype.startswith('gcp:'):
+            # GCP: Default encryption is server-side and transparent
+            # Only CSEK (Customer-Supplied Encryption Keys) or guest-level affects dedupe
+            is_encrypted = meta.get('guest_os_encrypted', False)
 
         # Initialize region group if needed
         if region_group not in regional_data:
@@ -1719,16 +1796,19 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
 
         # Calculate size_gb (special handling for VMs)
         size_gb = 0
-        is_encrypted = False
+        is_encrypted = False  # Only guest-level encryption or TDE affects dedupe
 
         # Check if database - get specific engine first
         db_engine = _get_db_engine_group(r)
         if db_engine:
             category = db_engine
             size_gb = r.get('size_gb', 0) or 0
-            is_encrypted = meta.get('encrypted', False)
-            if rtype.startswith('azure:') or rtype.startswith('gcp:'):
-                is_encrypted = meta.get('encrypted', True)
+            # TDE (Transparent Data Encryption) DOES affect dedupe/compression
+            # Azure SQL has TDE enabled by default since 2017
+            if rtype in ['azure:sql:database', 'azure:sql:managedinstance']:
+                is_encrypted = meta.get('tde_enabled', True)  # Default True for Azure SQL
+            else:
+                is_encrypted = meta.get('tde_enabled', False)
         elif rtype == 'aws:ec2:instance':
             # Calculate storage from attached volumes
             attached_vols = meta.get('attached_volumes', [])
@@ -1738,9 +1818,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
                     vol_size = vol.get('size_gb', 0) or 0
                     size_gb += vol_size
                     enc_attached_vol_ids.add(vol_id)
-                    # Check if any attached volume is encrypted
-                    if vol.get('metadata', {}).get('encrypted', False):
-                        is_encrypted = True
+                    # AWS EBS encryption is server-side (KMS) - transparent, doesn't affect dedupe
             if _is_kubernetes_node(r):
                 category = 'Kubernetes/Containers'
             else:
@@ -1754,18 +1832,17 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
                 continue
             category = 'Block Storage'
             size_gb = r.get('size_gb', 0) or 0
-            is_encrypted = meta.get('encrypted', False)
+            # AWS EBS encryption is server-side (KMS) - transparent, doesn't affect dedupe
+            is_encrypted = False
         else:
             # Determine category
             category = get_workload_category(rtype)
             if category in ['Snapshots', 'Backup Services', 'Other']:
                 continue
             size_gb = r.get('size_gb', 0) or 0
-            # Check encryption
-            if rtype in ['aws:efs:filesystem', 'aws:fsx:filesystem']:
-                is_encrypted = meta.get('encrypted', False)
-            elif rtype.startswith('azure:') or rtype.startswith('gcp:'):
-                is_encrypted = meta.get('encrypted', True)
+            # Server-side encryption (AWS KMS, Azure platform keys, GCP default) doesn't affect dedupe
+            # Only guest-level encryption would affect dedupe - not detectable from cloud API
+            is_encrypted = False
 
         # Create key with encryption status
         enc_status = "Encrypted" if is_encrypted else "Unencrypted"
@@ -1854,18 +1931,17 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
             continue
 
         # Check encryption status based on resource type
+        # Server-side encryption (AWS KMS, Azure platform keys, GCP default) is transparent
+        # TDE (Transparent Data Encryption) DOES affect dedupe - check tde_enabled
+        # Guest-level encryption (BitLocker, LUKS) would affect dedupe but is not detectable
         is_encrypted = False
 
-        # AWS resources
-        if rtype in ['aws:ec2:volume', 'aws:rds:instance', 'aws:rds:cluster',
-                     'aws:efs:filesystem', 'aws:fsx:filesystem']:
-            is_encrypted = meta.get('encrypted', False)
-        # Azure resources - all Azure managed services are encrypted by default
-        elif rtype.startswith('azure:'):
-            is_encrypted = meta.get('encrypted', True)  # Default to True for Azure
-        # GCP resources - all GCP storage is encrypted by default
-        elif rtype.startswith('gcp:'):
-            is_encrypted = meta.get('encrypted', True)  # Default to True for GCP
+        # Check for TDE on database resources
+        # Azure SQL has TDE enabled by default since 2017
+        if rtype in ['azure:sql:database', 'azure:sql:managedinstance']:
+            is_encrypted = meta.get('tde_enabled', True)  # Default True for Azure SQL
+        elif meta.get('tde_enabled', False):
+            is_encrypted = True
 
         if is_encrypted:
             encrypted_data['count'] += 1
@@ -1992,7 +2068,12 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
 
         db_by_engine[engine_group]['count'] += 1
         db_by_engine[engine_group]['data_size_gb'] += size_gb
-        if meta.get('encrypted', False):
+        # TDE (Transparent Data Encryption) DOES affect dedupe/compression
+        # Azure SQL has TDE enabled by default since 2017
+        if rtype in ['azure:sql:database', 'azure:sql:managedinstance']:
+            if meta.get('tde_enabled', True):  # Default True for Azure SQL
+                db_by_engine[engine_group]['encrypted_count'] += 1
+        elif meta.get('tde_enabled', False):
             db_by_engine[engine_group]['encrypted_count'] += 1
 
     if db_by_engine:
@@ -2120,7 +2201,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
         else:
             ws.cell(row=row, column=1, value="• Tlog rates above are estimates - actual rates depend on workload activity")
             row += 1
-            ws.cell(row=row, column=1, value="• For actual tlog sizing, re-run collection with --include-change-rate flag")
+            ws.cell(row=row, column=1, value="• For actual tlog sizing, re-run collection without --skip-change-rate flag")
         row += 1
     else:
         ws.cell(row=row, column=1, value="No databases found in inventory")
@@ -3068,7 +3149,8 @@ def generate_report(inventory_files: List[str], cost_files: List[str],
     print("=" * 60)
     print(f"Total Resources: {len(resources)}")
     print(f"Providers: {', '.join(metadata.get('providers', ['Unknown']))}")
-    print(f"Accounts: {len(metadata.get('accounts', []))}")
+    print(f"Orgs/Tenants: {len(metadata.get('orgs', []))}")
+    print(f"Accounts/Subscriptions: {len(metadata.get('accounts', []))}")
 
     # Protection summary
     protection = analyze_protection_status(resources)

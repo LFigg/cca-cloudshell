@@ -503,6 +503,57 @@ def get_azure_sql_transaction_log_rate(monitor_client, resource_id: str, days: i
         return None
 
 
+def get_azure_storage_account_capacity(monitor_client, storage_account_id: str) -> Optional[float]:
+    """
+    Get used capacity for an Azure Storage Account from Azure Monitor.
+
+    The UsedCapacity metric returns the total used capacity in bytes.
+
+    Args:
+        monitor_client: Azure Monitor client
+        storage_account_id: Full resource ID of the storage account
+
+    Returns:
+        Used capacity in GB, or None if metric unavailable
+    """
+    try:
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(days=1)  # Just need latest value
+        timespan = f"{start_time.isoformat()}/{end_time.isoformat()}"
+
+        response = monitor_client.metrics.list(
+            resource_uri=storage_account_id,
+            timespan=timespan,
+            interval='PT1H',  # 1 hour granularity for recent data
+            metricnames='UsedCapacity',
+            aggregation='Average'
+        )
+
+        # Get the most recent value
+        latest_value = None
+        for metric in response.value:
+            for timeseries in metric.timeseries:
+                for data in reversed(timeseries.data):  # Start from most recent
+                    value = getattr(data, 'average', None)
+                    if value is not None:
+                        latest_value = value
+                        break
+                if latest_value is not None:
+                    break
+            if latest_value is not None:
+                break
+
+        if latest_value is None:
+            return None
+
+        # Convert bytes to GB
+        return latest_value / (1024 ** 3)
+
+    except Exception as e:
+        logger.debug(f"Error getting Azure storage capacity for {storage_account_id}: {e}")
+        return None
+
+
 # ============================================================================
 # GCP Cloud Monitoring Change Rate Collection
 # ============================================================================

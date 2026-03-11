@@ -655,24 +655,26 @@ def _redact_value(value: str) -> tuple:
 
     # Azure resource IDs - preserve structure, hash subscription and resource group
     # /subscriptions/{sub}/resourceGroups/{rg}/providers/{provider}/{type}/{name}
+    # Azure resource names are case-insensitive, so normalize to lowercase before hashing
     azure_match = re.match(
         r'^(/subscriptions/)([0-9a-f-]{36})(/resourceGroups/)([^/]+)(/providers/.+)$',
         value, re.IGNORECASE
     )
     if azure_match:
         pre_sub, sub_id, pre_rg, rg_name, rest = azure_match.groups()
-        hashed_sub = hash_sensitive_id(sub_id, '')[:8]
-        hashed_rg = hash_sensitive_id(rg_name, '')[:8]
-        # Also redact the resource name at the end
+        # Normalize to lowercase for consistent hashing (Azure is case-insensitive)
+        hashed_sub = hash_sensitive_id(sub_id.lower(), '')[:8]
+        hashed_rg = hash_sensitive_id(rg_name.lower(), '')[:8]
+        # Also redact the resource name at the end (also case-insensitive)
         rest_parts = rest.rsplit('/', 1)
         if len(rest_parts) == 2:
-            rest = f"{rest_parts[0]}/{hash_sensitive_id(rest_parts[1], '')[:8]}"
+            rest = f"{rest_parts[0]}/{hash_sensitive_id(rest_parts[1].lower(), '')[:8]}"
         return (True, f"{pre_sub}{hashed_sub}{pre_rg}{hashed_rg}{rest}")
 
     # Azure subscription ID alone
     azure_sub_match = re.match(r'^(/subscriptions/)([0-9a-f-]{36})$', value, re.IGNORECASE)
     if azure_sub_match:
-        return (True, f"/subscriptions/{hash_sensitive_id(azure_sub_match.group(2), '')[:8]}")
+        return (True, f"/subscriptions/{hash_sensitive_id(azure_sub_match.group(2).lower(), '')[:8]}")
 
     # GCP resource IDs - preserve structure (projects/xxx/...), hash project name
     gcp_match = re.match(r'^(projects/)([^/]+)(.*)$', value)

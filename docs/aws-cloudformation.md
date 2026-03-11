@@ -160,14 +160,12 @@ aws cloudformation list-stack-instances \
 # Using the unified collector (recommended)
 python3 collect.py --cloud aws -- \
   --org-role CCACollectorRole \
-  --external-id $EXTERNAL_ID \
-  --include-change-rate
+  --external-id $EXTERNAL_ID
 
 # Or directly with aws_collect.py  
 python3 aws_collect.py \
   --org-role CCACollectorRole \
-  --external-id $EXTERNAL_ID \
-  --include-change-rate
+  --external-id $EXTERNAL_ID
 ```
 
 ### StackSet Parameters

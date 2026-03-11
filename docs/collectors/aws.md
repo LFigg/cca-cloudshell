@@ -34,7 +34,8 @@ python3 aws_collect.py --include-resource-ids
 | `--external-id ID` | External ID for role assumption |
 | `--skip-accounts IDS` | Account IDs to skip (comma-separated) |
 | `--include-resource-ids` | Include full resource IDs/ARNs (default: redact) |
-| `--include-change-rate` | Collect change rate metrics from CloudWatch |
+| `--skip-change-rate` | Skip change rate metrics collection |
+| `--skip-storage-sizes` | Skip storage size metrics collection |
 | `--change-rate-days N` | Days to sample for change rate (default: 7) |
 | `--skip-pvc` | Skip PVC collection from EKS clusters |
 | `--parallel-accounts N` | Parallel workers for multi-account (default: auto) |

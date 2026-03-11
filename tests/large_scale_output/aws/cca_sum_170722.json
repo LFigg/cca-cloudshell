@@ -1,10 +1,10 @@
 {
   "provider": "aws",
-  "run_id": "20260310-150219-3dedb075",
-  "timestamp": "2026-03-10T15:02:19.685269Z",
+  "run_id": "20260311-170722-32d0f293",
+  "timestamp": "2026-03-11T17:07:22.190041Z",
   "account_id": "123456789012",
-  "total_resources": 5138,
-  "total_capacity_gb": 208686.00000067055,
+  "total_resources": 5144,
+  "total_capacity_gb": 239692.00000067055,
   "summaries": [
     {
       "provider": "aws",
@@ -18,21 +18,21 @@
       "service_family": "EC2",
       "resource_type": "aws:ec2:volume",
       "resource_count": 320,
-      "total_gb": 49836.0
+      "total_gb": 59232.0
     },
     {
       "provider": "aws",
       "service_family": "EC2",
       "resource_type": "aws:ec2:snapshot",
-      "resource_count": 4259,
-      "total_gb": 130200.0
+      "resource_count": 4270,
+      "total_gb": 151442.0
     },
     {
       "provider": "aws",
       "service_family": "RDS",
       "resource_type": "aws:rds:instance",
-      "resource_count": 41,
-      "total_gb": 11930.0
+      "resource_count": 39,
+      "total_gb": 11420.0
     },
     {
       "provider": "aws",
@@ -46,14 +46,14 @@
       "service_family": "RDS",
       "resource_type": "aws:rds:snapshot",
       "resource_count": 55,
-      "total_gb": 16670.0
+      "total_gb": 17550.0
     },
     {
       "provider": "aws",
       "service_family": "RDS",
       "resource_type": "aws:rds:cluster-snapshot",
-      "resource_count": 30,
-      "total_gb": 30.0
+      "resource_count": 28,
+      "total_gb": 28.0
     },
     {
       "provider": "aws",
@@ -80,14 +80,14 @@
       "provider": "aws",
       "service_family": "DynamoDB",
       "resource_type": "aws:dynamodb:table",
-      "resource_count": 34,
+      "resource_count": 32,
       "total_gb": 0.0
     },
     {
       "provider": "aws",
       "service_family": "ElastiCache",
       "resource_type": "aws:elasticache:cluster",
-      "resource_count": 19,
+      "resource_count": 20,
       "total_gb": 0.0
     },
     {

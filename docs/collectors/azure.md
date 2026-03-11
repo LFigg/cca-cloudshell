@@ -30,7 +30,7 @@ python3 azure_collect.py --include-recovery-points
 | `--regions REGIONS` | Filter to specific regions (comma-separated) |
 | `--include-resource-ids` | Include full resource IDs (default: redact) |
 | `--include-recovery-points` | Include individual recovery points (slow) |
-| `--include-change-rate` | Collect change rate metrics from Azure Monitor |
+| `--skip-change-rate` | Skip change rate metrics collection |
 | `--change-rate-days N` | Days to sample for change rate (default: 7) |
 | `--parallel-resources N` | Parallel workers for resources (default: 4) |
 | `--skip-pvc` | Skip PVC collection from AKS clusters |

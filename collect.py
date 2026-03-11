@@ -1227,8 +1227,8 @@ Examples:
                     extra_args.extend(['--parallel-accounts', str(aws_org_opts['parallel_accounts'])])
                 if aws_org_opts.get('parallel_regions'):
                     extra_args.extend(['--parallel-regions', str(aws_org_opts['parallel_regions'])])
-                if aws_org_opts.get('include_change_rate'):
-                    extra_args.append('--include-change-rate')
+                if not aws_org_opts.get('include_change_rate', True):
+                    extra_args.append('--skip-change-rate')
                 if aws_org_opts.get('include_resource_ids'):
                     extra_args.append('--include-resource-ids')
                 extra_args.extend(['-o', aws_org_opts['output']])
@@ -1364,8 +1364,8 @@ Examples:
             extra_args = ['-o', opts['output']] + extra_args
         if opts.get('regions'):
             extra_args = ['--regions', opts['regions']] + extra_args
-        if opts.get('include_change_rate'):
-            extra_args = ['--include-change-rate'] + extra_args
+        if not opts.get('include_change_rate', True):
+            extra_args = ['--skip-change-rate'] + extra_args
         if opts.get('include_resource_ids'):
             extra_args = ['--include-resource-ids'] + extra_args
         
