@@ -1268,7 +1268,7 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
 
 def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
                           change_rate_data: Optional[Dict[str, Any]] = None) -> None:
-    """Generate Sizing Inputs tab with both complete coverage and protected-only sizing."""
+    """Generate Sizing Inputs tab with complete coverage, protected-only, regional, and encryption breakdown."""
     ws = wb.create_sheet(title="Sizing Inputs")
 
     row = 1
@@ -1479,10 +1479,251 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     row += 3
 
     # ==========================================================================
-    # SECTION 3: Encryption Analysis (affects deduplication efficiency)
+    # SECTION 3: Regional Breakdown for CE Cluster Planning
     # ==========================================================================
-    row = write_section_header(ws, row, "Encryption Analysis",
-                                "(Encrypted data has reduced deduplication - affects sizing)")
+    row = write_section_header(ws, row, "Option 3: Regional Breakdown (Per-Region CE Clusters)",
+                                "(Each region group typically requires a dedicated Cohesity Edge cluster)")
+
+    # Build regional breakdown with encryption status
+    regional_data: Dict[str, Dict[str, Dict[str, Any]]] = {}  # region_group -> category -> {count, size, encrypted_size, ...}
+
+    for r in resources:
+        rtype = r.get('resource_type', '')
+        meta = r.get('metadata', {}) or {}
+        size_gb = r.get('size_gb', 0) or 0
+        region = r.get('region', 'unknown')
+
+        # Skip replicas and snapshots
+        if meta.get('is_read_replica'):
+            continue
+        if 'snapshot' in rtype.lower():
+            continue
+
+        # Get region group
+        region_group, _ = _get_region_group(region)
+
+        # Determine category
+        if rtype == 'aws:ec2:instance':
+            if _is_kubernetes_node(r):
+                category = 'Kubernetes/Containers'
+            else:
+                category = 'Virtual Machines'
+        elif rtype == 'aws:ec2:volume':
+            attached = meta.get('attached_to')
+            if attached:
+                continue  # Skip attached volumes (counted with VMs)
+            category = 'Block Storage (Unattached)'
+        elif rtype in ['azure:compute:vm', 'gcp:compute:instance']:
+            category = 'Virtual Machines'
+        elif rtype in ['azure:compute:disk', 'gcp:compute:disk']:
+            attached = meta.get('attached_to')
+            if attached:
+                continue
+            category = 'Block Storage (Unattached)'
+        elif rtype in ['aws:rds:instance', 'aws:rds:cluster', 'azure:sql:database',
+                       'azure:sql:managedinstance', 'gcp:sql:instance']:
+            category = 'Databases'
+        elif rtype in ['aws:efs:filesystem', 'aws:fsx:filesystem', 'azure:storage:fileshare',
+                       'gcp:filestore:instance']:
+            category = 'File Storage'
+        elif rtype in ['aws:s3:bucket', 'azure:storage:blob', 'gcp:storage:bucket']:
+            category = 'Object Storage'
+        elif rtype in ['aws:eks:cluster', 'azure:aks:cluster', 'gcp:container:cluster']:
+            category = 'Kubernetes/Containers'
+        else:
+            cat = get_workload_category(rtype)
+            if cat in ['Snapshots', 'Backup Services', 'Other']:
+                continue
+            category = cat
+
+        # Check encryption status
+        is_encrypted = False
+        if rtype in ['aws:ec2:volume', 'aws:rds:instance', 'aws:rds:cluster',
+                     'aws:efs:filesystem', 'aws:fsx:filesystem']:
+            is_encrypted = meta.get('encrypted', False)
+        elif rtype.startswith('azure:') or rtype.startswith('gcp:'):
+            is_encrypted = meta.get('encrypted', True)  # Azure/GCP default encrypted
+
+        # Initialize region group if needed
+        if region_group not in regional_data:
+            regional_data[region_group] = {}
+        if category not in regional_data[region_group]:
+            regional_data[region_group][category] = {
+                'count': 0, 'size_gb': 0,
+                'encrypted_count': 0, 'encrypted_size_gb': 0,
+                'unencrypted_count': 0, 'unencrypted_size_gb': 0
+            }
+
+        # Update stats
+        regional_data[region_group][category]['count'] += 1
+        regional_data[region_group][category]['size_gb'] += size_gb
+        if is_encrypted:
+            regional_data[region_group][category]['encrypted_count'] += 1
+            regional_data[region_group][category]['encrypted_size_gb'] += size_gb
+        else:
+            regional_data[region_group][category]['unencrypted_count'] += 1
+            regional_data[region_group][category]['unencrypted_size_gb'] += size_gb
+
+    # Sort region groups by total size
+    sorted_regions = sorted(
+        regional_data.keys(),
+        key=lambda rg: sum(d['size_gb'] for d in regional_data[rg].values()),
+        reverse=True
+    )
+
+    # Output each region group as a sub-section
+    for region_group in sorted_regions:
+        region_total_size = sum(d['size_gb'] for d in regional_data[region_group].values())
+        if region_total_size < 1:  # Skip negligible regions
+            continue
+
+        # Region header
+        ws.cell(row=row, column=1, value=f"Region: {region_group}").font = Font(bold=True, color="0000AA")
+        ws.cell(row=row, column=2, value=f"Total: {region_total_size/1024:.2f} TB")
+        row += 1
+
+        write_header_row(ws, row, [
+            "Workload Type", "Count", "Size (TB)",
+            "Encrypted (TB)", "Unencrypted (TB)", "Daily Change Rate (%)"
+        ])
+        row += 1
+
+        region_categories = regional_data[region_group]
+        sorted_cats = sorted(
+            region_categories.keys(),
+            key=lambda x: priority_order.index(x) if x in priority_order else 100
+        )
+
+        region_total = 0
+        for category in sorted_cats:
+            data = region_categories[category]
+            if data['count'] == 0:
+                continue
+
+            size_tb = data['size_gb'] / 1024
+            enc_tb = data['encrypted_size_gb'] / 1024
+            unenc_tb = data['unencrypted_size_gb'] / 1024
+            cr = change_rates.get(category, 2.0)
+            region_total += data['size_gb']
+
+            write_data_row(ws, row, [
+                category,
+                data['count'],
+                round(size_tb, 2),
+                round(enc_tb, 2),
+                round(unenc_tb, 2),
+                cr
+            ])
+            row += 1
+
+        # Region total
+        ws.cell(row=row, column=1, value="Region Total").font = Font(bold=True)
+        ws.cell(row=row, column=3, value=round(region_total / 1024, 2)).font = Font(bold=True)
+        row += 2
+
+    row += 1
+
+    # ==========================================================================
+    # SECTION 4: Workloads by Encryption Status
+    # ==========================================================================
+    row = write_section_header(ws, row, "Option 4: Workloads by Encryption Status",
+                                "(Encrypted workloads achieve 30-50% less deduplication)")
+
+    # Build encryption-separated workload summary
+    enc_workloads: Dict[str, Dict[str, Any]] = {}  # "Category - Encrypted/Unencrypted" -> stats
+
+    for r in resources:
+        rtype = r.get('resource_type', '')
+        meta = r.get('metadata', {}) or {}
+        size_gb = r.get('size_gb', 0) or 0
+
+        if meta.get('is_read_replica'):
+            continue
+        if 'snapshot' in rtype.lower():
+            continue
+
+        # Determine category
+        category = get_workload_category(rtype)
+        if category in ['Snapshots', 'Backup Services', 'Other']:
+            continue
+
+        # Check encryption
+        is_encrypted = False
+        if rtype in ['aws:ec2:volume', 'aws:rds:instance', 'aws:rds:cluster',
+                     'aws:efs:filesystem', 'aws:fsx:filesystem']:
+            is_encrypted = meta.get('encrypted', False)
+        elif rtype.startswith('azure:') or rtype.startswith('gcp:'):
+            is_encrypted = meta.get('encrypted', True)
+
+        # Create key with encryption status
+        enc_status = "Encrypted" if is_encrypted else "Unencrypted"
+        key = f"{category} - {enc_status}"
+
+        if key not in enc_workloads:
+            enc_workloads[key] = {'count': 0, 'size_gb': 0, 'category': category, 'encrypted': is_encrypted}
+
+        enc_workloads[key]['count'] += 1
+        enc_workloads[key]['size_gb'] += size_gb
+
+    write_header_row(ws, row, [
+        "Workload Type", "Encryption", "Count", "Size (GB)", "Size (TB)",
+        "Daily Change Rate (%)", "Est. Daily Change (GB)"
+    ])
+    row += 1
+
+    # Sort: by category first, then encrypted last (show unencrypted first)
+    sorted_enc = sorted(
+        enc_workloads.keys(),
+        key=lambda k: (
+            priority_order.index(enc_workloads[k]['category']) if enc_workloads[k]['category'] in priority_order else 100,
+            1 if enc_workloads[k]['encrypted'] else 0
+        )
+    )
+
+    enc_total_size = 0
+    enc_total_change = 0
+
+    for key in sorted_enc:
+        data = enc_workloads[key]
+        if data['count'] == 0:
+            continue
+
+        size_gb = data['size_gb']
+        enc_total_size += size_gb
+
+        cr = change_rates.get(data['category'], 2.0)
+        daily_change = size_gb * (cr / 100)
+        enc_total_change += daily_change
+
+        enc_label = "Yes" if data['encrypted'] else "No"
+
+        write_data_row(ws, row, [
+            data['category'],
+            enc_label,
+            data['count'],
+            round(size_gb, 1),
+            round(size_gb / 1024, 2),
+            cr,
+            round(daily_change, 1)
+        ])
+        row += 1
+
+    # Total
+    ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
+    ws.cell(row=row, column=4, value=round(enc_total_size, 1)).font = Font(bold=True)
+    ws.cell(row=row, column=5, value=round(enc_total_size / 1024, 2)).font = Font(bold=True)
+    ws.cell(row=row, column=7, value=round(enc_total_change, 1)).font = Font(bold=True)
+    row += 2
+
+    # Sizing note
+    ws.cell(row=row, column=1, value="Note: Use encrypted workloads with reduced dedupe estimates in sizing calculator.")
+    row += 3
+
+    # ==========================================================================
+    # SECTION 5: Encryption Summary (affects deduplication efficiency)
+    # ==========================================================================
+    row = write_section_header(ws, row, "Encryption Summary",
+                                "(Overall encryption stats for sizing deduplication estimates)")
 
     # Analyze encryption across all resources
     encrypted_data = {'count': 0, 'size_gb': 0}
@@ -1564,7 +1805,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     row += 3
 
     # ==========================================================================
-    # SECTION 4: Database Sizing Details (Transaction Logs vs Data)
+    # SECTION 6: Database Sizing Details (Transaction Logs vs Data)
     # ==========================================================================
     row = write_section_header(ws, row, "Database Sizing Details",
                                 "(Transaction logs require separate sizing from data)")
