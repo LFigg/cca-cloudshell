@@ -45,6 +45,7 @@ from lib.change_rate import (
     format_change_rate_output,
     get_azure_disk_change_rate,
     get_azure_monitor_client,
+    get_azure_sql_database_capacity,
     get_azure_sql_transaction_log_rate,
     get_azure_storage_account_capacity,
     merge_change_rates,
@@ -1690,6 +1691,13 @@ def _collect_azure_resource_change_rate(
             }
 
     elif service_family == 'AzureSQL':
+        # Azure SQL databases - get actual used capacity from Monitor
+        capacity_gb = get_azure_sql_database_capacity(monitor_client, resource_id)
+        if capacity_gb is not None:
+            # Update resource size_gb with actual capacity (instead of max_size_bytes)
+            resource.size_gb = capacity_gb
+            logger.debug(f"SQL database {resource.name}: {capacity_gb:.2f} GB (actual usage)")
+
         # Azure SQL databases
         tlog_metrics = get_azure_sql_transaction_log_rate(
             monitor_client, resource_id, days

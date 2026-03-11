@@ -554,6 +554,57 @@ def get_azure_storage_account_capacity(monitor_client, storage_account_id: str) 
         return None
 
 
+def get_azure_sql_database_capacity(monitor_client, database_resource_id: str) -> Optional[float]:
+    """
+    Get actual used storage for an Azure SQL Database from Azure Monitor.
+
+    The 'storage' metric returns the used data space in bytes.
+
+    Args:
+        monitor_client: Azure Monitor client
+        database_resource_id: Full resource ID of the SQL database
+
+    Returns:
+        Used storage in GB, or None if metric unavailable
+    """
+    try:
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(days=1)  # Just need latest value
+        timespan = f"{start_time.isoformat()}/{end_time.isoformat()}"
+
+        response = monitor_client.metrics.list(
+            resource_uri=database_resource_id,
+            timespan=timespan,
+            interval='PT1H',  # 1 hour granularity for recent data
+            metricnames='storage',
+            aggregation='Average'
+        )
+
+        # Get the most recent value
+        latest_value = None
+        for metric in response.value:
+            for timeseries in metric.timeseries:
+                for data in reversed(timeseries.data):  # Start from most recent
+                    value = getattr(data, 'average', None)
+                    if value is not None:
+                        latest_value = value
+                        break
+                if latest_value is not None:
+                    break
+            if latest_value is not None:
+                break
+
+        if latest_value is None:
+            return None
+
+        # Convert bytes to GB
+        return latest_value / (1024 ** 3)
+
+    except Exception as e:
+        logger.debug(f"Error getting Azure SQL database capacity for {database_resource_id}: {e}")
+        return None
+
+
 # ============================================================================
 # GCP Cloud Monitoring Change Rate Collection
 # ============================================================================
