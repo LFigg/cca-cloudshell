@@ -13,9 +13,10 @@ Tabs:
 4. Protection Analysis - Coverage percentages and snapshot analysis
 5. Unprotected Resources - Prioritized list for protection planning
 6. TCO Inputs - Current backup costs and Cohesity TCO calculator inputs
-7. M365 Summary - Microsoft 365 workload summary
-8. Account Detail - Multi-account/subscription breakdown
-9. Raw Data - Full resource inventory for reference
+7. Account Detail - Multi-account/subscription breakdown
+8. Raw Data - Full resource inventory for reference
+
+Note: For M365 data, use the dedicated M365 report generator (generate_m365_report.py)
 """
 
 import argparse
@@ -163,54 +164,6 @@ def load_summary_files(paths: List[str]) -> Dict[str, Any]:
             merged['by_region'][region]['size_gb'] += stats.get('size_gb', 0)
 
     return merged
-
-
-def load_m365_summary_data(inventory_files: List[str]) -> Dict[str, Any]:
-    """
-    Load M365-specific summary data from summary files.
-    
-    Looks for corresponding summary files for M365 inventory files and extracts
-    enhanced M365 metadata like exchange_mailbox_breakdown, sharepoint_site_breakdown,
-    and teams_activity.
-    """
-    m365_data = {
-        'exchange_mailbox_breakdown': None,
-        'sharepoint_site_breakdown': None,
-        'teams_activity': None,
-        'change_rates': None,
-        'total_user_count': 0,
-    }
-    
-    for inv_path in inventory_files:
-        # Check if this is an M365 file
-        if 'm365' not in inv_path.lower() and 'microsoft365' not in inv_path.lower():
-            continue
-            
-        # Try to find corresponding summary file
-        # Convert cca_inv_*.json or cca_m365_inv_*.json to cca_sum_*.json or cca_m365_sum_*.json
-        sum_path = inv_path.replace('_inv_', '_sum_')
-        
-        data = load_json_file(sum_path)
-        if not data:
-            continue
-        
-        # Extract M365-specific breakdowns
-        if 'exchange_mailbox_breakdown' in data and data['exchange_mailbox_breakdown']:
-            m365_data['exchange_mailbox_breakdown'] = data['exchange_mailbox_breakdown']
-        
-        if 'sharepoint_site_breakdown' in data and data['sharepoint_site_breakdown']:
-            m365_data['sharepoint_site_breakdown'] = data['sharepoint_site_breakdown']
-        
-        if 'teams_activity' in data and data['teams_activity']:
-            m365_data['teams_activity'] = data['teams_activity']
-        
-        if 'change_rates' in data and data['change_rates']:
-            m365_data['change_rates'] = data['change_rates']
-        
-        if 'total_user_count' in data:
-            m365_data['total_user_count'] = data['total_user_count']
-    
-    return m365_data
 
 
 def load_cost_files(paths: List[str]) -> Dict[str, Any]:
@@ -1284,25 +1237,117 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     protection = analyze_protection_status(resources)
     protected_resources = protection.get('protected_resources', [])
 
-    # Default change rates by category
+    # Default change rates by category (including database-specific rates)
     change_rates = {
         'Virtual Machines': 3.0,
         'Block Storage': 2.0,
         'Block Storage (Unattached)': 2.0,
-        'Databases': 5.0,
         'File Storage': 1.0,
         'Object Storage': 0.5,
         'Kubernetes/Containers': 3.0,
+        'Cache/In-Memory': 2.0,
+        # Database-specific change rates (transaction log generation)
+        'DB: MySQL/MariaDB': 5.0,
+        'DB: PostgreSQL': 5.0,
+        'DB: SQL Server': 5.0,
+        'DB: Oracle': 5.0,
+        'DB: Cosmos DB': 3.0,
+        'DB: DocumentDB': 4.0,
+        'DB: Neptune': 4.0,
+        'DB: DynamoDB': 2.0,
+        'DB: Redshift': 3.0,
+        'DB: Synapse': 3.0,
+        'DB: BigTable': 2.0,
+        'DB: Spanner': 3.0,
+        'Databases': 5.0,  # Fallback for unrecognized
     }
 
     priority_order = ['Virtual Machines', 'Block Storage', 'Block Storage (Unattached)',
-                      'Databases', 'File Storage', 'Object Storage', 'Kubernetes/Containers']
+                      'DB: MySQL/MariaDB', 'DB: PostgreSQL', 'DB: SQL Server', 'DB: Oracle',
+                      'DB: Cosmos DB', 'DB: DocumentDB', 'DB: Neptune', 'DB: DynamoDB',
+                      'DB: Redshift', 'DB: Synapse', 'DB: BigTable', 'DB: Spanner',
+                      'File Storage', 'Object Storage', 'Kubernetes/Containers', 'Cache/In-Memory']
 
     # ==========================================================================
     # SECTION 1: Complete Coverage (Full Environment)
     # ==========================================================================
     row = write_section_header(ws, row, "Option 1: Complete Coverage",
                                 "(Full environment protection - input into Cohesity sizing calculator)")
+
+    # Re-categorize with database breakdown
+    categories_with_db: Dict[str, Dict[str, Any]] = {}
+
+    # Build volume lookup for VM storage calculation
+    volume_by_id: Dict[str, Dict] = {}
+    for r in resources:
+        if r.get('resource_type') == 'aws:ec2:volume':
+            volume_by_id[r.get('resource_id', '')] = r
+
+    attached_volume_ids: set = set()
+
+    for r in resources:
+        rtype = r.get('resource_type', '')
+        meta = r.get('metadata', {}) or {}
+        size_gb = r.get('size_gb', 0) or 0
+
+        # Skip replicas and snapshots
+        if meta.get('is_read_replica'):
+            continue
+        if 'snapshot' in rtype.lower():
+            continue
+
+        # Check if database - get specific engine
+        db_engine = _get_db_engine_group(r)
+        if db_engine:
+            category = db_engine
+        elif rtype == 'aws:ec2:instance':
+            # Calculate storage from attached volumes
+            attached_vols = meta.get('attached_volumes', [])
+            size_gb = 0
+            for vol_id in attached_vols:
+                if vol_id in volume_by_id:
+                    size_gb += volume_by_id[vol_id].get('size_gb', 0) or 0
+                    attached_volume_ids.add(vol_id)
+            if _is_kubernetes_node(r):
+                category = 'Kubernetes/Containers'
+            else:
+                category = 'Virtual Machines'
+        elif rtype in ['azure:compute:vm', 'gcp:compute:instance']:
+            if _is_kubernetes_node(r):
+                category = 'Kubernetes/Containers'
+            else:
+                category = 'Virtual Machines'
+        elif rtype == 'aws:ec2:volume':
+            if r.get('resource_id', '') in attached_volume_ids:
+                continue  # Already counted with VM
+            attached = meta.get('attached_to')
+            if attached:
+                continue
+            category = 'Block Storage (Unattached)'
+        elif rtype in ['azure:compute:disk', 'gcp:compute:disk']:
+            attached = meta.get('attached_to')
+            if attached:
+                continue
+            category = 'Block Storage (Unattached)'
+        elif rtype in ['aws:efs:filesystem', 'aws:fsx:filesystem', 'azure:storage:fileshare',
+                       'gcp:filestore:instance']:
+            category = 'File Storage'
+        elif rtype in ['aws:s3:bucket', 'azure:storage:blob', 'gcp:storage:bucket']:
+            category = 'Object Storage'
+        elif rtype in ['aws:eks:cluster', 'azure:aks:cluster', 'gcp:container:cluster']:
+            category = 'Kubernetes/Containers'
+        elif rtype in ['aws:elasticache:cluster', 'azure:cache:redis', 'gcp:memorystore:instance']:
+            category = 'Cache/In-Memory'
+        else:
+            cat = get_workload_category(rtype)
+            if cat in ['Snapshots', 'Backup Services', 'Other']:
+                continue
+            category = cat
+
+        if category not in categories_with_db:
+            categories_with_db[category] = {'count': 0, 'size_gb': 0}
+        categories_with_db[category]['count'] += 1
+        categories_with_db[category]['size_gb'] += size_gb
 
     write_header_row(ws, row, [
         "Workload Type", "Count", "Size (GB)", "Size (TB)",
@@ -1314,12 +1359,12 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     total_change = 0
 
     sorted_categories = sorted(
-        categories.keys(),
+        categories_with_db.keys(),
         key=lambda x: priority_order.index(x) if x in priority_order else 100
     )
 
     for category in sorted_categories:
-        data = categories[category]
+        data = categories_with_db[category]
         if category in ['Snapshots', 'Backup Services', 'Other']:
             continue
         if data['count'] == 0:
@@ -1355,28 +1400,27 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     row = write_section_header(ws, row, "Option 2: Currently Protected Only (Apples-to-Apples)",
                                 "(Migrate existing backup coverage to Cohesity - same scope)")
 
-    # Categorize only protected resources
-    # Build volume lookup for protected resource sizing
-    volume_by_id: Dict[str, Dict] = {}
-    for r in resources:
-        if r.get('resource_type') == 'aws:ec2:volume':
-            volume_by_id[r.get('resource_id', '')] = r
-
+    # Categorize only protected resources (reuse volume_by_id from above)
     protected_categories: Dict[str, Dict] = {}
     protected_volume_ids: set = set()
 
     for r in protected_resources:
         rtype = r.get('resource_type', '')
+        meta = r.get('metadata', {}) or {}
 
-        # Determine category based on resource type
-        if rtype == 'aws:ec2:instance':
+        # Check if database - get specific engine
+        db_engine = _get_db_engine_group(r)
+        if db_engine:
+            category = db_engine
+            size_gb = r.get('size_gb', 0) or 0
+
+        elif rtype == 'aws:ec2:instance':
             if _is_kubernetes_node(r):
                 category = 'Kubernetes/Containers'
             else:
                 category = 'Virtual Machines'
 
             # Calculate storage from attached volumes
-            meta = r.get('metadata', {}) or {}
             attached_vols = meta.get('attached_volumes', [])
             size_gb = 0
             for vol_id in attached_vols:
@@ -1389,14 +1433,6 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
             if r.get('resource_id', '') in protected_volume_ids:
                 continue
             category = 'Block Storage (Unattached)'
-            size_gb = r.get('size_gb', 0) or 0
-
-        elif rtype in ['aws:rds:instance', 'aws:rds:cluster', 'azure:sql:database', 'gcp:sql:instance']:
-            meta = r.get('metadata', {}) or {}
-            # Skip read replicas - they replicate from primary
-            if meta.get('is_read_replica'):
-                continue
-            category = 'Databases'
             size_gb = r.get('size_gb', 0) or 0
 
         elif rtype in ['aws:efs:filesystem', 'aws:fsx:filesystem']:
@@ -1482,7 +1518,16 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     # SECTION 3: Regional Breakdown for CE Cluster Planning
     # ==========================================================================
     row = write_section_header(ws, row, "Option 3: Regional Breakdown (Per-Region CE Clusters)",
-                                "(Each region group typically requires a dedicated Cohesity Edge cluster)")
+                                "(Each region group typically requires a dedicated Cohesity Cloud Edition cluster)")
+
+    # Build volume lookup for VM storage calculation (reuse if available)
+    regional_volume_by_id: Dict[str, Dict] = {}
+    for r in resources:
+        if r.get('resource_type') == 'aws:ec2:volume':
+            regional_volume_by_id[r.get('resource_id', '')] = r
+
+    # Track volumes attached to VMs (to avoid double-counting)
+    regional_attached_vol_ids: set = set()
 
     # Build regional breakdown with encryption status
     regional_data: Dict[str, Dict[str, Dict[str, Any]]] = {}  # region_group -> category -> {count, size, encrypted_size, ...}
@@ -1490,7 +1535,6 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     for r in resources:
         rtype = r.get('resource_type', '')
         meta = r.get('metadata', {}) or {}
-        size_gb = r.get('size_gb', 0) or 0
         region = r.get('region', 'unknown')
 
         # Skip replicas and snapshots
@@ -1502,39 +1546,62 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
         # Get region group
         region_group, _ = _get_region_group(region)
 
-        # Determine category
-        if rtype == 'aws:ec2:instance':
+        # Check if database - get specific engine first
+        db_engine = _get_db_engine_group(r)
+        if db_engine:
+            category = db_engine
+            size_gb = r.get('size_gb', 0) or 0
+        elif rtype == 'aws:ec2:instance':
             if _is_kubernetes_node(r):
                 category = 'Kubernetes/Containers'
             else:
                 category = 'Virtual Machines'
+            # Calculate storage from attached volumes
+            size_gb = 0
+            attached_vols = meta.get('attached_volumes', [])
+            for vol_id in attached_vols:
+                if vol_id in regional_volume_by_id:
+                    size_gb += regional_volume_by_id[vol_id].get('size_gb', 0) or 0
+                    regional_attached_vol_ids.add(vol_id)
         elif rtype == 'aws:ec2:volume':
-            attached = meta.get('attached_to')
+            # Skip volumes attached to instances (already counted)
+            vol_id = r.get('resource_id', '')
+            if vol_id in regional_attached_vol_ids:
+                continue
+            attached = meta.get('attached_instance')
             if attached:
-                continue  # Skip attached volumes (counted with VMs)
+                continue  # Skip attached volumes
             category = 'Block Storage (Unattached)'
+            size_gb = r.get('size_gb', 0) or 0
         elif rtype in ['azure:compute:vm', 'gcp:compute:instance']:
-            category = 'Virtual Machines'
+            if _is_kubernetes_node(r):
+                category = 'Kubernetes/Containers'
+            else:
+                category = 'Virtual Machines'
+            # Azure/GCP may have size_gb directly or in attached disks
+            size_gb = r.get('size_gb', 0) or 0
         elif rtype in ['azure:compute:disk', 'gcp:compute:disk']:
             attached = meta.get('attached_to')
             if attached:
                 continue
             category = 'Block Storage (Unattached)'
-        elif rtype in ['aws:rds:instance', 'aws:rds:cluster', 'azure:sql:database',
-                       'azure:sql:managedinstance', 'gcp:sql:instance']:
-            category = 'Databases'
+            size_gb = r.get('size_gb', 0) or 0
         elif rtype in ['aws:efs:filesystem', 'aws:fsx:filesystem', 'azure:storage:fileshare',
                        'gcp:filestore:instance']:
             category = 'File Storage'
+            size_gb = r.get('size_gb', 0) or 0
         elif rtype in ['aws:s3:bucket', 'azure:storage:blob', 'gcp:storage:bucket']:
             category = 'Object Storage'
+            size_gb = r.get('size_gb', 0) or 0
         elif rtype in ['aws:eks:cluster', 'azure:aks:cluster', 'gcp:container:cluster']:
             category = 'Kubernetes/Containers'
+            size_gb = r.get('size_gb', 0) or 0
         else:
             cat = get_workload_category(rtype)
             if cat in ['Snapshots', 'Backup Services', 'Other']:
                 continue
             category = cat
+            size_gb = r.get('size_gb', 0) or 0
 
         # Check encryption status
         is_encrypted = False
@@ -1629,31 +1696,76 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     row = write_section_header(ws, row, "Option 4: Workloads by Encryption Status",
                                 "(Encrypted workloads achieve 30-50% less deduplication)")
 
+    # Build volume lookup for VM storage calculation (same as Section 3)
+    enc_volume_by_id: Dict[str, Dict] = {}
+    for r in resources:
+        if r.get('resource_type') == 'aws:ec2:volume':
+            enc_volume_by_id[r.get('resource_id', '')] = r
+
+    # Track volumes attached to VMs
+    enc_attached_vol_ids: set = set()
+
     # Build encryption-separated workload summary
     enc_workloads: Dict[str, Dict[str, Any]] = {}  # "Category - Encrypted/Unencrypted" -> stats
 
     for r in resources:
         rtype = r.get('resource_type', '')
         meta = r.get('metadata', {}) or {}
-        size_gb = r.get('size_gb', 0) or 0
 
         if meta.get('is_read_replica'):
             continue
         if 'snapshot' in rtype.lower():
             continue
 
-        # Determine category
-        category = get_workload_category(rtype)
-        if category in ['Snapshots', 'Backup Services', 'Other']:
-            continue
-
-        # Check encryption
+        # Calculate size_gb (special handling for VMs)
+        size_gb = 0
         is_encrypted = False
-        if rtype in ['aws:ec2:volume', 'aws:rds:instance', 'aws:rds:cluster',
-                     'aws:efs:filesystem', 'aws:fsx:filesystem']:
+
+        # Check if database - get specific engine first
+        db_engine = _get_db_engine_group(r)
+        if db_engine:
+            category = db_engine
+            size_gb = r.get('size_gb', 0) or 0
             is_encrypted = meta.get('encrypted', False)
-        elif rtype.startswith('azure:') or rtype.startswith('gcp:'):
-            is_encrypted = meta.get('encrypted', True)
+            if rtype.startswith('azure:') or rtype.startswith('gcp:'):
+                is_encrypted = meta.get('encrypted', True)
+        elif rtype == 'aws:ec2:instance':
+            # Calculate storage from attached volumes
+            attached_vols = meta.get('attached_volumes', [])
+            for vol_id in attached_vols:
+                if vol_id in enc_volume_by_id:
+                    vol = enc_volume_by_id[vol_id]
+                    vol_size = vol.get('size_gb', 0) or 0
+                    size_gb += vol_size
+                    enc_attached_vol_ids.add(vol_id)
+                    # Check if any attached volume is encrypted
+                    if vol.get('metadata', {}).get('encrypted', False):
+                        is_encrypted = True
+            if _is_kubernetes_node(r):
+                category = 'Kubernetes/Containers'
+            else:
+                category = 'Virtual Machines'
+        elif rtype == 'aws:ec2:volume':
+            # Skip volumes attached to instances
+            vol_id = r.get('resource_id', '')
+            if vol_id in enc_attached_vol_ids:
+                continue
+            if meta.get('attached_instance'):
+                continue
+            category = 'Block Storage'
+            size_gb = r.get('size_gb', 0) or 0
+            is_encrypted = meta.get('encrypted', False)
+        else:
+            # Determine category
+            category = get_workload_category(rtype)
+            if category in ['Snapshots', 'Backup Services', 'Other']:
+                continue
+            size_gb = r.get('size_gb', 0) or 0
+            # Check encryption
+            if rtype in ['aws:efs:filesystem', 'aws:fsx:filesystem']:
+                is_encrypted = meta.get('encrypted', False)
+            elif rtype.startswith('azure:') or rtype.startswith('gcp:'):
+                is_encrypted = meta.get('encrypted', True)
 
         # Create key with encryption status
         enc_status = "Encrypted" if is_encrypted else "Unencrypted"
@@ -2127,6 +2239,77 @@ def _get_region_group(region: str) -> tuple:
 
     # Default: use region as its own group
     return (region, region)
+
+
+def _get_db_engine_group(resource: Dict) -> Optional[str]:
+    """
+    Get the normalized database engine group for a resource.
+    Returns None if not a database resource.
+    """
+    rtype = resource.get('resource_type', '')
+    meta = resource.get('metadata', {}) or {}
+
+    # Skip read replicas
+    if meta.get('is_read_replica'):
+        return None
+
+    # Determine raw engine
+    engine = None
+    if rtype in ['aws:rds:instance', 'aws:rds:cluster']:
+        engine = meta.get('engine', 'Unknown')
+    elif rtype == 'azure:sql:database':
+        engine = 'SQL Server'
+    elif rtype == 'azure:sql:managedinstance':
+        engine = 'SQL Server'
+    elif rtype == 'azure:cosmosdb:account':
+        engine = 'Cosmos DB'
+    elif rtype == 'gcp:sql:instance':
+        db_version = meta.get('database_version', '')
+        if 'MYSQL' in db_version.upper():
+            engine = 'MySQL'
+        elif 'POSTGRES' in db_version.upper():
+            engine = 'PostgreSQL'
+        elif 'SQLSERVER' in db_version.upper():
+            engine = 'SQL Server'
+        else:
+            engine = db_version or 'Unknown'
+    elif rtype == 'aws:dynamodb:table':
+        return 'DB: DynamoDB'
+    elif rtype == 'aws:neptune:cluster':
+        return 'DB: Neptune'
+    elif rtype == 'aws:docdb:cluster':
+        return 'DB: DocumentDB'
+    elif rtype == 'aws:redshift:cluster':
+        return 'DB: Redshift'
+    elif rtype == 'azure:synapse:workspace':
+        return 'DB: Synapse'
+    elif rtype == 'gcp:bigtable:instance':
+        return 'DB: BigTable'
+    elif rtype == 'gcp:spanner:instance':
+        return 'DB: Spanner'
+    else:
+        return None  # Not a database
+
+    # Normalize to engine groups
+    engine_lower = engine.lower()
+    if 'mysql' in engine_lower or 'mariadb' in engine_lower or 'aurora-mysql' in engine_lower:
+        return 'DB: MySQL/MariaDB'
+    elif 'postgres' in engine_lower or 'aurora-postgresql' in engine_lower:
+        return 'DB: PostgreSQL'
+    elif 'sqlserver' in engine_lower or 'sql server' in engine_lower:
+        return 'DB: SQL Server'
+    elif 'oracle' in engine_lower:
+        return 'DB: Oracle'
+    elif 'cosmos' in engine_lower:
+        return 'DB: Cosmos DB'
+    elif 'docdb' in engine_lower or 'documentdb' in engine_lower:
+        return 'DB: DocumentDB'
+    elif 'neptune' in engine_lower:
+        return 'DB: Neptune'
+    elif 'dynamodb' in engine_lower:
+        return 'DB: DynamoDB'
+    else:
+        return f'DB: {engine}'
 
 
 def generate_regional_distribution(wb: Workbook, resources: List[Dict]) -> None:
@@ -2683,299 +2866,6 @@ def generate_tco_inputs(wb: Workbook, resources: List[Dict],
     set_column_widths(ws, {'A': 35, 'B': 25, 'C': 20})
 
 
-def generate_m365_summary(wb: Workbook, resources: List[Dict], summary_data: Optional[Dict[str, Any]] = None) -> None:
-    """Generate M365 Summary tab with comprehensive Exchange, SharePoint, and Teams data."""
-    ws = wb.create_sheet(title="M365 Summary")
-
-    row = 1
-
-    # Title
-    ws.cell(row=row, column=1, value="Microsoft 365 Summary").font = TITLE_FONT
-    row += 2
-
-    # Filter M365 resources
-    m365_resources = [r for r in resources if r.get('resource_type', '').startswith('m365:')]
-
-    if not m365_resources:
-        ws.cell(row=row, column=1, value="No Microsoft 365 data collected")
-        ws.cell(row=row + 1, column=1, value="Run 'python m365_collect.py' to collect M365 data")
-        return
-
-    # === Overview ===
-    row = write_section_header(ws, row, "M365 Overview")
-
-    # Categorize M365 resources
-    m365_categories = defaultdict(lambda: {'count': 0, 'size_gb': 0})
-    for r in m365_resources:
-        rtype = r.get('resource_type', '')
-        if 'mailbox' in rtype:
-            cat = 'Exchange Mailboxes'
-        elif 'onedrive' in rtype:
-            cat = 'OneDrive Accounts'
-        elif 'sharepoint' in rtype:
-            cat = 'SharePoint Sites'
-        elif 'teams' in rtype:
-            cat = 'Teams'
-        elif 'user' in rtype:
-            cat = 'Users (Entra ID)'
-        elif 'group' in rtype:
-            cat = 'Groups (Entra ID)'
-        else:
-            cat = 'Other'
-
-        m365_categories[cat]['count'] += 1
-        m365_categories[cat]['size_gb'] += r.get('size_gb', 0) or 0
-
-    write_header_row(ws, row, ["Category", "Count", "Size (GB)", "Size (TB)"])
-    row += 1
-
-    total_size = 0
-    for category in ['Exchange Mailboxes', 'OneDrive Accounts', 'SharePoint Sites', 'Teams', 'Users (Entra ID)', 'Groups (Entra ID)', 'Other']:
-        data = m365_categories.get(category, {'count': 0, 'size_gb': 0})
-        if data['count'] > 0:
-            total_size += data['size_gb']
-            write_data_row(ws, row, [
-                category,
-                data['count'],
-                round(data['size_gb'], 1),
-                round(data['size_gb'] / 1024, 2)
-            ])
-            row += 1
-
-    # Total
-    ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
-    ws.cell(row=row, column=2, value=len(m365_resources)).font = Font(bold=True)
-    ws.cell(row=row, column=3, value=round(total_size, 1)).font = Font(bold=True)
-    ws.cell(row=row, column=4, value=round(total_size / 1024, 2)).font = Font(bold=True)
-    row += 3
-
-    # === Exchange Mailbox Breakdown ===
-    mailbox_resources = [r for r in m365_resources if 'mailbox' in r.get('resource_type', '')]
-    if mailbox_resources:
-        row = write_section_header(ws, row, "Exchange Mailbox Breakdown",
-                                    "(By mailbox type)")
-
-        # Analyze mailboxes by type
-        mailbox_types = defaultdict(lambda: {'count': 0, 'size_gb': 0})
-        archive_count = 0
-        deleted_count = 0
-
-        for r in mailbox_resources:
-            metadata = r.get('metadata', {}) or {}
-            mtype = metadata.get('mailbox_type', 'Unknown')
-            mailbox_types[mtype]['count'] += 1
-            mailbox_types[mtype]['size_gb'] += r.get('size_gb', 0) or 0
-
-            if metadata.get('has_archive'):
-                archive_count += 1
-            if metadata.get('is_deleted'):
-                deleted_count += 1
-
-        write_header_row(ws, row, ["Mailbox Type", "Count", "Size (GB)", "Size (TB)"])
-        row += 1
-
-        mailbox_total_size = 0
-        for mtype in ['User', 'Shared', 'Room', 'Equipment', 'Group', 'Discovery', 'Unknown']:
-            data = mailbox_types.get(mtype, {'count': 0, 'size_gb': 0})
-            if data['count'] > 0:
-                mailbox_total_size += data['size_gb']
-                write_data_row(ws, row, [
-                    mtype,
-                    data['count'],
-                    round(data['size_gb'], 1),
-                    round(data['size_gb'] / 1024, 2)
-                ])
-                row += 1
-
-        # Total
-        ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
-        ws.cell(row=row, column=2, value=len(mailbox_resources)).font = Font(bold=True)
-        ws.cell(row=row, column=3, value=round(mailbox_total_size, 1)).font = Font(bold=True)
-        ws.cell(row=row, column=4, value=round(mailbox_total_size / 1024, 2)).font = Font(bold=True)
-        row += 2
-
-        # Archive and deleted status
-        ws.cell(row=row, column=1, value="Archive Enabled:")
-        ws.cell(row=row, column=2, value=archive_count)
-        row += 1
-        ws.cell(row=row, column=1, value="Soft Deleted:")
-        ws.cell(row=row, column=2, value=deleted_count)
-        row += 3
-
-    # === SharePoint Site Breakdown ===
-    sharepoint_resources = [r for r in m365_resources if 'sharepoint' in r.get('resource_type', '')]
-    if sharepoint_resources:
-        row = write_section_header(ws, row, "SharePoint Site Breakdown",
-                                    "(By site type)")
-
-        # Analyze sites by type
-        site_types = defaultdict(lambda: {'count': 0, 'size_gb': 0})
-        deleted_sites = 0
-
-        for r in sharepoint_resources:
-            metadata = r.get('metadata', {}) or {}
-            stype = metadata.get('site_type', 'Unknown')
-            site_types[stype]['count'] += 1
-            site_types[stype]['size_gb'] += r.get('size_gb', 0) or 0
-
-            if metadata.get('is_deleted'):
-                deleted_sites += 1
-
-        write_header_row(ws, row, ["Site Type", "Count", "Size (GB)", "Size (TB)"])
-        row += 1
-
-        site_total_size = 0
-        for stype in ['Personal', 'Team Site', 'Communication Site', 'Group Site', 'Unknown']:
-            data = site_types.get(stype, {'count': 0, 'size_gb': 0})
-            if data['count'] > 0:
-                site_total_size += data['size_gb']
-                write_data_row(ws, row, [
-                    stype if stype != 'Personal' else 'Personal (OneDrive)',
-                    data['count'],
-                    round(data['size_gb'], 1),
-                    round(data['size_gb'] / 1024, 2)
-                ])
-                row += 1
-
-        # Total
-        ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
-        ws.cell(row=row, column=2, value=len(sharepoint_resources)).font = Font(bold=True)
-        ws.cell(row=row, column=3, value=round(site_total_size, 1)).font = Font(bold=True)
-        ws.cell(row=row, column=4, value=round(site_total_size / 1024, 2)).font = Font(bold=True)
-        row += 2
-
-        # Deleted sites
-        ws.cell(row=row, column=1, value="Deleted Sites:")
-        ws.cell(row=row, column=2, value=deleted_sites)
-        row += 3
-
-    # === OneDrive Summary ===
-    onedrive_resources = [r for r in m365_resources if 'onedrive' in r.get('resource_type', '')]
-    if onedrive_resources:
-        row = write_section_header(ws, row, "OneDrive Summary")
-
-        onedrive_total = sum(r.get('size_gb', 0) or 0 for r in onedrive_resources)
-
-        write_header_row(ws, row, ["Metric", "Value"])
-        row += 1
-        write_data_row(ws, row, ["Total Accounts", len(onedrive_resources)])
-        row += 1
-        write_data_row(ws, row, ["Total Storage (GB)", round(onedrive_total, 1)])
-        row += 1
-        write_data_row(ws, row, ["Total Storage (TB)", round(onedrive_total / 1024, 2)])
-        row += 1
-        if onedrive_resources:
-            avg_size = onedrive_total / len(onedrive_resources)
-            write_data_row(ws, row, ["Avg per Account (GB)", round(avg_size, 1)])
-            row += 1
-        row += 2
-
-    # === Teams Activity (from summary data) ===
-    teams_activity = None
-    if summary_data and 'teams_activity' in summary_data:
-        teams_activity = summary_data['teams_activity']
-    
-    teams_resources = [r for r in m365_resources if 'teams' in r.get('resource_type', '')]
-    if teams_resources or teams_activity:
-        row = write_section_header(ws, row, "Microsoft Teams Summary")
-
-        if teams_resources:
-            archived_teams = len([r for r in teams_resources 
-                                  if (r.get('metadata', {}) or {}).get('is_archived')])
-            
-            write_header_row(ws, row, ["Metric", "Value"])
-            row += 1
-            write_data_row(ws, row, ["Total Teams", len(teams_resources)])
-            row += 1
-            write_data_row(ws, row, ["Active Teams", len(teams_resources) - archived_teams])
-            row += 1
-            write_data_row(ws, row, ["Archived Teams", archived_teams])
-            row += 1
-
-        if teams_activity:
-            row += 1
-            ws.cell(row=row, column=1, value="Teams Activity Metrics:").font = SECTION_FONT
-            row += 1
-            write_data_row(ws, row, ["Active Users", teams_activity.get('active_users', 0)])
-            row += 1
-            write_data_row(ws, row, ["Team Chat Messages", teams_activity.get('team_chat_messages', 0)])
-            row += 1
-            write_data_row(ws, row, ["Private Chat Messages", teams_activity.get('private_chat_messages', 0)])
-            row += 1
-            write_data_row(ws, row, ["Calls", teams_activity.get('calls', 0)])
-            row += 1
-            write_data_row(ws, row, ["Meetings", teams_activity.get('meetings', 0)])
-            row += 1
-
-        row += 2
-
-    # === Licensing Info (if available) ===
-    license_counts = defaultdict(int)
-    for r in m365_resources:
-        metadata = r.get('metadata', {}) or {}
-        licenses = metadata.get('licenses', []) or metadata.get('assigned_licenses', [])
-        for lic in licenses:
-            if isinstance(lic, dict):
-                lic_name = lic.get('sku_name', lic.get('name', 'Unknown'))
-            else:
-                lic_name = str(lic)
-            license_counts[lic_name] += 1
-
-    if license_counts:
-        row = write_section_header(ws, row, "M365 License Information",
-                                    "(From collected metadata)")
-        write_header_row(ws, row, ["License Type", "User Count"])
-        row += 1
-
-        for lic_type, count in sorted(license_counts.items(), key=lambda x: -x[1]):
-            write_data_row(ws, row, [lic_type, count])
-            row += 1
-
-        row += 2
-
-    # === M365 Sizing Summary ===
-    row = write_section_header(ws, row, "M365 Sizing Summary",
-                                "(For Cohesity DataProtect input)")
-
-    # Data for sizing
-    exchange_size = sum(r.get('size_gb', 0) or 0 for r in mailbox_resources) if mailbox_resources else 0
-    onedrive_size = sum(r.get('size_gb', 0) or 0 for r in onedrive_resources) if onedrive_resources else 0
-    sharepoint_size = sum(r.get('size_gb', 0) or 0 for r in sharepoint_resources) if sharepoint_resources else 0
-
-    write_header_row(ws, row, ["Workload", "Size (TB)", "Recommended Protection"])
-    row += 1
-    write_data_row(ws, row, ["Exchange Online", round(exchange_size / 1024, 2), "Daily backup, 30-day retention"])
-    row += 1
-    write_data_row(ws, row, ["OneDrive for Business", round(onedrive_size / 1024, 2), "Daily backup, 30-day retention"])
-    row += 1
-    write_data_row(ws, row, ["SharePoint Online", round(sharepoint_size / 1024, 2), "Daily backup, 30-day retention"])
-    row += 1
-    write_data_row(ws, row, ["Microsoft Teams", "Included in SharePoint", "Backed up via SharePoint"])
-    row += 1
-
-    # Total
-    total_m365_tb = (exchange_size + onedrive_size + sharepoint_size) / 1024
-    ws.cell(row=row, column=1, value="TOTAL M365 DATA").font = Font(bold=True)
-    ws.cell(row=row, column=2, value=round(total_m365_tb, 2)).font = Font(bold=True)
-    row += 3
-
-    # === Change Rate Estimates ===
-    row = write_section_header(ws, row, "Estimated Change Rates",
-                                "(Based on typical M365 workloads)")
-    
-    write_header_row(ws, row, ["Workload", "Daily Change Rate", "Notes"])
-    row += 1
-    write_data_row(ws, row, ["Exchange Online", "2-3%", "Email and calendar changes"])
-    row += 1
-    write_data_row(ws, row, ["OneDrive for Business", "3-5%", "User file modifications"])
-    row += 1
-    write_data_row(ws, row, ["SharePoint Online", "2-4%", "Document library changes"])
-    row += 1
-
-    # Set column widths
-    set_column_widths(ws, {'A': 35, 'B': 20, 'C': 35, 'D': 15})
-
-
 def generate_account_detail(wb: Workbook, resources: List[Dict]) -> None:
     """Generate Account Detail tab."""
     ws = wb.create_sheet(title="Account Detail")
@@ -3155,11 +3045,6 @@ def generate_report(inventory_files: List[str], cost_files: List[str],
         else:
             print("  No change rate data found in files")
 
-    # Load M365 summary data (for enhanced breakdowns)
-    m365_summary_data = load_m365_summary_data(inventory_files)
-    if m365_summary_data.get('teams_activity') or m365_summary_data.get('exchange_mailbox_breakdown'):
-        print("  Found M365 enhanced summary data")
-
     print("Generating report...")
 
     # Create workbook
@@ -3173,7 +3058,6 @@ def generate_report(inventory_files: List[str], cost_files: List[str],
     generate_snapshot_analysis(wb, resources)
     generate_unprotected_resources(wb, resources)
     generate_tco_inputs(wb, resources, cost_data)
-    generate_m365_summary(wb, resources, m365_summary_data)
     generate_account_detail(wb, resources)
     generate_raw_data(wb, resources)
 
