@@ -1387,12 +1387,16 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
 
             try:
                 # List file shares in this storage account
-                for share in storage_client.file_shares.list(rg, account_name):
+                for share in storage_client.file_shares.list(rg, account_name, expand='stats'):
                     share_id = getattr(share, 'id', None)
                     share_name = getattr(share, 'name', '')
 
-                    # Get share quota (provisioned size in GB)
+                    # Get share quota (provisioned max size in GB)
                     share_quota = getattr(share, 'share_quota', 0) or 0
+                    
+                    # Get actual usage in bytes (requires expand='stats')
+                    share_usage_bytes = getattr(share, 'share_usage_bytes', 0) or 0
+                    share_usage_gb = share_usage_bytes / (1024 * 1024 * 1024) if share_usage_bytes else 0
 
                     # Get access tier
                     access_tier = getattr(share, 'access_tier', 'TransactionOptimized')
@@ -1409,16 +1413,16 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
                         resource_id=share_id or f"{account_id}/fileServices/default/shares/{share_name}",
                         name=share_name,
                         tags={},
-                        size_gb=float(share_quota),
+                        size_gb=float(share_usage_gb),  # Use actual usage, not quota
                         parent_resource_id=account_id,
                         metadata={
                             'resource_group': rg,
                             'storage_account': account_name,
                             'share_quota_gb': share_quota,
+                            'share_usage_gb': round(share_usage_gb, 2),
                             'access_tier': str(access_tier) if access_tier else None,
                             'enabled_protocols': str(enabled_protocols) if enabled_protocols else 'SMB',
                             'last_modified_time': str(getattr(share, 'last_modified_time', '')) if getattr(share, 'last_modified_time', None) else None,
-                            'share_usage_bytes': getattr(share, 'share_usage_bytes', 0),
                         }
                     )
                     resources.append(resource)
