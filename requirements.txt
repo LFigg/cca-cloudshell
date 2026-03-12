@@ -23,6 +23,7 @@ azure-mgmt-synapse>=2.0.0
 azure-mgmt-netapp>=10.0.0
 azure-mgmt-monitor>=6.0.0
 azure-storage-blob>=12.0.0
+six>=1.17.0
 
 # Microsoft 365 / Graph API
 msgraph-sdk>=1.0.0,<2.0.0
