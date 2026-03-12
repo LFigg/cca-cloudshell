@@ -37,7 +37,9 @@ Usage:
 """
 
 import argparse
+import asyncio
 import csv
+import inspect
 import io
 import logging
 import os
@@ -64,6 +66,17 @@ except ImportError:
     sys.exit(1)
 
 logger = logging.getLogger(__name__)
+
+
+def run_sync(result):
+    """Run an async coroutine synchronously if needed.
+    
+    msgraph-sdk 1.55+ returns coroutines from .get() methods.
+    This helper ensures compatibility with both sync and async responses.
+    """
+    if inspect.iscoroutine(result):
+        return asyncio.run(result)
+    return result
 
 
 # =============================================================================
@@ -239,7 +252,7 @@ def collect_sharepoint_sites(graph_client: GraphServiceClient, tenant_id: str) -
 
     try:
         logger.info("Collecting SharePoint sites...")
-        sites_response = graph_client.sites.get()
+        sites_response = run_sync(graph_client.sites.get())
 
         # Collect all sites across all pages
         all_sites = collect_all_pages_sync(sites_response)
@@ -297,7 +310,7 @@ def collect_onedrive_accounts(graph_client: GraphServiceClient, tenant_id: str) 
 
     try:
         logger.info("Collecting OneDrive accounts...")
-        users_response = graph_client.users.get()
+        users_response = run_sync(graph_client.users.get())
 
         # Collect all users across all pages
         all_users = collect_all_pages_sync(users_response)
@@ -305,7 +318,7 @@ def collect_onedrive_accounts(graph_client: GraphServiceClient, tenant_id: str) 
         if all_users:
             for user in all_users:
                 try:
-                    drive = graph_client.users.by_user_id(user.id).drive.get()
+                    drive = run_sync(graph_client.users.by_user_id(user.id).drive.get())
 
                     if drive:
                         storage_used = 0.0
@@ -465,7 +478,7 @@ def _collect_exchange_mailboxes_from_users(
 
     try:
         logger.info("Collecting Exchange mailboxes from users (fallback)...")
-        users_response = graph_client.users.get()
+        users_response = run_sync(graph_client.users.get())
         all_users = collect_all_pages_sync(users_response)
 
         if all_users:
@@ -520,7 +533,7 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
 
     try:
         logger.info("Collecting Microsoft Teams...")
-        groups_response = graph_client.groups.get()
+        groups_response = run_sync(graph_client.groups.get())
 
         # Collect all groups across all pages
         all_groups = collect_all_pages_sync(groups_response)
@@ -534,7 +547,7 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
 
                     # Get team details
                     try:
-                        team = graph_client.teams.by_team_id(group.id).get()
+                        team = run_sync(graph_client.teams.by_team_id(group.id).get())
                     except Exception as e:
                         logger.debug(f"Could not fetch team details for {group.id}: {e}")
                         team = None
@@ -579,7 +592,7 @@ def get_total_user_count(graph_client: GraphServiceClient) -> int:
     """
     try:
         logger.info("Getting total user count...")
-        users_response = graph_client.users.get()
+        users_response = run_sync(graph_client.users.get())
         all_users = collect_all_pages_sync(users_response)
         count = len(all_users) if all_users else 0
         logger.info(f"Total users in tenant: {count}")
@@ -1319,7 +1332,7 @@ def collect_entra_users(graph_client: GraphServiceClient, tenant_id: str) -> Lis
 
     try:
         logger.info("Collecting Entra ID users...")
-        users_response = graph_client.users.get()
+        users_response = run_sync(graph_client.users.get())
 
         # Collect all users across all pages
         all_users = collect_all_pages_sync(users_response)
@@ -1368,7 +1381,7 @@ def collect_entra_groups(graph_client: GraphServiceClient, tenant_id: str) -> Li
 
     try:
         logger.info("Collecting Entra ID groups...")
-        groups_response = graph_client.groups.get()
+        groups_response = run_sync(graph_client.groups.get())
 
         # Collect all groups across all pages
         all_groups = collect_all_pages_sync(groups_response)
@@ -1378,7 +1391,7 @@ def collect_entra_groups(graph_client: GraphServiceClient, tenant_id: str) -> Li
                 try:
                     member_count = 0
                     try:
-                        members = graph_client.groups.by_group_id(group.id).members.get()
+                        members = run_sync(graph_client.groups.by_group_id(group.id).members.get())
                         member_count = len(members.value) if members and members.value else 0
                     except Exception as e:
                         logger.debug(f"Could not fetch member count for group {group.id}: {e}")
