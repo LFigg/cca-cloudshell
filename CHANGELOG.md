@@ -5,6 +5,20 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-03-12
+
+### Added
+- Azure collector: Subscription names now included in output (`subscriptions` array with `subscription_id` and `subscription_name`)
+- GCP collector: Project names now included in output (`projects` array with `project_id` and `project_name`)
+
+### Fixed
+- M365 collector: Pinned msgraph-sdk to <2.0.0 to prevent future compatibility issues
+
+## [1.0.3] - 2026-03-12
+
+### Fixed
+- M365 collector async compatibility with msgraph-sdk 1.x
+
 ## [1.0.1] - 2026-03-12
 
 ### Fixed

@@ -1798,14 +1798,17 @@ def main():
 
     # Collect resources
     all_resources = []
-    subscription_ids = []
+    subscription_info = []  # List of {subscription_id, subscription_name}
     failed_subscriptions = []
 
     with ProgressTracker("Azure", total_accounts=len(subscriptions)) as tracker:
         for sub in subscriptions:
             try:
                 tracker.start_account(sub['id'], sub['name'])
-                subscription_ids.append(sub['id'])
+                subscription_info.append({
+                    'subscription_id': sub['id'],
+                    'subscription_name': sub['name']
+                })
                 all_resources.extend(collect_subscription(
                     credential, sub['id'], sub['name'], tracker,
                     parallel_resources=args.parallel_resources,
@@ -1834,12 +1837,13 @@ def main():
 
     # Collect change rates by default (do this BEFORE aggregate_sizing so storage capacities are included)
     change_rate_data = None
+    successful_sub_ids = {s['subscription_id'] for s in subscription_info}
     if not args.skip_change_rate:
         logger.info("Collecting change rate metrics and storage capacities from Azure Monitor...")
         print("Collecting change rate metrics and storage capacities from Azure Monitor...")
         all_change_rates = {}
         for sub in subscriptions:
-            if sub['id'] not in subscription_ids:
+            if sub['id'] not in successful_sub_ids:
                 continue  # Skip failed subscriptions
             try:
                 # Filter resources for this subscription
@@ -1904,12 +1908,14 @@ def main():
     # Prepare output
     run_id = generate_run_id()
     timestamp = get_timestamp()
+    subscription_ids = [s['subscription_id'] for s in subscription_info]
 
     output_data = {
         'run_id': run_id,
         'timestamp': timestamp,
         'provider': 'azure',
-        'subscriptions': subscription_ids,
+        'subscription_id': subscription_ids,  # List of IDs for backward compatibility
+        'subscriptions': subscription_info,   # List of {subscription_id, subscription_name}
         'resource_count': len(all_resources),
         'resources': [r.to_dict() for r in all_resources]
     }
@@ -1918,7 +1924,8 @@ def main():
         'run_id': run_id,
         'timestamp': timestamp,
         'provider': 'azure',
-        'subscriptions': subscription_ids,
+        'subscription_id': subscription_ids,  # List of IDs for backward compatibility
+        'subscriptions': subscription_info,   # List of {subscription_id, subscription_name}
         'total_resources': len(all_resources),
         'total_capacity_gb': sum(s.total_gb for s in summaries),
         'summaries': [s.to_dict() for s in summaries],
@@ -1950,7 +1957,8 @@ def main():
             'run_id': run_id,
             'timestamp': timestamp,
             'provider': 'azure',
-            'subscriptions': subscription_ids,
+            'subscription_id': subscription_ids,
+            'subscriptions': subscription_info,
             **change_rate_data
         }
         if not args.include_resource_ids:

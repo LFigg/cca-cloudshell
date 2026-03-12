@@ -1316,31 +1316,39 @@ def main():
         credentials, default_project = get_credentials()
 
         # Determine which projects to collect
+        # projects is a list of {id, name} dicts
         if args.all_projects:
             projects = get_projects(credentials)
-            project_ids = [p['id'] for p in projects]
         elif args.project:
-            project_ids = [args.project]
+            projects = [{'id': args.project, 'name': args.project}]  # Name unknown, use ID
         elif default_project:
-            project_ids = [default_project]
+            projects = [{'id': default_project, 'name': default_project}]  # Name unknown, use ID
         else:
             logger.error("No project specified and no default project found")
             sys.exit(1)
 
+        project_ids = [p['id'] for p in projects]
         logger.info(f"Collecting from {len(project_ids)} project(s)")
 
         all_resources = []
         failed_projects = []
+        successful_projects = []  # Track projects with names
 
         with ProgressTracker("GCP", total_accounts=len(project_ids)) as tracker:
-            for project_id in project_ids:
+            for proj in projects:
+                project_id = proj['id']
+                project_name = proj.get('name', project_id)
                 try:
-                    tracker.start_account(project_id)
+                    tracker.start_account(project_id, project_name)
                     resources = collect_project(
                         project_id, tracker,
                         parallel_resources=args.parallel_resources
                     )
                     all_resources.extend(resources)
+                    successful_projects.append({
+                        'project_id': project_id,
+                        'project_name': project_name
+                    })
                     tracker.complete_account()
                 except AuthError as e:
                     logger.error(f"Authentication/authorization error for project {project_id}: {e}")
@@ -1371,13 +1379,12 @@ def main():
 
         # Collect change rates by default
         change_rate_data = None
+        successful_project_ids = [p['project_id'] for p in successful_projects]
         if not args.skip_change_rate:
             logger.info("Collecting change rate metrics from Cloud Monitoring...")
             print("Collecting change rate metrics from Cloud Monitoring...")
             all_change_rates = {}
-            for project_id in project_ids:
-                if project_id in [p['project_id'] for p in failed_projects]:
-                    continue  # Skip failed projects
+            for project_id in successful_project_ids:
                 try:
                     # Filter resources for this project
                     proj_resources = [r for r in all_resources if r.metadata.get('project_id') == project_id or r.resource_id.startswith(f"projects/{project_id}")]
@@ -1435,7 +1442,8 @@ def main():
             'run_id': run_id,
             'timestamp': timestamp,
             'provider': 'gcp',
-            'project_ids': project_ids,
+            'project_id': successful_project_ids,  # List of IDs for backward compatibility
+            'projects': successful_projects,       # List of {project_id, project_name}
             'resources': [r.to_dict() for r in all_resources]
         }
 
@@ -1443,7 +1451,8 @@ def main():
             'run_id': run_id,
             'timestamp': timestamp,
             'provider': 'gcp',
-            'project_ids': project_ids,
+            'project_id': successful_project_ids,  # List of IDs for backward compatibility
+            'projects': successful_projects,       # List of {project_id, project_name}
             'total_resources': len(all_resources),
             'sizing': [s.to_dict() for s in sizing],
             'change_rates': change_rate_data if change_rate_data else None
@@ -1479,7 +1488,8 @@ def main():
                 'run_id': run_id,
                 'timestamp': timestamp,
                 'provider': 'gcp',
-                'project_ids': project_ids,
+                'project_id': successful_project_ids,
+                'projects': successful_projects,
                 **change_rate_data
             }
             if not args.include_resource_ids:

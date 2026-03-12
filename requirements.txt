@@ -25,7 +25,8 @@ azure-mgmt-monitor>=6.0.0
 azure-storage-blob>=12.0.0
 
 # Microsoft 365 / Graph API
-msgraph-sdk>=1.0.0
+msgraph-sdk>=1.0.0,<2.0.0
+msgraph-core>=1.0.0,<2.0.0
 httpx>=0.24.0  # For raw HTTP requests to Graph reports API
 
 # Google Cloud Platform

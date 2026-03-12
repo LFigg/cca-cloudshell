@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 def run_sync(result):
     """Run an async coroutine synchronously if needed.
-    
+
     msgraph-sdk 1.55+ returns coroutines from .get() methods.
     This helper ensures compatibility with both sync and async responses.
     """
