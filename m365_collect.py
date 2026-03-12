@@ -46,6 +46,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+# Module-level credential storage (avoids accessing SDK internals which change between versions)
+_graph_credential = None
+
 # Check for required packages
 try:
     from azure.identity import ClientSecretCredential, DefaultAzureCredential
@@ -117,11 +120,13 @@ class ServiceUsageMetrics:
 
 def get_graph_client(tenant_id: str, client_id: str, client_secret: str) -> GraphServiceClient:
     """Create Microsoft Graph API client using client credentials."""
+    global _graph_credential
     credential = ClientSecretCredential(
         tenant_id=tenant_id,
         client_id=client_id,
         client_secret=client_secret
     )
+    _graph_credential = credential  # Store for direct API calls
     scopes = ['https://graph.microsoft.com/.default']
     return GraphServiceClient(credentials=credential, scopes=scopes)
 
@@ -158,9 +163,11 @@ def get_graph_client_default_credential() -> GraphServiceClient:
     if exclude_mi:
         logger.debug("Not in Azure environment, skipping ManagedIdentityCredential")
 
+    global _graph_credential
     credential = DefaultAzureCredential(
         exclude_managed_identity_credential=exclude_mi
     )
+    _graph_credential = credential  # Store for direct API calls
     scopes = ['https://graph.microsoft.com/.default']
     return GraphServiceClient(credentials=credential, scopes=scopes)
 
@@ -617,10 +624,11 @@ def _get_usage_report(graph_client: GraphServiceClient, report_name: str) -> Opt
         # so we use the underlying request builder
         import httpx
 
-        # Get access token from the client's credential
+        # Get access token from stored credential (avoids accessing SDK internals)
         # We need to make a raw HTTP request for the reports API
-        credential = graph_client._request_adapter._authentication_provider._credential
-        token = credential.get_token("https://graph.microsoft.com/.default")
+        if _graph_credential is None:
+            raise RuntimeError("Graph credential not initialized. Call get_graph_client first.")
+        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
 
         url = f"https://graph.microsoft.com/v1.0/reports/{report_name}(period='{USAGE_REPORT_PERIOD}')"
 
