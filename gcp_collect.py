@@ -53,7 +53,6 @@ from lib.utils import (
     redact_sensitive_data,
     retry_with_backoff,
     setup_logging,
-    write_csv,
     write_json,
 )
 
@@ -1491,7 +1490,6 @@ def main():
         print("\nOutput files:")
         print(f"  Inventory: {inv_file}")
         print(f"  Summary: {sum_file}")
-        print(f"  Sizing: {csv_file}")
 
         # Print sizing table
         print_summary_table([s.to_dict() for s in sizing])

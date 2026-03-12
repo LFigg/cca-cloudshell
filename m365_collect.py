@@ -7,7 +7,7 @@ Authentication Options:
 1. DefaultAzureCredential (recommended) - Uses Azure CLI, Managed Identity, etc.
    - In Azure Cloud Shell: credentials are automatic
    - Local with Azure CLI: run 'az login' first
-   
+
 2. App Registration with client secret (for automated/service scenarios)
    - Create App Registration in Entra ID
    - Set MS365_TENANT_ID, MS365_CLIENT_ID, MS365_CLIENT_SECRET env vars
@@ -42,8 +42,8 @@ import io
 import logging
 import os
 import sys
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 # Check for required packages
@@ -126,22 +126,41 @@ def get_graph_client(tenant_id: str, client_id: str, client_secret: str) -> Grap
     return GraphServiceClient(credentials=credential, scopes=scopes)
 
 
+def _is_azure_environment() -> bool:
+    """Check if running in Azure Cloud Shell or Azure VM."""
+    # Azure Cloud Shell sets these
+    if os.environ.get('AZURE_HTTP_USER_AGENT') or os.environ.get('ACC_CLOUD'):
+        return True
+    # Azure IMDS is only available on Azure VMs
+    if os.environ.get('MSI_ENDPOINT') or os.environ.get('IDENTITY_ENDPOINT'):
+        return True
+    return False
+
+
 def get_graph_client_default_credential() -> GraphServiceClient:
     """Create Microsoft Graph API client using DefaultAzureCredential.
-    
+
     This uses the Azure Identity credential chain, which tries (in order):
     1. Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
     2. Managed Identity (when running on Azure VMs, App Service, etc.)
     3. Azure CLI credentials (az login)
     4. Azure PowerShell credentials
     5. Interactive browser login (if enabled)
-    
+
     This is the recommended approach for:
     - Azure Cloud Shell (uses managed identity automatically)
     - Azure VMs with managed identity
     - Local development with Azure CLI login
     """
-    credential = DefaultAzureCredential()
+    # Skip ManagedIdentityCredential on non-Azure machines to avoid IMDS timeout
+    # IMDS endpoint doesn't exist outside Azure, causing long hangs
+    exclude_mi = not _is_azure_environment()
+    if exclude_mi:
+        logger.debug("Not in Azure environment, skipping ManagedIdentityCredential")
+
+    credential = DefaultAzureCredential(
+        exclude_managed_identity_credential=exclude_mi
+    )
     scopes = ['https://graph.microsoft.com/.default']
     return GraphServiceClient(credentials=credential, scopes=scopes)
 
@@ -330,46 +349,46 @@ def collect_onedrive_accounts(graph_client: GraphServiceClient, tenant_id: str) 
 # =============================================================================
 
 def collect_exchange_mailboxes(
-    graph_client: GraphServiceClient, 
-    tenant_id: str, 
+    graph_client: GraphServiceClient,
+    tenant_id: str,
     mailbox_usage: Optional[Dict[str, Dict[str, Any]]] = None
 ) -> List[CloudResource]:
     """Collect Exchange Online mailboxes from usage report data.
-    
+
     The usage report is the authoritative source as it includes all mailbox types:
     - User mailboxes (regular user mailboxes)
     - Shared mailboxes (shared departmental mailboxes)
     - Room/Equipment mailboxes (scheduling mailboxes)
     - Group mailboxes (M365 Group mailboxes)
-    
+
     Args:
         graph_client: Microsoft Graph client
         tenant_id: Azure AD tenant ID
         mailbox_usage: Dict from collect_mailbox_usage_report() - if not provided, will collect
     """
     resources = []
-    
+
     try:
         logger.info("Collecting Exchange mailboxes...")
-        
+
         # Get mailbox data from usage report if not provided
         if mailbox_usage is None:
             mailbox_usage = collect_mailbox_usage_report(graph_client)
-        
+
         if not mailbox_usage:
             logger.warning("No mailbox usage data available - mailbox collection may be incomplete")
             # Fall back to user-based collection
             return _collect_exchange_mailboxes_from_users(graph_client, tenant_id)
-        
+
         # Create resources from usage report data (includes all mailbox types)
         for upn, usage_data in mailbox_usage.items():
             try:
                 # Skip deleted mailboxes unless specifically tracking them
                 if usage_data.get('is_deleted', False):
                     continue
-                
+
                 storage_gb = usage_data.get('storage_gb', 0.0)
-                
+
                 resource = CloudResource(
                     provider="microsoft365",
                     subscription_id=tenant_id,
@@ -383,24 +402,24 @@ def collect_exchange_mailboxes(
                     metadata={
                         'user_principal_name': usage_data.get('user_principal_name', upn),
                         'display_name': usage_data.get('display_name', ''),
-                        
+
                         # Mailbox type info
                         'mailbox_type': usage_data.get('mailbox_type', 'User'),
                         'recipient_type': usage_data.get('recipient_type', 'UserMailbox'),
                         'has_archive': usage_data.get('has_archive', False),
-                        
+
                         # Storage
                         'storage_used_gb': round(storage_gb, 2),
                         'item_count': usage_data.get('item_count', 0),
-                        
+
                         # Deleted items (recoverable items)
                         'deleted_item_count': usage_data.get('deleted_item_count', 0),
                         'deleted_item_size_gb': round(usage_data.get('deleted_item_size_gb', 0.0), 2),
-                        
+
                         # Quotas
                         'prohibit_send_receive_quota_gb': round(usage_data.get('prohibit_send_receive_quota_gb', 0.0), 2),
                         'quota_usage_percent': round(usage_data.get('quota_usage_percent', 0.0), 1),
-                        
+
                         # Activity
                         'last_activity_date': usage_data.get('last_activity_date', ''),
                         'created_date': usage_data.get('created_date', ''),
@@ -410,13 +429,13 @@ def collect_exchange_mailboxes(
             except Exception as e:
                 logger.debug(f"Failed to process mailbox {upn}: {e}")
                 continue
-        
+
         # Log summary by type
         type_counts = {}
         for r in resources:
             t = r.metadata.get('mailbox_type', 'Unknown')
             type_counts[t] = type_counts.get(t, 0) + 1
-        
+
         logger.info(f"Collected {len(resources)} Exchange mailboxes by type: {type_counts}")
 
     except Exception as e:
@@ -427,16 +446,16 @@ def collect_exchange_mailboxes(
 
 
 def _collect_exchange_mailboxes_from_users(
-    graph_client: GraphServiceClient, 
+    graph_client: GraphServiceClient,
     tenant_id: str
 ) -> List[CloudResource]:
     """Fallback: Collect Exchange mailboxes by iterating users.
-    
+
     This is used when usage report data is not available.
     Note: This only captures user mailboxes, not shared/room/group mailboxes.
     """
     resources = []
-    
+
     try:
         logger.info("Collecting Exchange mailboxes from users (fallback)...")
         users_response = graph_client.users.get()
@@ -548,7 +567,7 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
 
 def get_total_user_count(graph_client: GraphServiceClient) -> int:
     """Get total user count in the tenant.
-    
+
     Returns count of all users (including disabled accounts).
     """
     try:
@@ -569,14 +588,14 @@ def get_total_user_count(graph_client: GraphServiceClient) -> int:
 
 def _parse_usage_report_csv(csv_content: str) -> List[Dict[str, Any]]:
     """Parse CSV content from Microsoft Graph usage reports.
-    
-    Microsoft Graph reports API returns CSV with a BOM marker and 
+
+    Microsoft Graph reports API returns CSV with a BOM marker and
     the first line contains report metadata that we skip.
     """
     # Remove BOM if present
     if csv_content.startswith('\ufeff'):
         csv_content = csv_content[1:]
-    
+
     # Parse CSV
     reader = csv.DictReader(io.StringIO(csv_content))
     return list(reader)
@@ -584,11 +603,11 @@ def _parse_usage_report_csv(csv_content: str) -> List[Dict[str, Any]]:
 
 def _get_usage_report(graph_client: GraphServiceClient, report_name: str) -> Optional[str]:
     """Fetch a usage report from Microsoft Graph.
-    
+
     Args:
         graph_client: Microsoft Graph client
         report_name: Report name like 'getSharePointSiteUsageDetail'
-        
+
     Returns:
         CSV content as string, or None on failure
     """
@@ -597,25 +616,24 @@ def _get_usage_report(graph_client: GraphServiceClient, report_name: str) -> Opt
         # Note: The msgraph-sdk doesn't have typed methods for all reports,
         # so we use the underlying request builder
         import httpx
-        from azure.identity import ClientSecretCredential
-        
+
         # Get access token from the client's credential
         # We need to make a raw HTTP request for the reports API
         credential = graph_client._request_adapter._authentication_provider._credential
         token = credential.get_token("https://graph.microsoft.com/.default")
-        
+
         url = f"https://graph.microsoft.com/v1.0/reports/{report_name}(period='{USAGE_REPORT_PERIOD}')"
-        
+
         headers = {
             'Authorization': f'Bearer {token.token}',
             'Accept': 'application/json'
         }
-        
+
         with httpx.Client(follow_redirects=True, timeout=120.0) as client:
             response = client.get(url, headers=headers)
             response.raise_for_status()
             return response.text
-            
+
     except Exception as e:
         logger.warning(f"Failed to fetch usage report {report_name}: {e}")
         return None
@@ -623,17 +641,17 @@ def _get_usage_report(graph_client: GraphServiceClient, report_name: str) -> Opt
 
 def collect_sharepoint_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
     """Collect SharePoint site usage report with historical storage data.
-    
+
     Returns dict keyed by site URL with storage and site type.
     """
     logger.info("Collecting SharePoint usage report...")
-    
+
     csv_content = _get_usage_report(graph_client, 'getSharePointSiteUsageDetail')
     if not csv_content:
         return {}
-    
+
     rows = _parse_usage_report_csv(csv_content)
-    
+
     # Build lookup by site URL
     # Report includes: Site URL, Site Type, Root Web Template, Storage Used (Byte), etc.
     sites = {}
@@ -641,28 +659,28 @@ def collect_sharepoint_usage_report(graph_client: GraphServiceClient) -> Dict[st
         site_url = _get_csv_field(row, 'Site URL', 'Site Url', 'siteUrl')
         if not site_url:
             continue
-            
+
         # Get storage
         storage_bytes = _safe_int(_get_csv_field(
             row, 'Storage Used (Byte)', 'Storage Used (Bytes)', 'storageUsedInBytes'
         ))
-        
+
         # Get site type - this distinguishes Team Sites from SharePoint Sites
         # Common values: Team Site, Communication Site, Group, Personal Site (OneDrive)
         site_type = _get_csv_field(row, 'Site Type', 'siteType') or ''
         root_web_template = _get_csv_field(row, 'Root Web Template', 'rootWebTemplate') or ''
-        
+
         # Determine if it's a Team Site (Teams-connected) or SharePoint Site
         is_team_site = (
-            'group' in site_type.lower() or 
+            'group' in site_type.lower() or
             'team' in site_type.lower() or
             root_web_template in ('GROUP', 'Group#0', 'TEAMCHANNEL')
         )
-        
+
         # Is deleted
         is_deleted_raw = _get_csv_field(row, 'Is Deleted', 'isDeleted')
         is_deleted = str(is_deleted_raw).lower() in ('yes', 'true', '1') if is_deleted_raw else False
-        
+
         sites[site_url] = {
             'storage_bytes': storage_bytes,
             'storage_gb': storage_bytes / (1024**3),
@@ -677,7 +695,7 @@ def collect_sharepoint_usage_report(graph_client: GraphServiceClient) -> Dict[st
             'is_deleted': is_deleted,
             'owner_display_name': _get_csv_field(row, 'Owner Display Name', 'ownerDisplayName') or '',
         }
-    
+
     # Log summary
     team_sites = sum(1 for s in sites.values() if s['is_team_site'])
     sp_sites = len(sites) - team_sites
@@ -687,24 +705,24 @@ def collect_sharepoint_usage_report(graph_client: GraphServiceClient) -> Dict[st
 
 def collect_onedrive_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
     """Collect OneDrive usage report with historical storage data.
-    
+
     Returns dict keyed by user principal name with storage history.
     """
     logger.info("Collecting OneDrive usage report...")
-    
+
     csv_content = _get_usage_report(graph_client, 'getOneDriveUsageAccountDetail')
     if not csv_content:
         return {}
-    
+
     rows = _parse_usage_report_csv(csv_content)
-    
+
     # Build lookup by user principal name
     accounts = {}
     for row in rows:
         upn = row.get('Owner Principal Name', row.get('User Principal Name', ''))
         if not upn:
             continue
-            
+
         # Get storage
         storage_bytes = 0
         for key in ['Storage Used (Byte)', 'Storage Used (Bytes)', 'storageUsedInBytes']:
@@ -714,7 +732,7 @@ def collect_onedrive_usage_report(graph_client: GraphServiceClient) -> Dict[str,
                     break
                 except (ValueError, TypeError):
                     pass
-        
+
         accounts[upn.lower()] = {
             'storage_bytes': storage_bytes,
             'storage_gb': storage_bytes / (1024**3),
@@ -722,7 +740,7 @@ def collect_onedrive_usage_report(graph_client: GraphServiceClient) -> Dict[str,
             'file_count': int(row.get('File Count', 0) or 0),
             'active_file_count': int(row.get('Active File Count', 0) or 0)
         }
-    
+
     logger.info(f"Collected usage data for {len(accounts)} OneDrive accounts")
     return accounts
 
@@ -757,7 +775,7 @@ def _get_csv_field(row: Dict[str, Any], *keys: str) -> Any:
 
 def collect_mailbox_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
     """Collect Exchange mailbox usage report with comprehensive data.
-    
+
     Returns dict keyed by user principal name with full mailbox details including:
     - Storage size (primary mailbox)
     - Item counts
@@ -768,28 +786,28 @@ def collect_mailbox_usage_report(graph_client: GraphServiceClient) -> Dict[str, 
     - Deleted item info
     """
     logger.info("Collecting Exchange mailbox usage report...")
-    
+
     csv_content = _get_usage_report(graph_client, 'getMailboxUsageDetail')
     if not csv_content:
         return {}
-    
+
     rows = _parse_usage_report_csv(csv_content)
-    
+
     # Build lookup by user principal name
     mailboxes = {}
     for row in rows:
         upn = _get_csv_field(row, 'User Principal Name', 'userPrincipalName')
         if not upn:
             continue
-        
+
         # Storage used (bytes)
         storage_bytes = _safe_int(_get_csv_field(
             row, 'Storage Used (Byte)', 'Storage Used (Bytes)', 'storageUsedInBytes'
         ))
-        
+
         # Item count
         item_count = _safe_int(_get_csv_field(row, 'Item Count', 'itemCount'))
-        
+
         # Deleted items
         deleted_item_count = _safe_int(_get_csv_field(
             row, 'Deleted Item Count', 'deletedItemCount'
@@ -797,10 +815,10 @@ def collect_mailbox_usage_report(graph_client: GraphServiceClient) -> Dict[str, 
         deleted_item_size_bytes = _safe_int(_get_csv_field(
             row, 'Deleted Item Size (Byte)', 'Deleted Item Size (Bytes)', 'deletedItemSizeInBytes'
         ))
-        
+
         # Mailbox type from Recipient Type field
         recipient_type = _get_csv_field(row, 'Recipient Type', 'recipientType')
-        
+
         # Map recipient types to friendly names
         mailbox_type_map = {
             'UserMailbox': 'User',
@@ -812,15 +830,15 @@ def collect_mailbox_usage_report(graph_client: GraphServiceClient) -> Dict[str, 
             'DiscoveryMailbox': 'Discovery',
         }
         mailbox_type = mailbox_type_map.get(recipient_type, recipient_type or 'User')
-        
+
         # Archive status
         has_archive_raw = _get_csv_field(row, 'Has Archive', 'hasArchive')
         has_archive = str(has_archive_raw).lower() in ('yes', 'true', '1') if has_archive_raw else False
-        
+
         # Is deleted
         is_deleted_raw = _get_csv_field(row, 'Is Deleted', 'isDeleted')
         is_deleted = str(is_deleted_raw).lower() in ('yes', 'true', '1') if is_deleted_raw else False
-        
+
         # Quotas (bytes)
         issue_warning_quota = _safe_int(_get_csv_field(
             row, 'Issue Warning Quota (Byte)', 'Issue Warning Quota (Bytes)', 'issueWarningQuotaInBytes'
@@ -829,82 +847,82 @@ def collect_mailbox_usage_report(graph_client: GraphServiceClient) -> Dict[str, 
             row, 'Prohibit Send Quota (Byte)', 'Prohibit Send Quota (Bytes)', 'prohibitSendQuotaInBytes'
         ))
         prohibit_send_receive_quota = _safe_int(_get_csv_field(
-            row, 'Prohibit Send/Receive Quota (Byte)', 'Prohibit Send/Receive Quota (Bytes)', 
+            row, 'Prohibit Send/Receive Quota (Byte)', 'Prohibit Send/Receive Quota (Bytes)',
             'prohibitSendReceiveQuotaInBytes'
         ))
         deleted_item_quota = _safe_int(_get_csv_field(
             row, 'Deleted Item Quota (Byte)', 'Deleted Item Quota (Bytes)', 'deletedItemQuotaInBytes'
         ))
-        
+
         # Dates
         display_name = _get_csv_field(row, 'Display Name', 'displayName') or ''
         last_activity_date = _get_csv_field(row, 'Last Activity Date', 'lastActivityDate') or ''
         created_date = _get_csv_field(row, 'Created Date', 'createdDate') or ''
         deleted_date = _get_csv_field(row, 'Deleted Date', 'deletedDate') or ''
-        
+
         mailboxes[upn.lower()] = {
             # Identity
             'user_principal_name': upn,
             'display_name': display_name,
-            
+
             # Type and status
             'recipient_type': recipient_type or 'UserMailbox',
             'mailbox_type': mailbox_type,
             'has_archive': has_archive,
             'is_deleted': is_deleted,
-            
+
             # Storage
             'storage_bytes': storage_bytes,
             'storage_gb': storage_bytes / (1024**3),
             'item_count': item_count,
-            
+
             # Deleted items (recoverable)
             'deleted_item_count': deleted_item_count,
             'deleted_item_size_bytes': deleted_item_size_bytes,
             'deleted_item_size_gb': deleted_item_size_bytes / (1024**3),
-            
+
             # Quotas (in GB for readability)
             'issue_warning_quota_gb': issue_warning_quota / (1024**3) if issue_warning_quota else 0.0,
             'prohibit_send_quota_gb': prohibit_send_quota / (1024**3) if prohibit_send_quota else 0.0,
             'prohibit_send_receive_quota_gb': prohibit_send_receive_quota / (1024**3) if prohibit_send_receive_quota else 0.0,
             'deleted_item_quota_gb': deleted_item_quota / (1024**3) if deleted_item_quota else 0.0,
-            
+
             # Calculate quota usage percentage
             'quota_usage_percent': (storage_bytes / prohibit_send_receive_quota * 100) if prohibit_send_receive_quota else 0.0,
-            
+
             # Dates
             'last_activity_date': last_activity_date,
             'created_date': created_date,
             'deleted_date': deleted_date,
         }
-    
+
     # Log summary by type
     type_counts = {}
     for mb in mailboxes.values():
         t = mb['mailbox_type']
         type_counts[t] = type_counts.get(t, 0) + 1
-    
+
     logger.info(f"Collected usage data for {len(mailboxes)} Exchange mailboxes: {type_counts}")
     return mailboxes
 
 
 def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str, Any]:
     """Collect Teams activity report for chat/meeting metrics.
-    
+
     Returns dict with Teams chat and meeting activity data including:
     - Team chat message counts
-    - Private chat message counts  
+    - Private chat message counts
     - Calls and meetings counts
     - Total estimated metered units
     """
     logger.info("Collecting Teams activity report...")
-    
+
     csv_content = _get_usage_report(graph_client, 'getTeamsUserActivityUserDetail')
     if not csv_content:
         return {}
-    
+
     rows = _parse_usage_report_csv(csv_content)
-    
+
     # Aggregate activity across all users
     totals = {
         'team_chat_message_count': 0,
@@ -922,7 +940,7 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
         'active_users': 0,
         'users_with_activity': 0,
     }
-    
+
     for row in rows:
         # Check if user had any activity
         has_activity = any([
@@ -931,10 +949,10 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
             _safe_int(_get_csv_field(row, 'Call Count', 'callCount')) > 0,
             _safe_int(_get_csv_field(row, 'Meeting Count', 'meetingCount')) > 0,
         ])
-        
+
         if has_activity:
             totals['users_with_activity'] += 1
-        
+
         # Aggregate message counts
         totals['team_chat_message_count'] += _safe_int(_get_csv_field(
             row, 'Team Chat Message Count', 'teamChatMessageCount'
@@ -942,7 +960,7 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
         totals['private_chat_message_count'] += _safe_int(_get_csv_field(
             row, 'Private Chat Message Count', 'privateChatMessageCount'
         ))
-        
+
         # Aggregate calls/meetings
         totals['call_count'] += _safe_int(_get_csv_field(row, 'Call Count', 'callCount'))
         totals['meeting_count'] += _safe_int(_get_csv_field(row, 'Meeting Count', 'meetingCount'))
@@ -952,7 +970,7 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
         totals['meetings_attended_count'] += _safe_int(_get_csv_field(
             row, 'Meetings Attended Count', 'meetingsAttendedCount'
         ))
-        
+
         # Duration tracking (in seconds)
         totals['audio_duration_seconds'] += _safe_int(_get_csv_field(
             row, 'Audio Duration In Seconds', 'audioDurationInSeconds'
@@ -963,9 +981,9 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
         totals['screen_share_duration_seconds'] += _safe_int(_get_csv_field(
             row, 'Screen Share Duration In Seconds', 'screenShareDurationInSeconds'
         ))
-        
+
         totals['active_users'] += 1
-    
+
     # Calculate estimated metered units (messages are the primary metered resource)
     # Microsoft's metering is complex, but chat messages are primary
     totals['estimated_metered_units_user_chats'] = totals['private_chat_message_count']
@@ -973,7 +991,7 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
     totals['total_estimated_metered_units'] = (
         totals['private_chat_message_count'] + totals['team_chat_message_count']
     )
-    
+
     # Project for next year (linear projection from 180-day report period)
     days_in_period = USAGE_REPORT_PERIOD_DAYS
     projection_factor = 365 / days_in_period
@@ -981,7 +999,7 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
     totals['total_metered_units_with_projection'] = (
         totals['total_estimated_metered_units'] + totals['projected_annual_metered_units']
     )
-    
+
     logger.info(f"Collected Teams activity for {totals['active_users']} users: "
                 f"{totals['total_estimated_metered_units']:,} metered units")
     return totals
@@ -989,7 +1007,7 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
 
 def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Generate comprehensive Exchange Online summary matching sizing spreadsheet format.
-    
+
     Categories:
     - User Active Mailboxes (active, not deleted, recipient type UserMailbox)
     - User Archive Mailboxes (has archive enabled - note: archive SIZE requires PowerShell)
@@ -1000,7 +1018,7 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
     - PublicFolder Active Mailboxes (PublicFolderMailbox recipient type)
     """
     summary = {
-        'user_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0, 
+        'user_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
                         'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
         'user_archive_enabled': {'count': 0},  # Note: Archive SIZE not available via Graph API
         'softdeleted_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
@@ -1016,17 +1034,17 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
         'room_equipment_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
                                    'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
     }
-    
-    for upn, mb in mailbox_usage.items():
+
+    for _upn, mb in mailbox_usage.items():
         recipient_type = mb.get('recipient_type', 'UserMailbox')
         is_deleted = mb.get('is_deleted', False)
         has_archive = mb.get('has_archive', False)
-        
+
         item_count = mb.get('item_count', 0)
         item_size_gib = mb.get('storage_gb', 0.0)
         recoverable_count = mb.get('deleted_item_count', 0)
         recoverable_size_gib = mb.get('deleted_item_size_gb', 0.0)
-        
+
         # Categorize by recipient type and status
         if recipient_type == 'GroupMailbox':
             if is_deleted:
@@ -1039,14 +1057,14 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
                 summary['group_active']['recoverable_item_size_gib'] += recoverable_size_gib
                 if has_archive:
                     summary['group_archive']['count'] += 1
-                    
+
         elif recipient_type == 'PublicFolderMailbox':
             summary['publicfolder_active']['count'] += 1
             summary['publicfolder_active']['item_count'] += item_count
             summary['publicfolder_active']['item_size_gib'] += item_size_gib
             summary['publicfolder_active']['recoverable_item_count'] += recoverable_count
             summary['publicfolder_active']['recoverable_item_size_gib'] += recoverable_size_gib
-            
+
         elif recipient_type == 'SharedMailbox':
             if is_deleted:
                 summary['softdeleted_active']['count'] += 1
@@ -1056,14 +1074,14 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
                 summary['shared_active']['item_size_gib'] += item_size_gib
                 summary['shared_active']['recoverable_item_count'] += recoverable_count
                 summary['shared_active']['recoverable_item_size_gib'] += recoverable_size_gib
-                
+
         elif recipient_type in ('RoomMailbox', 'EquipmentMailbox', 'SchedulingMailbox'):
             summary['room_equipment_active']['count'] += 1
             summary['room_equipment_active']['item_count'] += item_count
             summary['room_equipment_active']['item_size_gib'] += item_size_gib
             summary['room_equipment_active']['recoverable_item_count'] += recoverable_count
             summary['room_equipment_active']['recoverable_item_size_gib'] += recoverable_size_gib
-            
+
         else:  # UserMailbox or unknown
             if is_deleted:
                 summary['softdeleted_active']['count'] += 1
@@ -1081,7 +1099,7 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
                 summary['user_active']['recoverable_item_size_gib'] += recoverable_size_gib
                 if has_archive:
                     summary['user_archive_enabled']['count'] += 1
-    
+
     # Calculate totals for each category
     for category in summary.values():
         if 'item_count' in category:
@@ -1092,7 +1110,7 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
             # Round individual values
             category['item_size_gib'] = round(category['item_size_gib'], 3)
             category['recoverable_item_size_gib'] = round(category.get('recoverable_item_size_gib', 0.0), 3)
-    
+
     # Calculate grand totals
     summary['totals_default'] = {
         'count': summary['user_active']['count'],
@@ -1103,9 +1121,9 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
         'total_item_count': summary['user_active']['total_item_count'],
         'total_item_size_gib': summary['user_active']['total_item_size_gib'],
     }
-    
+
     # Totals with all options (including deleted, groups, shared, etc.)
-    all_active_categories = ['user_active', 'group_active', 'publicfolder_active', 
+    all_active_categories = ['user_active', 'group_active', 'publicfolder_active',
                               'shared_active', 'room_equipment_active', 'softdeleted_active']
     summary['totals_all'] = {
         'count': sum(summary[cat]['count'] for cat in all_active_categories),
@@ -1120,13 +1138,13 @@ def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[
     summary['totals_all']['total_item_size_gib'] = round(
         summary['totals_all']['item_size_gib'] + summary['totals_all']['recoverable_item_size_gib'], 3
     )
-    
+
     return summary
 
 
 def generate_sharepoint_summary(site_usage: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Generate SharePoint Online summary with site type breakdown.
-    
+
     Categories:
     - SharePoint Sites (Communication sites, Publishing sites)
     - Team Sites (Teams-connected sites)
@@ -1137,8 +1155,8 @@ def generate_sharepoint_summary(site_usage: Dict[str, Dict[str, Any]]) -> Dict[s
         'deleted_sites': {'count': 0, 'storage_gib': 0.0},
         'total': {'count': 0, 'storage_gib': 0.0},
     }
-    
-    for url, site in site_usage.items():
+
+    for _url, site in site_usage.items():
         if site.get('is_deleted', False):
             summary['deleted_sites']['count'] += 1
             summary['deleted_sites']['storage_gib'] += site.get('storage_gb', 0.0)
@@ -1148,26 +1166,26 @@ def generate_sharepoint_summary(site_usage: Dict[str, Dict[str, Any]]) -> Dict[s
         else:
             summary['sharepoint_sites']['count'] += 1
             summary['sharepoint_sites']['storage_gib'] += site.get('storage_gb', 0.0)
-    
+
     # Total (excluding deleted)
     summary['total']['count'] = summary['sharepoint_sites']['count'] + summary['team_sites']['count']
     summary['total']['storage_gib'] = round(
         summary['sharepoint_sites']['storage_gib'] + summary['team_sites']['storage_gib'], 3
     )
-    
+
     # Round values
     for cat in summary.values():
         cat['storage_gib'] = round(cat['storage_gib'], 3)
-    
+
     return summary
 
 
 def collect_storage_history_report(graph_client: GraphServiceClient, service: str) -> List[Dict[str, Any]]:
     """Collect storage history to calculate change rate and growth.
-    
+
     Args:
         service: 'sharepoint', 'onedrive', or 'mailbox'
-        
+
     Returns:
         List of daily totals with date and storage_bytes
     """
@@ -1176,25 +1194,25 @@ def collect_storage_history_report(graph_client: GraphServiceClient, service: st
         'onedrive': 'getOneDriveUsageStorage',
         'mailbox': 'getMailboxUsageStorage'
     }
-    
+
     report_name = report_map.get(service)
     if not report_name:
         return []
-    
+
     logger.info(f"Collecting {service} storage history...")
-    
+
     csv_content = _get_usage_report(graph_client, report_name)
     if not csv_content:
         return []
-    
+
     rows = _parse_usage_report_csv(csv_content)
-    
+
     history = []
     for row in rows:
         date_str = row.get('Report Date', '')
         if not date_str:
             continue
-            
+
         # Get storage
         storage_bytes = 0
         for key in ['Storage Used (Byte)', 'Storage Used (Bytes)', 'storageUsedInBytes']:
@@ -1204,29 +1222,29 @@ def collect_storage_history_report(graph_client: GraphServiceClient, service: st
                     break
                 except (ValueError, TypeError):
                     pass
-        
+
         try:
-            report_date = datetime.strptime(date_str, '%Y-%m-%d')
+            datetime.strptime(date_str, '%Y-%m-%d')
             history.append({
                 'date': date_str,
                 'storage_bytes': storage_bytes
             })
         except ValueError:
             continue
-    
+
     # Sort by date
     history.sort(key=lambda x: x['date'])
-    
+
     logger.info(f"Collected {len(history)} days of {service} storage history")
     return history
 
 
 def calculate_change_rate_and_growth(history: List[Dict[str, Any]]) -> Dict[str, float]:
     """Calculate daily change rate and annual growth from storage history.
-    
+
     Args:
         history: List of {'date': str, 'storage_bytes': int} sorted by date
-        
+
     Returns:
         Dict with daily_change_gb, daily_change_percent, annual_growth_percent
     """
@@ -1236,7 +1254,7 @@ def calculate_change_rate_and_growth(history: List[Dict[str, Any]]) -> Dict[str,
             'daily_change_percent': 0.0,
             'annual_growth_percent': 0.0
         }
-    
+
     # Calculate daily deltas
     daily_deltas = []
     for i in range(1, len(history)):
@@ -1249,33 +1267,33 @@ def calculate_change_rate_and_growth(history: List[Dict[str, Any]]) -> Dict[str,
                 'delta_bytes': delta_bytes,
                 'delta_percent': delta_percent
             })
-    
+
     if not daily_deltas:
         return {
             'daily_change_gb': 0.0,
             'daily_change_percent': 0.0,
             'annual_growth_percent': 0.0
         }
-    
+
     # Average daily change (use absolute values for change rate - it's about backup data volume)
     avg_daily_change_bytes = sum(abs(d['delta_bytes']) for d in daily_deltas) / len(daily_deltas)
-    
+
     # Current storage for percentage calculation
     current_storage = history[-1]['storage_bytes']
     avg_daily_change_pct = (avg_daily_change_bytes / current_storage * 100) if current_storage > 0 else 0
-    
+
     # Annual growth: compare first and last values, extrapolate to a year
     first_storage = history[0]['storage_bytes']
     last_storage = history[-1]['storage_bytes']
     period_days = len(history)
-    
+
     if first_storage > 0 and period_days > 0:
         period_growth = (last_storage - first_storage) / first_storage
         # Extrapolate to annual (365 days)
         annual_growth = period_growth * (365 / period_days) * 100
     else:
         annual_growth = 0.0
-    
+
     return {
         'daily_change_gb': avg_daily_change_bytes / (1024**3),
         'daily_change_percent': avg_daily_change_pct,
@@ -1543,9 +1561,32 @@ Required Azure AD App Permissions (Application type):
     # Get client secret from environment only (security: not from CLI args)
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
 
+    # Check for partial environment variable configuration (common mistake)
+    ms365_vars = {
+        'MS365_TENANT_ID': os.environ.get('MS365_TENANT_ID'),
+        'MS365_CLIENT_ID': os.environ.get('MS365_CLIENT_ID'),
+        'MS365_CLIENT_SECRET': client_secret
+    }
+    set_vars = [k for k, v in ms365_vars.items() if v]
+    missing_vars = [k for k, v in ms365_vars.items() if not v]
+
+    if set_vars and missing_vars:
+        print(f"ERROR: Partial credentials detected. You set: {', '.join(set_vars)}")
+        print(f"       But missing: {', '.join(missing_vars)}")
+        print("")
+        print("Please set ALL three environment variables:")
+        print('  export MS365_TENANT_ID="your-tenant-id"')
+        print('  export MS365_CLIENT_ID="your-client-id"')
+        print('  export MS365_CLIENT_SECRET="your-client-secret"')
+        print("")
+        print("Or use Azure CLI authentication instead:")
+        print("  az login")
+        print("  python m365_collect.py --use-default-credential")
+        sys.exit(1)
+
     # Determine credential mode
     use_default_credential = args.use_default_credential
-    
+
     # Auto-detect: if no explicit credentials provided, try DefaultAzureCredential
     if not use_default_credential and not (args.tenant_id and args.client_id and client_secret):
         # Check if we're in Azure Cloud Shell or have Azure CLI logged in
@@ -1595,9 +1636,15 @@ Required Azure AD App Permissions (Application type):
         print(f"ERROR: Failed to initialize Graph client: {e}")
         if use_default_credential:
             print("\nTroubleshooting DefaultAzureCredential:")
-            print("  - Run 'az login' to authenticate with Azure CLI")
-            print("  - In Azure Cloud Shell, credentials should be automatic")
-            print("  - Check that your account has Graph API permissions")
+            print("  1. Install Azure CLI: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli")
+            print("  2. Run: az login")
+            print("  3. Run: python m365_collect.py --use-default-credential")
+            print("")
+            print("  Or use App Registration credentials instead:")
+            print('    export MS365_TENANT_ID="your-tenant-id"')
+            print('    export MS365_CLIENT_ID="your-client-id"')
+            print('    export MS365_CLIENT_SECRET="your-secret"')
+            print("    python m365_collect.py")
         sys.exit(1)
 
     # Count total collection tasks (add usage reports collection)
@@ -1617,11 +1664,10 @@ Required Azure AD App Permissions (Application type):
     all_resources: List[CloudResource] = []
     change_rate_data: Dict[str, Any] = {}
     total_user_count: int = 0
-    
+
     # Pre-fetch usage reports for accurate sizes and change rates
     mailbox_usage: Dict[str, Dict[str, Any]] = {}
     sharepoint_usage: Dict[str, Dict[str, Any]] = {}
-    onedrive_usage: Dict[str, Dict[str, Any]] = {}
     teams_activity: Dict[str, Any] = {}
     exchange_summary: Dict[str, Any] = {}
     sharepoint_summary: Dict[str, Any] = {}
@@ -1632,27 +1678,27 @@ Required Azure AD App Permissions (Application type):
         try:
             # Get total user count for the tenant
             total_user_count = get_total_user_count(graph_client)
-            
+
             # Collect usage reports for each service
             mailbox_usage = collect_mailbox_usage_report(graph_client)
             sharepoint_usage = collect_sharepoint_usage_report(graph_client) if not args.skip_sharepoint else {}
-            onedrive_usage = collect_onedrive_usage_report(graph_client) if not args.skip_onedrive else {}
-            
+            collect_onedrive_usage_report(graph_client) if not args.skip_onedrive else {}
+
             # Collect Teams activity data
             if not args.skip_teams:
                 teams_activity = collect_teams_activity_report(graph_client)
-            
+
             # Generate summaries from usage reports
             if mailbox_usage:
                 exchange_summary = generate_exchange_summary(mailbox_usage)
             if sharepoint_usage:
                 sharepoint_summary = generate_sharepoint_summary(sharepoint_usage)
-            
+
             # Collect storage history for change rate calculation
             sharepoint_history = collect_storage_history_report(graph_client, 'sharepoint') if not args.skip_sharepoint else []
             onedrive_history = collect_storage_history_report(graph_client, 'onedrive') if not args.skip_onedrive else []
             mailbox_history = collect_storage_history_report(graph_client, 'mailbox') if not args.skip_exchange else []
-            
+
             # Calculate change rates
             if sharepoint_history:
                 sp_metrics = calculate_change_rate_and_growth(sharepoint_history)
@@ -1662,7 +1708,7 @@ Required Azure AD App Permissions (Application type):
                     'annual_growth_percent': sp_metrics['annual_growth_percent'],
                     'sample_period_days': len(sharepoint_history)
                 }
-            
+
             if onedrive_history:
                 od_metrics = calculate_change_rate_and_growth(onedrive_history)
                 change_rate_data['OneDrive'] = {
@@ -1671,7 +1717,7 @@ Required Azure AD App Permissions (Application type):
                     'annual_growth_percent': od_metrics['annual_growth_percent'],
                     'sample_period_days': len(onedrive_history)
                 }
-            
+
             if mailbox_history:
                 ex_metrics = calculate_change_rate_and_growth(mailbox_history)
                 change_rate_data['Exchange'] = {
@@ -1680,7 +1726,7 @@ Required Azure AD App Permissions (Application type):
                     'annual_growth_percent': ex_metrics['annual_growth_percent'],
                     'sample_period_days': len(mailbox_history)
                 }
-                
+
         except Exception as e:
             logger.warning(f"Failed to collect usage reports (change rate data will be unavailable): {e}")
         tracker.complete_account()
@@ -1728,7 +1774,7 @@ Required Azure AD App Permissions (Application type):
 
     # Print basic summary
     print_m365_summary_table(all_resources)
-    
+
     # Enrich change_rate_data with resource counts and sizes from collected resources
     if change_rate_data:
         service_map = {
@@ -1741,7 +1787,7 @@ Required Azure AD App Permissions (Application type):
                 service_resources = [r for r in all_resources if r.resource_type == resource_type]
                 change_rate_data[service_name]['resource_count'] = len(service_resources)
                 change_rate_data[service_name]['total_size_gb'] = round(sum(r.size_gb for r in service_resources), 2)
-    
+
     # Print comprehensive sizing report
     print("\n")
     print("=" * 120)
@@ -1749,63 +1795,63 @@ Required Azure AD App Permissions (Application type):
     print("=" * 120)
     print(f"Licensed Users: {total_user_count:,}")
     print("=" * 120)
-    
+
     # Exchange Online Section
     if exchange_summary:
         print("\nEXCHANGE ONLINE")
         print("-" * 120)
         print(f"{'Type':<40} {'Count':>8} {'Items':>12} {'Size (GiB)':>12} {'Recov Items':>12} {'Recov (GiB)':>12} {'Total (GiB)':>12}")
         print("-" * 120)
-        
+
         # User Active Mailboxes
         ua = exchange_summary.get('user_active', {})
         print(f"{'User Active Mailboxes':<40} {ua.get('count', 0):>8,} {ua.get('item_count', 0):>12,} {ua.get('item_size_gib', 0):>12.3f} {ua.get('recoverable_item_count', 0):>12,} {ua.get('recoverable_item_size_gib', 0):>12.3f} {ua.get('total_item_size_gib', 0):>12.3f}")
-        
+
         # User Archive Enabled (note: sizes not available from Graph API)
         archive_count = exchange_summary.get('user_archive_enabled', {}).get('count', 0)
         print(f"{'User Archive Mailboxes (enabled)':<40} {archive_count:>8,} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12}")
-        
+
         # SoftDeleted
         sd = exchange_summary.get('softdeleted_active', {})
         if sd.get('count', 0) > 0:
             print(f"{'SoftDeleted Active Mailboxes':<40} {sd.get('count', 0):>8,} {sd.get('item_count', 0):>12,} {sd.get('item_size_gib', 0):>12.3f} {sd.get('recoverable_item_count', 0):>12,} {sd.get('recoverable_item_size_gib', 0):>12.3f} {sd.get('total_item_size_gib', 0):>12.3f}")
-        
+
         sd_arch = exchange_summary.get('softdeleted_archive', {})
         if sd_arch.get('count', 0) > 0:
             print(f"{'SoftDeleted Archive Mailboxes':<40} {sd_arch.get('count', 0):>8,}")
-        
+
         # Group Mailboxes
         ga = exchange_summary.get('group_active', {})
         if ga.get('count', 0) > 0:
             print(f"{'Group Active Mailboxes':<40} {ga.get('count', 0):>8,} {ga.get('item_count', 0):>12,} {ga.get('item_size_gib', 0):>12.3f} {ga.get('recoverable_item_count', 0):>12,} {ga.get('recoverable_item_size_gib', 0):>12.3f} {ga.get('total_item_size_gib', 0):>12.3f}")
-        
+
         ga_arch = exchange_summary.get('group_archive', {})
         if ga_arch.get('count', 0) > 0:
             print(f"{'Group Archive Mailboxes':<40} {ga_arch.get('count', 0):>8,}")
-        
+
         # Public Folder
         pf = exchange_summary.get('publicfolder_active', {})
         if pf.get('count', 0) > 0:
             print(f"{'PublicFolder Active Mailboxes':<40} {pf.get('count', 0):>8,} {pf.get('item_count', 0):>12,} {pf.get('item_size_gib', 0):>12.3f} {pf.get('recoverable_item_count', 0):>12,} {pf.get('recoverable_item_size_gib', 0):>12.3f} {pf.get('total_item_size_gib', 0):>12.3f}")
-        
+
         # Shared Mailboxes
         sh = exchange_summary.get('shared_active', {})
         if sh.get('count', 0) > 0:
             print(f"{'Shared Mailboxes':<40} {sh.get('count', 0):>8,} {sh.get('item_count', 0):>12,} {sh.get('item_size_gib', 0):>12.3f} {sh.get('recoverable_item_count', 0):>12,} {sh.get('recoverable_item_size_gib', 0):>12.3f} {sh.get('total_item_size_gib', 0):>12.3f}")
-        
+
         # Room/Equipment
         re = exchange_summary.get('room_equipment_active', {})
         if re.get('count', 0) > 0:
             print(f"{'Room/Equipment Mailboxes':<40} {re.get('count', 0):>8,} {re.get('item_count', 0):>12,} {re.get('item_size_gib', 0):>12.3f} {re.get('recoverable_item_count', 0):>12,} {re.get('recoverable_item_size_gib', 0):>12.3f} {re.get('total_item_size_gib', 0):>12.3f}")
-        
+
         print("-" * 120)
         # Totals
         td = exchange_summary.get('totals_default', {})
         print(f"{'Total (Default Options)':<40} {td.get('count', 0):>8,} {td.get('item_count', 0):>12,} {td.get('item_size_gib', 0):>12.3f} {td.get('recoverable_item_count', 0):>12,} {td.get('recoverable_item_size_gib', 0):>12.3f} {td.get('total_item_size_gib', 0):>12.3f}")
-        
+
         ta = exchange_summary.get('totals_all', {})
         print(f"{'Total (All Options)':<40} {ta.get('count', 0):>8,} {ta.get('item_count', 0):>12,} {ta.get('item_size_gib', 0):>12.3f} {ta.get('recoverable_item_count', 0):>12,} {ta.get('recoverable_item_size_gib', 0):>12.3f} {ta.get('total_item_size_gib', 0):>12.3f}")
-        
+
         # Add growth data if available
         if 'Exchange' in change_rate_data:
             ex_growth = change_rate_data['Exchange']
@@ -1813,30 +1859,30 @@ Required Azure AD App Permissions (Application type):
             growth_pct = ex_growth['annual_growth_percent'] / 2  # 180 days is roughly half a year
             print(f"{'Data Growth (180 days)':<40} {growth_180d:>8.2f} GiB")
             print(f"{'Growth Rate (180 days)':<40} {growth_pct:>8.2f}%")
-    
+
     # SharePoint Online Section
     if sharepoint_summary:
         print("\nSHAREPOINT ONLINE")
         print("-" * 120)
         print(f"{'Type':<40} {'Count':>12} {'Size (GiB)':>15}")
         print("-" * 120)
-        
+
         sp = sharepoint_summary.get('sharepoint_sites', {})
         ts = sharepoint_summary.get('team_sites', {})
         total_sp = sharepoint_summary.get('total', {})
-        
+
         print(f"{'SharePoint Sites':<40} {sp.get('count', 0):>12,} {sp.get('storage_gib', 0):>15.3f}")
         print(f"{'Team Sites':<40} {ts.get('count', 0):>12,} {ts.get('storage_gib', 0):>15.3f}")
         print("-" * 120)
         print(f"{'Total Sites':<40} {total_sp.get('count', 0):>12,} {total_sp.get('storage_gib', 0):>15.3f}")
-        
+
         # Add growth data if available
         if 'SharePoint' in change_rate_data:
             sp_growth = change_rate_data['SharePoint']
             growth_180d = sp_growth['daily_change_gb'] * 180
             growth_pct = sp_growth['annual_growth_percent'] / 2
             print(f"{'Data Growth (180 days)':<40} {growth_180d:>12.2f} GiB  {growth_pct:>15.2f}%")
-    
+
     # OneDrive Section
     onedrive_resources = [r for r in all_resources if r.resource_type == 'm365:onedrive:account']
     if onedrive_resources:
@@ -1844,18 +1890,18 @@ Required Azure AD App Permissions (Application type):
         print("-" * 120)
         print(f"{'Type':<40} {'Count':>12} {'Size (GiB)':>15}")
         print("-" * 120)
-        
+
         od_count = len(onedrive_resources)
         od_size = sum(r.size_gb for r in onedrive_resources)
         print(f"{'Personal Sites':<40} {od_count:>12,} {od_size:>15.3f}")
-        
+
         # Add growth data if available
         if 'OneDrive' in change_rate_data:
             od_growth = change_rate_data['OneDrive']
             growth_180d = od_growth['daily_change_gb'] * 180
             growth_pct = od_growth['annual_growth_percent'] / 2
             print(f"{'Data Growth (180 days)':<40} {growth_180d:>12.2f} GiB  {growth_pct:>15.2f}%")
-    
+
     # Teams Chat Section
     if teams_activity:
         print("\nTEAMS CHAT")
@@ -1866,18 +1912,18 @@ Required Azure AD App Permissions (Application type):
         print(f"{'Estimated Metered Units for Teams Channel Conversations':<50} {teams_activity.get('estimated_metered_units_channel_conversations', 0):>15,}")
         print(f"{'Total Estimated Metered Units (Last 180 Days)':<50} {teams_activity.get('total_estimated_metered_units', 0):>15,}")
         print(f"{'Total Estimated Metered Units (Last 180 Days + Next 1 Year)':<50} {teams_activity.get('total_metered_units_with_projection', 0):>15,}")
-    
+
     # M365 Tenant Totals
     print("\n" + "=" * 120)
     print("M365 TENANT TOTALS")
     print("=" * 120)
     print(f"{'Licensed Users':<50} {total_user_count:>15,}")
-    
+
     # Calculate total size
     total_size_gib = sum(r.size_gb for r in all_resources)
     print(f"{'Total Size (GiB)':<50} {total_size_gib:>15.3f}")
     print("=" * 120)
-    
+
     print("\nNote: Archive mailbox SIZES require Exchange Online PowerShell (Get-MailboxStatistics -Archive).")
     print("      The Graph API only reports whether archive is enabled, not archive storage size.\n")
 
@@ -1900,23 +1946,23 @@ Required Azure AD App Permissions (Application type):
     sizing['tenant_id'] = tenant_id
     sizing['collection_timestamp'] = timestamp
     sizing['total_user_count'] = total_user_count
-    
+
     # Add change rate data to sizing summary
     if change_rate_data:
         sizing['change_rates'] = change_rate_data
-    
+
     # Add comprehensive Exchange summary
     if exchange_summary:
         sizing['exchange_detailed'] = exchange_summary
-    
+
     # Add SharePoint summary
     if sharepoint_summary:
         sizing['sharepoint_detailed'] = sharepoint_summary
-    
+
     # Add Teams activity data
     if teams_activity:
         sizing['teams_activity'] = teams_activity
-    
+
     sizing_file = write_json_file(sizing, f'cca_m365_sum_{file_ts}.json', args.output)
     print(f"Sizing summary saved: {sizing_file}")
 
@@ -1936,11 +1982,11 @@ Required Azure AD App Permissions (Application type):
             'entra_groups': len([r for r in all_resources if r.resource_type == 'entraid:group'])
         }
     }
-    
+
     # Add change rate data to executive summary
     if change_rate_data:
         exec_summary['change_rates'] = change_rate_data
-    
+
     exec_file = write_json_file(exec_summary, f'executive_summary_{timestamp}.json', args.output)
     print(f"Executive summary saved: {exec_file}")
 

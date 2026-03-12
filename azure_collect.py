@@ -64,7 +64,6 @@ from lib.utils import (
     redact_sensitive_data,
     retry_with_backoff,
     setup_logging,
-    write_csv,
     write_json,
 )
 
@@ -1394,7 +1393,7 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
 
                     # Get share quota (provisioned max size in GB)
                     share_quota = getattr(share, 'share_quota', 0) or 0
-                    
+
                     # Get actual usage in bytes (requires expand='stats')
                     share_usage_bytes = getattr(share, 'share_usage_bytes', 0) or 0
                     share_usage_gb = share_usage_bytes / (1024 * 1024 * 1024) if share_usage_bytes else 0

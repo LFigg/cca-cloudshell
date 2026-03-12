@@ -5,6 +5,13 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-03-12
+
+### Fixed
+- M365 collector no longer hangs on non-Azure machines (skip ManagedIdentityCredential outside Azure)
+- Better error messages when partial MS365_* environment variables are set
+- Improved troubleshooting output for DefaultAzureCredential failures
+
 ## [1.0.0] - 2026-03-12
 
 ### Added

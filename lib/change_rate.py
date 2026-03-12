@@ -984,7 +984,7 @@ def load_change_rate_files(paths: List[str]) -> Dict[str, Any]:
         logger.debug(f"Loaded change rates from {path}: {len(change_rates)} service families")
 
     # Recalculate percentages after merging
-    for key, summary in merged['change_rates'].items():
+    for _key, summary in merged['change_rates'].items():
         if 'data_change' in summary and summary.get('total_size_gb', 0) > 0:
             daily_gb = summary['data_change'].get('daily_change_gb', 0)
             total_gb = summary['total_size_gb']

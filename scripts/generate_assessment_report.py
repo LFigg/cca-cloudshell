@@ -37,7 +37,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from lib.change_rate import load_change_rate_files
 from lib.constants import WORKLOAD_CATEGORIES
 
-
 # =============================================================================
 # CONSTANTS AND STYLING
 # =============================================================================
@@ -1283,7 +1282,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
     row += 2
 
     # Categorize all resources
-    categories = categorize_resources(resources)
+    categorize_resources(resources)
 
     # Get protection status for "apples to apples" sizing
     protection = analyze_protection_status(resources)
