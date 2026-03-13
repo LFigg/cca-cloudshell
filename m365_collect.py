@@ -218,27 +218,138 @@ async def collect_all_pages(initial_response, get_next_page_func) -> List[Any]:
     return all_items
 
 
-def collect_all_pages_sync(initial_response) -> List[Any]:
+class AttrDict:
+    """Wrapper for dicts that allows attribute-style access (e.g., obj.key instead of obj['key']).
+    
+    This allows raw JSON responses from Graph API pagination to be accessed
+    the same way as msgraph-sdk objects.
+    """
+    def __init__(self, data: dict):
+        self._data = data or {}
+    
+    def __getattr__(self, name):
+        # Convert camelCase to snake_case for common Graph API fields
+        snake_name = ''.join(['_' + c.lower() if c.isupper() else c for c in name]).lstrip('_')
+        camel_name = name
+        
+        # Try both snake_case (Python style) and camelCase (API style)
+        if snake_name in self._data:
+            val = self._data[snake_name]
+        elif camel_name in self._data:
+            val = self._data[camel_name]
+        # Also try the original name as-is for exact match
+        elif name in self._data:
+            val = self._data[name]
+        # Check for common Graph API field name mappings
+        else:
+            # Map Python-style names to Graph API JSON names
+            mappings = {
+                'id': 'id',
+                'display_name': 'displayName',
+                'user_principal_name': 'userPrincipalName',
+                'mail': 'mail',
+                'created_date_time': 'createdDateTime',
+                'account_enabled': 'accountEnabled',
+                'visibility': 'visibility',
+                'resource_provisioning_options': 'resourceProvisioningOptions',
+                'group_types': 'groupTypes',
+                'description': 'description',
+                'web_url': 'webUrl',
+                'root': 'root',
+                'drive_type': 'driveType',
+                'quota': 'quota',
+                'owner': 'owner',
+                'site_collection': 'siteCollection',
+            }
+            json_name = mappings.get(name, name)
+            val = self._data.get(json_name)
+        
+        # Recursively wrap dicts
+        if isinstance(val, dict):
+            return AttrDict(val)
+        return val
+    
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+    
+    def __repr__(self):
+        return f"AttrDict({self._data})"
+
+
+def collect_all_pages_sync(initial_response, max_pages: int = 1000) -> List[Any]:
     """Synchronous helper to collect all items from paginated Graph API response.
 
-    For the sync SDK, we simply collect from the initial response's value.
-    The msgraph-sdk handles pagination internally for most operations.
+    Microsoft Graph API returns max 100 items per page. This follows odata_next_link
+    to collect ALL items across all pages using raw HTTP requests.
 
     Args:
         initial_response: Response from a Graph API call
+        max_pages: Maximum pages to fetch (safety limit, default 1000 = 100,000 items)
 
     Returns:
-        List of all items from the response
+        List of all items from all pages
     """
+    import httpx
+    
     items = []
+    page_count = 0
+    
+    # Get items from first page
     if initial_response and hasattr(initial_response, 'value') and initial_response.value:
         items.extend(initial_response.value)
+        page_count = 1
 
-        # Log if there might be more pages (SDK should handle internally, but warn if not)
-        if hasattr(initial_response, 'odata_next_link') and initial_response.odata_next_link:
-            logger.warning("Response has more pages - large tenants may have incomplete data. "
-                         "Consider using async methods for full pagination support.")
-
+    # Check if there are more pages
+    next_link = getattr(initial_response, 'odata_next_link', None) if initial_response else None
+    
+    if next_link:
+        logger.debug(f"Response has more pages, fetching all...")
+        
+        # Get token for subsequent requests
+        if _graph_credential is None:
+            logger.warning("Graph credential not initialized - cannot fetch additional pages")
+            return items
+            
+        try:
+            token = _graph_credential.get_token("https://graph.microsoft.com/.default")
+            headers = {
+                'Authorization': f'Bearer {token.token}',
+                'Accept': 'application/json'
+            }
+            
+            with httpx.Client(timeout=60.0) as client:
+                while next_link and page_count < max_pages:
+                    try:
+                        response = client.get(next_link, headers=headers)
+                        response.raise_for_status()
+                        data = response.json()
+                        
+                        # Extract items from this page (wrap in AttrDict for attribute access)
+                        page_items = data.get('value', [])
+                        if page_items:
+                            items.extend(AttrDict(item) for item in page_items)
+                        page_count += 1
+                        
+                        # Log progress for large collections
+                        if page_count % 100 == 0:
+                            logger.info(f"Pagination progress: {len(items):,} items from {page_count} pages...")
+                        
+                        # Get next link
+                        next_link = data.get('@odata.nextLink')
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch page {page_count + 1}: {e}")
+                        break
+                        
+            if page_count >= max_pages:
+                logger.warning(f"Hit max page limit ({max_pages:,} pages = {max_pages * 100:,} items). "
+                             f"Data may be incomplete for very large tenants.")
+                
+        except Exception as e:
+            logger.warning(f"Failed to get token for pagination: {e}")
+    
+    if page_count > 1:
+        logger.info(f"Collected {len(items):,} items from {page_count} pages")
     return items
 
 
@@ -246,12 +357,69 @@ def collect_all_pages_sync(initial_response) -> List[Any]:
 # SharePoint Collector
 # =============================================================================
 
-def collect_sharepoint_sites(graph_client: GraphServiceClient, tenant_id: str) -> List[CloudResource]:
-    """Collect SharePoint sites."""
+def collect_sharepoint_sites(
+    graph_client: GraphServiceClient,
+    tenant_id: str,
+    sharepoint_usage: Optional[Dict[str, Dict[str, Any]]] = None
+) -> List[CloudResource]:
+    """Collect SharePoint sites.
+    
+    Args:
+        graph_client: Microsoft Graph client
+        tenant_id: Azure AD tenant ID  
+        sharepoint_usage: Dict from collect_sharepoint_usage_report() - if provided, creates
+                          resources from usage report (recommended for complete data)
+    """
     resources = []
 
     try:
-        logger.info("Collecting SharePoint sites...")
+        # If usage report provided, use it (much more complete than API)
+        if sharepoint_usage:
+            logger.info("Creating SharePoint resources from usage report...")
+            for site_url, site_data in sharepoint_usage.items():
+                # Skip deleted sites and OneDrive personal sites
+                if site_data.get('is_deleted'):
+                    continue
+                if 'personal' in site_data.get('site_type', '').lower():
+                    continue  # OneDrive sites, handled separately
+                    
+                storage_gb = site_data.get('storage_gb', 0.0)
+                site_id = site_data.get('site_id', site_url)
+                
+                # Determine resource type based on site type
+                is_team_site = site_data.get('is_team_site', False)
+                resource_type = "m365:sharepoint:teamsite" if is_team_site else "m365:sharepoint:site"
+                
+                resource = CloudResource(
+                    provider="microsoft365",
+                    subscription_id=tenant_id,
+                    region="global",
+                    resource_type=resource_type,
+                    service_family="SharePoint",
+                    resource_id=site_id,
+                    name=site_data.get('owner_display_name') or site_url.split('/')[-1] or "SharePoint Site",
+                    tags={},
+                    size_gb=storage_gb,
+                    metadata={
+                        'web_url': site_url,
+                        'site_type': site_data.get('site_type', ''),
+                        'root_web_template': site_data.get('root_web_template', ''),
+                        'is_team_site': is_team_site,
+                        'storage_used_gb': round(storage_gb, 2),
+                        'file_count': site_data.get('file_count', 0),
+                        'active_file_count': site_data.get('active_file_count', 0),
+                        'page_view_count': site_data.get('page_view_count', 0),
+                        'last_activity_date': site_data.get('last_activity_date', ''),
+                        'owner_display_name': site_data.get('owner_display_name', ''),
+                    }
+                )
+                resources.append(resource)
+            
+            logger.info(f"Collected {len(resources)} SharePoint sites from usage report")
+            return resources
+            
+        # Fallback: Use Graph API (may be incomplete)
+        logger.info("Collecting SharePoint sites via Graph API...")
         sites_response = run_sync(graph_client.sites.get())
 
         # Collect all sites across all pages
@@ -291,7 +459,7 @@ def collect_sharepoint_sites(graph_client: GraphServiceClient, tenant_id: str) -
                     logger.debug(f"Failed to process SharePoint site: {e}")
                     continue
 
-        logger.info(f"Collected {len(resources)} SharePoint sites")
+        logger.info(f"Collected {len(resources)} SharePoint sites via API")
 
     except Exception as e:
         check_and_raise_auth_error(e, "collect SharePoint sites", "m365")
@@ -304,12 +472,53 @@ def collect_sharepoint_sites(graph_client: GraphServiceClient, tenant_id: str) -
 # OneDrive Collector
 # =============================================================================
 
-def collect_onedrive_accounts(graph_client: GraphServiceClient, tenant_id: str) -> List[CloudResource]:
-    """Collect OneDrive for Business accounts."""
+def collect_onedrive_accounts(
+    graph_client: GraphServiceClient,
+    tenant_id: str,
+    onedrive_usage: Optional[Dict[str, Dict[str, Any]]] = None
+) -> List[CloudResource]:
+    """Collect OneDrive for Business accounts.
+    
+    Args:
+        graph_client: Microsoft Graph client
+        tenant_id: Azure AD tenant ID
+        onedrive_usage: Dict from collect_onedrive_usage_report() - if provided, creates
+                        resources from usage report (recommended for complete data)
+    """
     resources = []
 
     try:
-        logger.info("Collecting OneDrive accounts...")
+        # If usage report provided, use it (much more complete than iterating users)
+        if onedrive_usage:
+            logger.info("Creating OneDrive resources from usage report...")
+            for upn, account_data in onedrive_usage.items():
+                storage_gb = account_data.get('storage_gb', 0.0)
+                
+                resource = CloudResource(
+                    provider="microsoft365",
+                    subscription_id=tenant_id,
+                    region="global",
+                    resource_type="m365:onedrive:account",
+                    service_family="OneDrive",
+                    resource_id=upn,
+                    name=upn,
+                    tags={},
+                    size_gb=storage_gb,
+                    metadata={
+                        'user_principal_name': upn,
+                        'storage_used_gb': round(storage_gb, 2),
+                        'file_count': account_data.get('file_count', 0),
+                        'active_file_count': account_data.get('active_file_count', 0),
+                        'last_activity_date': account_data.get('last_activity_date', ''),
+                    }
+                )
+                resources.append(resource)
+            
+            logger.info(f"Collected {len(resources)} OneDrive accounts from usage report")
+            return resources
+
+        # Fallback: Iterate users and get drive (slow and may be incomplete)
+        logger.info("Collecting OneDrive accounts via user iteration...")
         users_response = run_sync(graph_client.users.get())
 
         # Collect all users across all pages
@@ -600,6 +809,174 @@ def get_total_user_count(graph_client: GraphServiceClient) -> int:
     except Exception as e:
         logger.warning(f"Failed to get user count: {e}")
         return 0
+
+
+def get_tenant_licensing(graph_client: GraphServiceClient) -> Dict[str, Any]:
+    """Get tenant licensing information from Microsoft Graph.
+
+    Returns subscribed SKUs (licenses) with counts for:
+    - Total licenses purchased (prepaidUnits.enabled)
+    - Licenses consumed (consumedUnits)
+    - Service plans included in each SKU
+
+    Requires: Organization.Read.All or Directory.Read.All permission
+    """
+    import httpx
+
+    licensing = {
+        'skus': [],
+        'total_licenses': 0,
+        'total_consumed': 0,
+        'services': set(),
+    }
+
+    try:
+        logger.info("Getting tenant licensing information...")
+
+        if _graph_credential is None:
+            logger.warning("Graph credential not initialized - cannot fetch licensing")
+            return licensing
+
+        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
+        headers = {
+            'Authorization': f'Bearer {token.token}',
+            'Accept': 'application/json'
+        }
+
+        with httpx.Client(timeout=60.0) as client:
+            # Get subscribed SKUs (purchased licenses)
+            response = client.get(
+                "https://graph.microsoft.com/v1.0/subscribedSkus",
+                headers=headers
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            for sku in data.get('value', []):
+                sku_name = sku.get('skuPartNumber', 'Unknown')
+                prepaid = sku.get('prepaidUnits', {})
+                enabled = prepaid.get('enabled', 0)
+                consumed = sku.get('consumedUnits', 0)
+
+                # Extract service plan names
+                service_plans = []
+                for plan in sku.get('servicePlans', []):
+                    plan_name = plan.get('servicePlanName', '')
+                    if plan_name:
+                        service_plans.append(plan_name)
+                        licensing['services'].add(plan_name)
+
+                sku_info = {
+                    'sku_id': sku.get('skuId'),
+                    'sku_name': sku_name,
+                    'licenses_purchased': enabled,
+                    'licenses_consumed': consumed,
+                    'licenses_available': enabled - consumed,
+                    'applies_to': sku.get('appliesTo', 'User'),
+                    'capability_status': sku.get('capabilityStatus', 'Unknown'),
+                    'service_plans': service_plans,
+                }
+                licensing['skus'].append(sku_info)
+                licensing['total_licenses'] += enabled
+                licensing['total_consumed'] += consumed
+
+            # Convert services set to sorted list
+            licensing['services'] = sorted(licensing['services'])
+
+        logger.info(f"Found {len(licensing['skus'])} subscribed SKUs, "
+                   f"{licensing['total_licenses']:,} total licenses, "
+                   f"{licensing['total_consumed']:,} consumed")
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            logger.warning("Insufficient permissions to read licensing info. "
+                         "Requires Organization.Read.All or Directory.Read.All")
+        else:
+            logger.warning(f"Failed to get licensing info: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to get licensing info: {e}")
+
+    return licensing
+
+
+def get_tenant_info(graph_client: GraphServiceClient) -> Dict[str, Any]:
+    """Get tenant organization information from Microsoft Graph.
+
+    Returns tenant details including:
+    - Display name (organization name)
+    - Verified domains
+    - Technical contact info
+    - Tenant type
+
+    Requires: Organization.Read.All or Directory.Read.All permission
+    """
+    import httpx
+
+    tenant_info = {
+        'tenant_name': None,
+        'display_name': None,
+        'verified_domains': [],
+        'primary_domain': None,
+        'tenant_type': None,
+        'country': None,
+        'state': None,
+        'city': None,
+    }
+
+    try:
+        logger.info("Getting tenant organization information...")
+
+        if _graph_credential is None:
+            logger.warning("Graph credential not initialized - cannot fetch tenant info")
+            return tenant_info
+
+        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
+        headers = {
+            'Authorization': f'Bearer {token.token}',
+            'Accept': 'application/json'
+        }
+
+        with httpx.Client(timeout=60.0) as client:
+            # Get organization info
+            response = client.get(
+                "https://graph.microsoft.com/v1.0/organization",
+                headers=headers
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            orgs = data.get('value', [])
+            if orgs:
+                org = orgs[0]  # Usually only one organization
+                tenant_info['display_name'] = org.get('displayName')
+                tenant_info['tenant_name'] = org.get('displayName')  # Alias for convenience
+                tenant_info['tenant_type'] = org.get('tenantType')
+                tenant_info['country'] = org.get('countryLetterCode')
+                tenant_info['state'] = org.get('state')
+                tenant_info['city'] = org.get('city')
+
+                # Get verified domains
+                domains = org.get('verifiedDomains', [])
+                for domain in domains:
+                    domain_name = domain.get('name')
+                    if domain_name:
+                        tenant_info['verified_domains'].append(domain_name)
+                        if domain.get('isDefault'):
+                            tenant_info['primary_domain'] = domain_name
+
+        if tenant_info['display_name']:
+            logger.info(f"Tenant: {tenant_info['display_name']} ({tenant_info['primary_domain']})")
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            logger.warning("Insufficient permissions to read organization info. "
+                         "Requires Organization.Read.All or Directory.Read.All")
+        else:
+            logger.warning(f"Failed to get tenant info: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to get tenant info: {e}")
+
+    return tenant_info
 
 
 # =============================================================================
@@ -1689,9 +2066,12 @@ Required Azure AD App Permissions (Application type):
     # Pre-fetch usage reports for accurate sizes and change rates
     mailbox_usage: Dict[str, Dict[str, Any]] = {}
     sharepoint_usage: Dict[str, Dict[str, Any]] = {}
+    onedrive_usage: Dict[str, Dict[str, Any]] = {}
     teams_activity: Dict[str, Any] = {}
     exchange_summary: Dict[str, Any] = {}
     sharepoint_summary: Dict[str, Any] = {}
+    licensing_info: Dict[str, Any] = {}
+    tenant_info: Dict[str, Any] = {}
 
     with ProgressTracker("M365", total_accounts=num_tasks) as tracker:
         # First: Collect usage reports (needed for accurate mailbox sizes)
@@ -1699,11 +2079,17 @@ Required Azure AD App Permissions (Application type):
         try:
             # Get total user count for the tenant
             total_user_count = get_total_user_count(graph_client)
+            
+            # Get tenant organization info (name, domains)
+            tenant_info = get_tenant_info(graph_client)
+            
+            # Get licensing information
+            licensing_info = get_tenant_licensing(graph_client)
 
             # Collect usage reports for each service
             mailbox_usage = collect_mailbox_usage_report(graph_client)
             sharepoint_usage = collect_sharepoint_usage_report(graph_client) if not args.skip_sharepoint else {}
-            collect_onedrive_usage_report(graph_client) if not args.skip_onedrive else {}
+            onedrive_usage = collect_onedrive_usage_report(graph_client) if not args.skip_onedrive else {}
 
             # Collect Teams activity data
             if not args.skip_teams:
@@ -1754,14 +2140,14 @@ Required Azure AD App Permissions (Application type):
 
         if not args.skip_sharepoint:
             tracker.update_task("Collecting SharePoint sites...")
-            resources = collect_sharepoint_sites(graph_client, tenant_id)
+            resources = collect_sharepoint_sites(graph_client, tenant_id, sharepoint_usage)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
 
         if not args.skip_onedrive:
             tracker.update_task("Collecting OneDrive accounts...")
-            resources = collect_onedrive_accounts(graph_client, tenant_id)
+            resources = collect_onedrive_accounts(graph_client, tenant_id, onedrive_usage)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
@@ -1799,13 +2185,13 @@ Required Azure AD App Permissions (Application type):
     # Enrich change_rate_data with resource counts and sizes from collected resources
     if change_rate_data:
         service_map = {
-            'SharePoint': 'm365:sharepoint:site',
-            'OneDrive': 'm365:onedrive:account',
-            'Exchange': 'm365:exchange:mailbox'
+            'SharePoint': ['m365:sharepoint:site', 'm365:sharepoint:teamsite'],
+            'OneDrive': ['m365:onedrive:account'],
+            'Exchange': ['m365:exchange:mailbox']
         }
-        for service_name, resource_type in service_map.items():
+        for service_name, resource_types in service_map.items():
             if service_name in change_rate_data:
-                service_resources = [r for r in all_resources if r.resource_type == resource_type]
+                service_resources = [r for r in all_resources if r.resource_type in resource_types]
                 change_rate_data[service_name]['resource_count'] = len(service_resources)
                 change_rate_data[service_name]['total_size_gb'] = round(sum(r.size_gb for r in service_resources), 2)
 
@@ -1814,7 +2200,25 @@ Required Azure AD App Permissions (Application type):
     print("=" * 120)
     print("M365 COMPREHENSIVE SIZING REPORT")
     print("=" * 120)
+    
+    # Print tenant info
+    if tenant_info.get('tenant_name'):
+        print(f"Tenant: {tenant_info['tenant_name']}")
+    if tenant_info.get('primary_domain'):
+        print(f"Domain: {tenant_info['primary_domain']}")
+    print(f"Tenant ID: {tenant_id}")
     print(f"Licensed Users: {total_user_count:,}")
+    
+    # Print licensing info if available
+    if licensing_info and licensing_info.get('skus'):
+        print(f"Total Licenses: {licensing_info.get('total_licenses', 0):,} purchased, {licensing_info.get('total_consumed', 0):,} consumed")
+        print("-" * 120)
+        print(f"{'SKU Name':<45} {'Purchased':>12} {'Consumed':>12} {'Available':>12}")
+        print("-" * 120)
+        for sku in sorted(licensing_info['skus'], key=lambda x: x['licenses_purchased'], reverse=True)[:10]:
+            print(f"{sku['sku_name']:<45} {sku['licenses_purchased']:>12,} {sku['licenses_consumed']:>12,} {sku['licenses_available']:>12,}")
+        if len(licensing_info['skus']) > 10:
+            print(f"... and {len(licensing_info['skus']) - 10} more SKUs")
     print("=" * 120)
 
     # Exchange Online Section
@@ -1965,8 +2369,29 @@ Required Azure AD App Permissions (Application type):
     # Sizing summary with change rate data
     sizing = aggregate_m365_sizing(all_resources)
     sizing['tenant_id'] = tenant_id
+    sizing['tenant_name'] = tenant_info.get('tenant_name')
+    sizing['primary_domain'] = tenant_info.get('primary_domain')
     sizing['collection_timestamp'] = timestamp
     sizing['total_user_count'] = total_user_count
+
+    # Add tenant info
+    if tenant_info:
+        sizing['tenant_info'] = tenant_info
+
+    # Add licensing info
+    if licensing_info and licensing_info.get('skus'):
+        sizing['licensing'] = {
+            'total_licenses_purchased': licensing_info.get('total_licenses', 0),
+            'total_licenses_consumed': licensing_info.get('total_consumed', 0),
+            'skus': [
+                {
+                    'name': sku['sku_name'],
+                    'purchased': sku['licenses_purchased'],
+                    'consumed': sku['licenses_consumed'],
+                }
+                for sku in licensing_info['skus']
+            ],
+        }
 
     # Add change rate data to sizing summary
     if change_rate_data:
@@ -1991,6 +2416,8 @@ Required Azure AD App Permissions (Application type):
     exec_summary = {
         'collection_timestamp': timestamp,
         'tenant_id': tenant_id,
+        'tenant_name': tenant_info.get('tenant_name'),
+        'primary_domain': tenant_info.get('primary_domain'),
         'total_user_count': total_user_count,
         'total_resources': len(all_resources),
         'total_storage_gb': sizing['total_storage_gb'],
@@ -2003,6 +2430,22 @@ Required Azure AD App Permissions (Application type):
             'entra_groups': len([r for r in all_resources if r.resource_type == 'entraid:group'])
         }
     }
+
+    # Add licensing info to executive summary
+    if licensing_info and licensing_info.get('skus'):
+        exec_summary['licensing'] = {
+            'total_licenses_purchased': licensing_info.get('total_licenses', 0),
+            'total_licenses_consumed': licensing_info.get('total_consumed', 0),
+            'skus': [
+                {
+                    'name': sku['sku_name'],
+                    'purchased': sku['licenses_purchased'],
+                    'consumed': sku['licenses_consumed'],
+                }
+                for sku in licensing_info['skus']
+            ],
+            'services_enabled': licensing_info.get('services', []),
+        }
 
     # Add change rate data to executive summary
     if change_rate_data:

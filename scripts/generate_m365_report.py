@@ -108,19 +108,23 @@ def load_inventory_files(paths: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
         if not data:
             continue
 
-        # Extract resources
-        resources = data.get('resources', [])
+        # Handle both list format (resources directly) and envelope format ({"resources": [...]})
+        if isinstance(data, list):
+            resources = data
+        else:
+            resources = data.get('resources', [])
         all_resources.extend(resources)
 
-        # Collect metadata
-        if data.get('tenant_id') and not metadata['tenant_id']:
-            metadata['tenant_id'] = data['tenant_id']
-        if data.get('tenant_name') and not metadata['tenant_name']:
-            metadata['tenant_name'] = data['tenant_name']
-        if data.get('run_id'):
-            metadata['run_ids'].append(data['run_id'])
-        if data.get('timestamp'):
-            metadata['timestamps'].append(data['timestamp'])
+        # Collect metadata (only available in envelope format)
+        if isinstance(data, dict):
+            if data.get('tenant_id') and not metadata['tenant_id']:
+                metadata['tenant_id'] = data['tenant_id']
+            if data.get('tenant_name') and not metadata['tenant_name']:
+                metadata['tenant_name'] = data['tenant_name']
+            if data.get('run_id'):
+                metadata['run_ids'].append(data['run_id'])
+            if data.get('timestamp'):
+                metadata['timestamps'].append(data['timestamp'])
 
     return all_resources, metadata
 
@@ -141,6 +145,11 @@ def load_summary_data(inventory_paths: List[str]) -> Dict[str, Any]:
         'sharepoint_summary': None,
         'onedrive_summary': None,
         'growth_rates': None,
+        # Tenant and licensing info
+        'tenant_info': None,
+        'licensing': None,
+        'tenant_name': None,
+        'primary_domain': None,
     }
 
     for inv_path in inventory_paths:
@@ -172,6 +181,15 @@ def load_summary_data(inventory_paths: List[str]) -> Dict[str, Any]:
             summary_data['onedrive_summary'] = data['onedrive_summary']
         if 'growth_rates' in data:
             summary_data['growth_rates'] = data['growth_rates']
+        # Tenant and licensing info
+        if 'tenant_info' in data:
+            summary_data['tenant_info'] = data['tenant_info']
+        if 'licensing' in data:
+            summary_data['licensing'] = data['licensing']
+        if 'tenant_name' in data:
+            summary_data['tenant_name'] = data['tenant_name']
+        if 'primary_domain' in data:
+            summary_data['primary_domain'] = data['primary_domain']
 
     return summary_data
 
@@ -247,9 +265,14 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
     # === Tenant Information ===
     row = write_section_header(ws, row, "Tenant Information")
 
+    # Get tenant name from summary data (new) or metadata (fallback)
+    tenant_name = summary_data.get('tenant_name') or metadata.get('tenant_name') or 'N/A'
+    primary_domain = summary_data.get('primary_domain') or 'N/A'
+
     tenant_info = [
+        ("Tenant Name", tenant_name),
+        ("Primary Domain", primary_domain),
         ("Tenant ID", metadata.get('tenant_id', 'N/A')),
-        ("Tenant Name", metadata.get('tenant_name', 'N/A')),
         ("Total Users", format_number(summary_data.get('total_user_count', 0))),
         ("Collection Date", metadata['timestamps'][0][:10] if metadata.get('timestamps') else 'N/A'),
     ]
@@ -259,6 +282,47 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         ws.cell(row=row, column=2, value=value)
         row += 1
     row += 2
+
+    # === Licensing Information ===
+    licensing = summary_data.get('licensing')
+    if licensing:
+        row = write_section_header(ws, row, "Licensing Summary")
+
+        ws.cell(row=row, column=1, value="Total Licenses Purchased")
+        ws.cell(row=row, column=2, value=format_number(licensing.get('total_licenses_purchased', 0)))
+        row += 1
+        ws.cell(row=row, column=1, value="Total Licenses Consumed")
+        ws.cell(row=row, column=2, value=format_number(licensing.get('total_licenses_consumed', 0)))
+        row += 1
+        available = licensing.get('total_licenses_purchased', 0) - licensing.get('total_licenses_consumed', 0)
+        ws.cell(row=row, column=1, value="Licenses Available")
+        ws.cell(row=row, column=2, value=format_number(available))
+        row += 2
+
+        # Top SKUs breakdown
+        skus = licensing.get('skus', [])
+        if skus:
+            write_header_row(ws, row, ["SKU Name", "Purchased", "Consumed", "Available"])
+            row += 1
+
+            # Sort by purchased descending and show top 10
+            sorted_skus = sorted(skus, key=lambda x: x.get('purchased', 0), reverse=True)[:10]
+            for sku in sorted_skus:
+                purchased = sku.get('purchased', 0)
+                consumed = sku.get('consumed', 0)
+                write_data_row(ws, row, [
+                    sku.get('name', 'Unknown'),
+                    format_number(purchased),
+                    format_number(consumed),
+                    format_number(purchased - consumed)
+                ])
+                row += 1
+
+            if len(skus) > 10:
+                ws.cell(row=row, column=1, value=f"... and {len(skus) - 10} more SKUs")
+                row += 1
+
+        row += 2
 
     # === Storage Summary by Service ===
     row = write_section_header(ws, row, "Storage Summary by Service")
@@ -857,8 +921,8 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
     exchange_summary = summary_data.get('exchange_summary', {})
     sharepoint_summary = summary_data.get('sharepoint_summary', {})
     onedrive_summary = summary_data.get('onedrive_summary', {})
-    growth_rates = summary_data.get('growth_rates', {})
-    teams_activity = summary_data.get('teams_activity', {})
+    growth_rates = summary_data.get('growth_rates') or {}
+    teams_activity = summary_data.get('teams_activity') or {}
 
     # Exchange Online rows
     # If we have detailed exchange_summary from collector

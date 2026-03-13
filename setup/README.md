@@ -205,6 +205,7 @@ The script configures these Microsoft Graph API permissions:
 | `Team.ReadBasic.All` | Read Teams information |
 | `Group.Read.All` | Read group membership |
 | `Reports.Read.All` | Usage reports for sizing/growth metrics |
+| `Organization.Read.All` | Read tenant licensing info |
 | `Directory.Read.All` | Read Entra ID users/groups |
 
 ### Manual Setup (Azure Portal)

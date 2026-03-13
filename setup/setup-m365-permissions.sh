@@ -41,6 +41,7 @@ GRAPH_PERMISSIONS=(
     "Team.ReadBasic.All:2280dda6-0bfd-44ee-a2f4-cb867cfc4c1e"
     "Group.Read.All:5b567255-7703-4780-807c-7be8301ae99b"
     "Reports.Read.All:230c1aed-a721-4c5d-9cb4-a90514e508ef"
+    "Organization.Read.All:498476ce-e0fe-48b0-b801-37ba7e2685c6"
     "Directory.Read.All:7ab1d382-f21e-4acd-a863-ba3e13f7da61"
 )
 
@@ -77,14 +78,15 @@ while [[ $# -gt 0 ]]; do
             echo "  --help               Show this help message"
             echo ""
             echo "Required Permissions:"
-            echo "  - Sites.Read.All      Read SharePoint sites"
-            echo "  - Files.Read.All      Read OneDrive files/storage"
-            echo "  - User.Read.All       Read user profiles & mailbox info"
-            echo "  - Mail.Read           Read mailbox metadata"
-            echo "  - Team.ReadBasic.All  Read Teams information"
-            echo "  - Group.Read.All      Read group membership"
-            echo "  - Reports.Read.All    Usage reports for change rate"
-            echo "  - Directory.Read.All  Read Entra ID users/groups"
+            echo "  - Sites.Read.All         Read SharePoint sites"
+            echo "  - Files.Read.All         Read OneDrive files/storage"
+            echo "  - User.Read.All          Read user profiles & mailbox info"
+            echo "  - Mail.Read              Read mailbox metadata"
+            echo "  - Team.ReadBasic.All     Read Teams information"
+            echo "  - Group.Read.All         Read group membership"
+            echo "  - Reports.Read.All       Usage reports for change rate"
+            echo "  - Organization.Read.All  Read tenant licensing info"
+            echo "  - Directory.Read.All     Read Entra ID users/groups"
             exit 0
             ;;
         *)

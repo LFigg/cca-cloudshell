@@ -5,6 +5,29 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-03-13
+
+### Added
+- M365 collector now queries tenant organization info (`/organization` API)
+  - Tenant name and display name
+  - Primary domain and verified domains
+  - Included in console output, JSON summary, and reports
+- M365 collector now queries tenant licensing information (`/subscribedSkus` API)
+  - Shows licenses purchased vs consumed for each SKU
+  - Included in executive summary JSON and console output
+  - Helps validate user counts and understand tenant scale
+- M365 report generator now shows licensing breakdown in Executive Summary sheet
+- Added `Organization.Read.All` permission to setup scripts and documentation
+
+### Fixed
+- **CRITICAL**: M365 collector now properly paginates Graph API responses for large tenants
+  - Previously only collected first page (100 items max) for Teams, Entra users/groups, user counts
+  - Now follows `odata_next_link` to collect ALL items across all pages (up to 100,000 items)
+  - Progress logging every 100 pages for visibility on large collections
+- M365 SharePoint/OneDrive collection now uses usage reports (like Exchange) for complete data
+- Added `AttrDict` wrapper for consistent attribute access on paginated results
+- Added comprehensive pagination tests
+
 ## [1.0.5] - 2026-03-13
 
 ### Fixed
