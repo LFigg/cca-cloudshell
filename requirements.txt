@@ -1,6 +1,9 @@
 # CCA CloudShell Requirements
 # Dependencies for running collectors in cloud shells
 
+# Common utilities (transitive dep needed in minimal environments like Azure Cloud Shell)
+six>=1.16.0
+
 # AWS (pre-installed in AWS CloudShell)
 boto3>=1.26.0
 
