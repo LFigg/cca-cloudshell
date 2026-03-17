@@ -46,6 +46,7 @@
                             
                             "Microsoft.Storage/storageAccounts/read",
                             "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+                            "Microsoft.Storage/storageAccounts/fileServices/read",
                             "Microsoft.Storage/storageAccounts/fileServices/shares/read",
                             
                             "Microsoft.Sql/servers/read",

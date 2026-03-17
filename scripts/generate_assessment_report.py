@@ -1347,6 +1347,11 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict],
         if 'snapshot' in rtype.lower():
             continue
 
+        # Skip DataWarehouse tier Azure SQL databases - they're Synapse dedicated SQL pools
+        # and are counted separately as azure:synapse:sqlpool
+        if rtype == 'azure:sql:database' and meta.get('tier') == 'DataWarehouse':
+            continue
+
         # Check if database - get specific engine
         db_engine = _get_db_engine_group(r)
         if db_engine:
@@ -2333,6 +2338,11 @@ def _get_db_engine_group(resource: Dict) -> Optional[str]:
     if meta.get('is_read_replica'):
         return None
 
+    # Skip DataWarehouse tier Azure SQL databases - they're Synapse dedicated SQL pools
+    # and are counted separately as azure:synapse:sqlpool
+    if rtype == 'azure:sql:database' and meta.get('tier') == 'DataWarehouse':
+        return None
+
     # Determine raw engine
     engine = None
     if rtype in ['aws:rds:instance', 'aws:rds:cluster']:
@@ -2343,6 +2353,12 @@ def _get_db_engine_group(resource: Dict) -> Optional[str]:
         engine = 'SQL Server'
     elif rtype == 'azure:cosmosdb:account':
         engine = 'Cosmos DB'
+    elif rtype in ['azure:mysql:flexibleserver', 'azure:mysql:server']:
+        engine = 'MySQL'
+    elif rtype in ['azure:postgresql:flexibleserver', 'azure:postgresql:server']:
+        engine = 'PostgreSQL'
+    elif rtype == 'azure:mariadb:server':
+        engine = 'MariaDB'
     elif rtype == 'gcp:sql:instance':
         db_version = meta.get('database_version', '')
         if 'MYSQL' in db_version.upper():
@@ -2361,7 +2377,7 @@ def _get_db_engine_group(resource: Dict) -> Optional[str]:
         return 'DB: DocumentDB'
     elif rtype == 'aws:redshift:cluster':
         return 'DB: Redshift'
-    elif rtype == 'azure:synapse:workspace':
+    elif rtype in ['azure:synapse:workspace', 'azure:synapse:sqlpool']:
         return 'DB: Synapse'
     elif rtype == 'gcp:bigtable:instance':
         return 'DB: BigTable'

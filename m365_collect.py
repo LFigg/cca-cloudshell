@@ -220,18 +220,18 @@ async def collect_all_pages(initial_response, get_next_page_func) -> List[Any]:
 
 class AttrDict:
     """Wrapper for dicts that allows attribute-style access (e.g., obj.key instead of obj['key']).
-    
+
     This allows raw JSON responses from Graph API pagination to be accessed
     the same way as msgraph-sdk objects.
     """
     def __init__(self, data: dict):
         self._data = data or {}
-    
+
     def __getattr__(self, name):
         # Convert camelCase to snake_case for common Graph API fields
         snake_name = ''.join(['_' + c.lower() if c.isupper() else c for c in name]).lstrip('_')
         camel_name = name
-        
+
         # Try both snake_case (Python style) and camelCase (API style)
         if snake_name in self._data:
             val = self._data[snake_name]
@@ -263,15 +263,15 @@ class AttrDict:
             }
             json_name = mappings.get(name, name)
             val = self._data.get(json_name)
-        
+
         # Recursively wrap dicts
         if isinstance(val, dict):
             return AttrDict(val)
         return val
-    
+
     def get(self, key, default=None):
         return self._data.get(key, default)
-    
+
     def __repr__(self):
         return f"AttrDict({self._data})"
 
@@ -290,10 +290,10 @@ def collect_all_pages_sync(initial_response, max_pages: int = 1000) -> List[Any]
         List of all items from all pages
     """
     import httpx
-    
+
     items = []
     page_count = 0
-    
+
     # Get items from first page
     if initial_response and hasattr(initial_response, 'value') and initial_response.value:
         items.extend(initial_response.value)
@@ -301,53 +301,53 @@ def collect_all_pages_sync(initial_response, max_pages: int = 1000) -> List[Any]
 
     # Check if there are more pages
     next_link = getattr(initial_response, 'odata_next_link', None) if initial_response else None
-    
+
     if next_link:
-        logger.debug(f"Response has more pages, fetching all...")
-        
+        logger.debug("Response has more pages, fetching all...")
+
         # Get token for subsequent requests
         if _graph_credential is None:
             logger.warning("Graph credential not initialized - cannot fetch additional pages")
             return items
-            
+
         try:
             token = _graph_credential.get_token("https://graph.microsoft.com/.default")
             headers = {
                 'Authorization': f'Bearer {token.token}',
                 'Accept': 'application/json'
             }
-            
+
             with httpx.Client(timeout=60.0) as client:
                 while next_link and page_count < max_pages:
                     try:
                         response = client.get(next_link, headers=headers)
                         response.raise_for_status()
                         data = response.json()
-                        
+
                         # Extract items from this page (wrap in AttrDict for attribute access)
                         page_items = data.get('value', [])
                         if page_items:
                             items.extend(AttrDict(item) for item in page_items)
                         page_count += 1
-                        
+
                         # Log progress for large collections
                         if page_count % 100 == 0:
                             logger.info(f"Pagination progress: {len(items):,} items from {page_count} pages...")
-                        
+
                         # Get next link
                         next_link = data.get('@odata.nextLink')
-                        
+
                     except Exception as e:
                         logger.warning(f"Failed to fetch page {page_count + 1}: {e}")
                         break
-                        
+
             if page_count >= max_pages:
                 logger.warning(f"Hit max page limit ({max_pages:,} pages = {max_pages * 100:,} items). "
                              f"Data may be incomplete for very large tenants.")
-                
+
         except Exception as e:
             logger.warning(f"Failed to get token for pagination: {e}")
-    
+
     if page_count > 1:
         logger.info(f"Collected {len(items):,} items from {page_count} pages")
     return items
@@ -363,10 +363,10 @@ def collect_sharepoint_sites(
     sharepoint_usage: Optional[Dict[str, Dict[str, Any]]] = None
 ) -> List[CloudResource]:
     """Collect SharePoint sites.
-    
+
     Args:
         graph_client: Microsoft Graph client
-        tenant_id: Azure AD tenant ID  
+        tenant_id: Azure AD tenant ID
         sharepoint_usage: Dict from collect_sharepoint_usage_report() - if provided, creates
                           resources from usage report (recommended for complete data)
     """
@@ -382,14 +382,14 @@ def collect_sharepoint_sites(
                     continue
                 if 'personal' in site_data.get('site_type', '').lower():
                     continue  # OneDrive sites, handled separately
-                    
+
                 storage_gb = site_data.get('storage_gb', 0.0)
                 site_id = site_data.get('site_id', site_url)
-                
+
                 # Determine resource type based on site type
                 is_team_site = site_data.get('is_team_site', False)
                 resource_type = "m365:sharepoint:teamsite" if is_team_site else "m365:sharepoint:site"
-                
+
                 resource = CloudResource(
                     provider="microsoft365",
                     subscription_id=tenant_id,
@@ -414,11 +414,15 @@ def collect_sharepoint_sites(
                     }
                 )
                 resources.append(resource)
-            
+
             logger.info(f"Collected {len(resources)} SharePoint sites from usage report")
             return resources
-            
+
         # Fallback: Use Graph API (may be incomplete)
+        logger.warning(
+            "SharePoint usage report not available - falling back to Graph API. "
+            "This may miss some sites. To fix: Add 'Reports.Read.All' permission to your app registration."
+        )
         logger.info("Collecting SharePoint sites via Graph API...")
         sites_response = run_sync(graph_client.sites.get())
 
@@ -478,7 +482,7 @@ def collect_onedrive_accounts(
     onedrive_usage: Optional[Dict[str, Dict[str, Any]]] = None
 ) -> List[CloudResource]:
     """Collect OneDrive for Business accounts.
-    
+
     Args:
         graph_client: Microsoft Graph client
         tenant_id: Azure AD tenant ID
@@ -493,7 +497,7 @@ def collect_onedrive_accounts(
             logger.info("Creating OneDrive resources from usage report...")
             for upn, account_data in onedrive_usage.items():
                 storage_gb = account_data.get('storage_gb', 0.0)
-                
+
                 resource = CloudResource(
                     provider="microsoft365",
                     subscription_id=tenant_id,
@@ -513,11 +517,17 @@ def collect_onedrive_accounts(
                     }
                 )
                 resources.append(resource)
-            
+
             logger.info(f"Collected {len(resources)} OneDrive accounts from usage report")
             return resources
 
-        # Fallback: Iterate users and get drive (slow and may be incomplete)
+        # Fallback: Iterate users and get drive (VERY SLOW for large tenants)
+        logger.warning(
+            "OneDrive usage report not available - falling back to per-user API calls. "
+            "This can take HOURS for large tenants (1000+ users). "
+            "To fix: Add 'Reports.Read.All' permission to your app registration, "
+            "or use --skip-onedrive flag to skip OneDrive collection."
+        )
         logger.info("Collecting OneDrive accounts via user iteration...")
         users_response = run_sync(graph_client.users.get())
 
@@ -1033,7 +1043,14 @@ def _get_usage_report(graph_client: GraphServiceClient, report_name: str) -> Opt
             return response.text
 
     except Exception as e:
-        logger.warning(f"Failed to fetch usage report {report_name}: {e}")
+        error_msg = str(e)
+        if '403' in error_msg or 'Forbidden' in error_msg or 'Authorization' in error_msg:
+            logger.warning(
+                f"Failed to fetch usage report {report_name}: Permission denied. "
+                "Ensure 'Reports.Read.All' (Application) permission is granted and admin consent provided."
+            )
+        else:
+            logger.warning(f"Failed to fetch usage report {report_name}: {e}")
         return None
 
 
@@ -2079,10 +2096,10 @@ Required Azure AD App Permissions (Application type):
         try:
             # Get total user count for the tenant
             total_user_count = get_total_user_count(graph_client)
-            
+
             # Get tenant organization info (name, domains)
             tenant_info = get_tenant_info(graph_client)
-            
+
             # Get licensing information
             licensing_info = get_tenant_licensing(graph_client)
 
@@ -2200,7 +2217,7 @@ Required Azure AD App Permissions (Application type):
     print("=" * 120)
     print("M365 COMPREHENSIVE SIZING REPORT")
     print("=" * 120)
-    
+
     # Print tenant info
     if tenant_info.get('tenant_name'):
         print(f"Tenant: {tenant_info['tenant_name']}")
@@ -2208,7 +2225,7 @@ Required Azure AD App Permissions (Application type):
         print(f"Domain: {tenant_info['primary_domain']}")
     print(f"Tenant ID: {tenant_id}")
     print(f"Licensed Users: {total_user_count:,}")
-    
+
     # Print licensing info if available
     if licensing_info and licensing_info.get('skus'):
         print(f"Total Licenses: {licensing_info.get('total_licenses', 0):,} purchased, {licensing_info.get('total_consumed', 0):,} consumed")

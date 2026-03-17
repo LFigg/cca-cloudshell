@@ -270,6 +270,7 @@ Or use a custom role with these permissions:
         
         "Microsoft.Storage/storageAccounts/read",
         "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+        "Microsoft.Storage/storageAccounts/fileServices/read",
         "Microsoft.Storage/storageAccounts/fileServices/shares/read",
         
         "Microsoft.Sql/servers/read",
@@ -320,7 +321,8 @@ Or use a custom role with these permissions:
 | **Snapshots** | `Microsoft.Compute/snapshots/read` | List snapshots |
 | **Storage Accounts** | `Microsoft.Storage/storageAccounts/read` | List storage accounts |
 | | `Microsoft.Storage/storageAccounts/blobServices/containers/read` | List blob containers |
-| | `Microsoft.Storage/storageAccounts/fileServices/shares/read` | List file shares (Azure Files) |
+| | `Microsoft.Storage/storageAccounts/fileServices/read` | Read file service properties |
+| | `Microsoft.Storage/storageAccounts/fileServices/shares/read` | List file shares with usage stats* |
 | **Azure SQL** | `Microsoft.Sql/servers/read` | List SQL servers |
 | | `Microsoft.Sql/servers/databases/read` | List databases |
 | **SQL Managed Instance** | `Microsoft.Sql/managedInstances/read` | List managed instances |
@@ -339,6 +341,14 @@ Or use a custom role with these permissions:
 | **NetApp Files** | `Microsoft.NetApp/netAppAccounts/read` | List NetApp accounts |
 | | `Microsoft.NetApp/netAppAccounts/capacityPools/read` | List capacity pools |
 | | `Microsoft.NetApp/netAppAccounts/capacityPools/volumes/read` | List volumes |
+
+**\* Note on Azure File Share Usage Stats:**
+The collector attempts to retrieve actual file share usage (bytes consumed). If this fails due to:
+- Storage account firewall/network rules blocking access
+- Private endpoint configurations
+- Insufficient permissions
+
+The collector will fall back to reporting the provisioned quota as the size. Check the output metadata field `size_source` to see if `usage` (actual) or `quota` (provisioned) was used.
 
 ---
 

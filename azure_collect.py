@@ -315,13 +315,20 @@ def collect_sql_servers(credential, subscription_id: str) -> List[CloudResource]
                     if db_name == 'master':
                         continue  # Skip system database
 
+                    db_sku = getattr(db, 'sku', None)
+                    sku_tier = getattr(db_sku, 'tier', '') if db_sku else ''
+
+                    # Skip DataWarehouse tier - these are Synapse dedicated SQL pools
+                    # and are collected separately via collect_synapse_sql_pools()
+                    if sku_tier == 'DataWarehouse':
+                        logger.debug(f"Skipping DataWarehouse database {db_name} (collected as Synapse SQL pool)")
+                        continue
+
                     # Get size (max_size_bytes is in bytes)
                     size_gb = 0.0
                     max_size_bytes = getattr(db, 'max_size_bytes', None)
                     if max_size_bytes:
                         size_gb = format_bytes_to_gb(max_size_bytes)
-
-                    db_sku = getattr(db, 'sku', None)
 
                     # Check if this is a replica (secondary database)
                     secondary_type = getattr(db, 'secondary_type', None)
@@ -1386,17 +1393,29 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
             account_location = getattr(account, 'location', '')
 
             try:
-                # List file shares in this storage account
-                for share in storage_client.file_shares.list(rg, account_name, expand='stats'):
+                # List file shares - try with stats first, fall back to basic if it fails
+                try:
+                    shares = list(storage_client.file_shares.list(rg, account_name, expand='stats'))
+                    has_stats = True
+                except Exception as stats_err:
+                    logger.debug(f"expand='stats' failed for {account_name}, falling back to basic list: {stats_err}")
+                    shares = list(storage_client.file_shares.list(rg, account_name))
+                    has_stats = False
+
+                for share in shares:
                     share_id = getattr(share, 'id', None)
                     share_name = getattr(share, 'name', '')
 
                     # Get share quota (provisioned max size in GB)
                     share_quota = getattr(share, 'share_quota', 0) or 0
 
-                    # Get actual usage in bytes (requires expand='stats')
-                    share_usage_bytes = getattr(share, 'share_usage_bytes', 0) or 0
-                    share_usage_gb = share_usage_bytes / (1024 * 1024 * 1024) if share_usage_bytes else 0
+                    # Get actual usage in bytes (only available with expand='stats')
+                    if has_stats:
+                        share_usage_bytes = getattr(share, 'share_usage_bytes', 0) or 0
+                        share_usage_gb = share_usage_bytes / (1024 * 1024 * 1024) if share_usage_bytes else 0
+                    else:
+                        share_usage_bytes = 0
+                        share_usage_gb = float(share_quota)  # Fall back to quota if no stats
 
                     # Get access tier
                     access_tier = getattr(share, 'access_tier', 'TransactionOptimized')
@@ -1413,13 +1432,14 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
                         resource_id=share_id or f"{account_id}/fileServices/default/shares/{share_name}",
                         name=share_name,
                         tags={},
-                        size_gb=float(share_usage_gb),  # Use actual usage, not quota
+                        size_gb=float(share_usage_gb),  # Actual usage if available, else quota
                         parent_resource_id=account_id,
                         metadata={
                             'resource_group': rg,
                             'storage_account': account_name,
                             'share_quota_gb': share_quota,
-                            'share_usage_gb': round(share_usage_gb, 2),
+                            'share_usage_gb': round(share_usage_gb, 2) if has_stats else None,
+                            'size_source': 'usage' if has_stats else 'quota',
                             'access_tier': str(access_tier) if access_tier else None,
                             'enabled_protocols': str(enabled_protocols) if enabled_protocols else 'SMB',
                             'last_modified_time': str(getattr(share, 'last_modified_time', '')) if getattr(share, 'last_modified_time', None) else None,

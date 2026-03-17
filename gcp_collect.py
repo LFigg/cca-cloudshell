@@ -911,7 +911,7 @@ def collect_spanner_instances(project_id: str) -> List[CloudResource]:
     try:
         from google.cloud import spanner_v1
 
-        client = spanner_v1.InstanceAdminClient()
+        client = spanner_v1.InstanceAdminClient()  # type: ignore[attr-defined]
 
         parent = f"projects/{project_id}"
 
@@ -930,7 +930,7 @@ def collect_spanner_instances(project_id: str) -> List[CloudResource]:
 
             # Estimate storage (Spanner charges per GB stored)
             # No direct API, but we can list databases and get metadata
-            db_client = spanner_v1.DatabaseAdminClient()
+            db_client = spanner_v1.DatabaseAdminClient()  # type: ignore[attr-defined]
             db_parent = instance.name
 
             db_count = 0
@@ -996,10 +996,10 @@ def collect_bigtable_instances(project_id: str) -> List[CloudResource]:
                 clusters = instance.list_clusters()[0]  # Returns (clusters, failed_locations)
                 for cluster in clusters:
                     cluster_count += 1
-                    if hasattr(cluster, 'serve_nodes'):
+                    if hasattr(cluster, 'serve_nodes') and cluster.serve_nodes:
                         total_nodes += cluster.serve_nodes
-                    if hasattr(cluster, 'location'):
-                        locations.append(cluster.location_id if hasattr(cluster, 'location_id') else str(cluster.location))
+                    if hasattr(cluster, 'location_id') and cluster.location_id:
+                        locations.append(cluster.location_id)
                     if hasattr(cluster, 'default_storage_type'):
                         storage_type = str(cluster.default_storage_type)
             except Exception as e:

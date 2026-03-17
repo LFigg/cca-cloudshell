@@ -5,6 +5,23 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.7] - 2026-03-17
+
+### Fixed
+- **Azure File Shares**: Fixed regression where file shares weren't collected when `expand='stats'` fails
+  - Now falls back to basic list (using quota as size) if stats unavailable
+  - Adds `size_source` metadata to indicate if `usage` or `quota` was used
+- **Azure SQL/Synapse**: Fixed double-counting of Synapse dedicated SQL pools
+  - DataWarehouse tier databases are now skipped in SQL collection (collected separately as Synapse pools)
+  - Assessment report now properly categorizes Synapse SQL pools under "DB: Synapse"
+- **Assessment Report**: Fixed generic "Databases" bucket appearing in sizing inputs
+  - MySQL/PostgreSQL flexible servers now properly categorized as "DB: MySQL/MariaDB" and "DB: PostgreSQL"
+
+### Added
+- Added `Microsoft.Storage/storageAccounts/fileServices/read` permission to Azure role definitions
+- M365 collector: Clear warnings when usage reports unavailable (falls back to per-user API)
+- `tools/analyze_accounts.py`: Now cloud-agnostic (supports AWS accounts, Azure subscriptions, GCP projects)
+
 ## [1.0.6] - 2026-03-13
 
 ### Added
