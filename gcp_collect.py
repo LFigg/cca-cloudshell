@@ -48,6 +48,7 @@ from lib.utils import (
     check_and_raise_auth_error,
     generate_run_id,
     get_timestamp,
+    log_arguments,
     parallel_collect,
     print_summary_table,
     redact_sensitive_data,
@@ -1202,6 +1203,7 @@ def collect_gcp_change_rates(
     monitoring_client = get_gcp_monitoring_client(project_id)
     if not monitoring_client:
         logger.warning("Cloud Monitoring client not available, skipping change rate collection")
+        logger.warning("Install google-cloud-monitoring: pip install google-cloud-monitoring")
         return {}
 
     for resource in resources:
@@ -1307,6 +1309,7 @@ def main():
     # Setup logging - write to file if output is local directory
     log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
     setup_logging(args.log_level, output_dir=log_dir)
+    log_arguments(args, "GCP collector")
 
     if not HAS_GCP_SDK:
         logger.error("Google Cloud SDK not installed. Run: pip install google-cloud-compute google-cloud-storage")
@@ -1398,6 +1401,9 @@ def main():
                     all_change_rates, args.change_rate_days, "Cloud Monitoring"
                 )
                 logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+            else:
+                logger.warning("No change rate data collected. Check if google-cloud-monitoring is installed.")
+                print("⚠ No change rate data collected. Run: pip install google-cloud-monitoring")
 
         # Collect PVCs from GKE clusters (automatic when clusters are discovered)
         gke_clusters = [r for r in all_resources if r.resource_type == 'gcp:container:cluster']

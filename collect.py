@@ -650,69 +650,144 @@ def check_gcp_permissions() -> Tuple[bool, str, List[str]]:
 def check_m365_permissions() -> Tuple[bool, str, List[str]]:
     """
     Verify M365 credentials and basic permissions.
+    
+    Prefers App Registration credentials if available.
+    Falls back to Azure CLI / DefaultAzureCredential.
+    Errors if partial App Registration credentials are set.
+    
     Returns: (success, message, details)
     """
     details = []
 
-    # Check required environment variables
+    # Check for App Registration environment variables
     tenant_id = os.environ.get('MS365_TENANT_ID')
     client_id = os.environ.get('MS365_CLIENT_ID')
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
-
-    if not all([tenant_id, client_id, client_secret]):
-        missing = []
-        if not tenant_id:
-            missing.append("MS365_TENANT_ID")
-        if not client_id:
-            missing.append("MS365_CLIENT_ID")
-        if not client_secret:
-            missing.append("MS365_CLIENT_SECRET")
-        return False, "Missing required environment variables", [
-            f"Set the following env vars: {', '.join(missing)}",
+    
+    ms365_vars = {
+        'MS365_TENANT_ID': tenant_id,
+        'MS365_CLIENT_ID': client_id,
+        'MS365_CLIENT_SECRET': client_secret
+    }
+    set_vars = [k for k, v in ms365_vars.items() if v]
+    missing_vars = [k for k, v in ms365_vars.items() if not v]
+    
+    # Error on partial credentials - user started setup but didn't finish
+    if set_vars and missing_vars:
+        return False, "Partial App Registration credentials detected", [
+            f"You have set: {', '.join(set_vars)}",
+            f"But missing:  {', '.join(missing_vars)}",
             "",
-            "Example:",
+            "Please set ALL three environment variables:",
             "  export MS365_TENANT_ID='your-tenant-id'",
             "  export MS365_CLIENT_ID='your-client-id'",
             "  export MS365_CLIENT_SECRET='your-client-secret'",
             "",
-            "Note: Requires Azure AD App Registration with Graph API permissions.",
-            "See docs/collectors/m365.md for setup instructions."
+            "Or unset all of them to use Azure CLI authentication:",
+            "  unset MS365_TENANT_ID MS365_CLIENT_ID MS365_CLIENT_SECRET",
+            "  az login"
         ]
 
-    # Type narrowing - we know these are strings after the check above
-    assert tenant_id is not None and client_id is not None and client_secret is not None
-
-    details.append(f"Tenant:   {tenant_id}")
-    details.append(f"Client:   {client_id[:8]}...")
-
-    # Try to get a token
+    # Try to import required libraries
     try:
-        from azure.identity import ClientSecretCredential
+        from azure.identity import ClientSecretCredential, DefaultAzureCredential
         from msgraph.graph_service_client import GraphServiceClient  # noqa: F401
     except ImportError:
         return False, "msgraph SDK not installed", [
             "Run: pip install msgraph-sdk azure-identity"
         ]
 
+    # Use App Registration if all credentials are set (preferred)
+    if all([tenant_id, client_id, client_secret]):
+        details.append("Method:   App Registration (preferred)")
+        details.append(f"Tenant:   {tenant_id}")
+        details.append(f"Client:   {client_id[:8]}...")
+        
+        try:
+            credential = ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret
+            )
+            # Try to get a token for Graph API
+            token = credential.get_token("https://graph.microsoft.com/.default")
+            if token:
+                details.append("Auth:     ✓ Token acquired")
+                return True, "M365 App Registration verified", details
+        except Exception as e:
+            return False, f"App Registration authentication failed: {e}", [
+                "Check that:",
+                "  - Tenant ID, Client ID, and Client Secret are correct",
+                "  - The App Registration has the required API permissions",
+                "  - Admin consent has been granted for the permissions"
+            ]
+    
+    # Fall back to DefaultAzureCredential (Azure CLI, Managed Identity, etc.)
+    details.append("Method:   Azure CLI / DefaultAzureCredential")
+    details.append("          (Set MS365_* env vars to use App Registration instead)")
+    
     try:
-        credential = ClientSecretCredential(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            client_secret=client_secret
+        # Skip managed identity on non-Azure machines to avoid timeout
+        is_azure = os.environ.get('ACC_TERM_ID') or os.path.exists(os.path.expanduser('~/clouddrive'))
+        credential = DefaultAzureCredential(
+            exclude_managed_identity_credential=not is_azure
         )
         # Try to get a token for Graph API
         token = credential.get_token("https://graph.microsoft.com/.default")
         if token:
-            details.append("Auth:     ✓ Token acquired")
+            details.append("Auth:     ✓ Token acquired via Azure CLI")
+            details.append("")
+            details.append("⚠ Note: For production use, App Registration is recommended.")
+            details.append("  See docs/collectors/m365.md for setup instructions.")
+            return True, "M365 credentials verified (Azure CLI)", details
     except Exception as e:
-        return False, f"Authentication failed: {e}", [
-            "Check that:",
-            "  - Tenant ID, Client ID, and Client Secret are correct",
-            "  - The App Registration has the required API permissions",
-            "  - Admin consent has been granted for the permissions"
+        return False, f"Azure CLI authentication failed: {e}", [
+            "No valid credentials found. Options:",
+            "",
+            "Option 1: App Registration (recommended for production)",
+            "  export MS365_TENANT_ID='your-tenant-id'",
+            "  export MS365_CLIENT_ID='your-client-id'",
+            "  export MS365_CLIENT_SECRET='your-client-secret'",
+            "",
+            "Option 2: Azure CLI (for development/testing)",
+            "  az login",
+            "",
+            "See docs/collectors/m365.md for detailed setup instructions."
         ]
+    
+    return False, "No M365 credentials found", details
 
-    return True, "M365 credentials verified", details
+
+def check_change_rate_requirements(cloud: str) -> Tuple[bool, str]:
+    """
+    Check if the required monitoring package is installed for change rate collection.
+    Returns: (success, error_message)
+    """
+    if cloud in ('aws', 'aws-org'):
+        # AWS uses boto3 CloudWatch which is part of core boto3 - always available
+        return True, ""
+    elif cloud == 'azure':
+        try:
+            from azure.mgmt.monitor import MonitorManagementClient  # noqa: F401
+            return True, ""
+        except ImportError:
+            return False, (
+                "Change rate collection requires azure-mgmt-monitor.\n"
+                "Install it with: pip install azure-mgmt-monitor\n"
+                "Or use --skip-change-rate to skip change rate collection."
+            )
+    elif cloud == 'gcp':
+        try:
+            from google.cloud import monitoring_v3  # noqa: F401
+            return True, ""
+        except ImportError:
+            return False, (
+                "Change rate collection requires google-cloud-monitoring.\n"
+                "Install it with: pip install google-cloud-monitoring\n"
+                "Or use --skip-change-rate to skip change rate collection."
+            )
+    # M365 doesn't have change rate collection
+    return True, ""
 
 
 # =============================================================================
@@ -775,12 +850,34 @@ def detect_gcp() -> bool:
 
 
 def detect_m365() -> bool:
-    """Check if M365 credentials are available."""
-    return all([
-        os.environ.get('MS365_TENANT_ID'),
-        os.environ.get('MS365_CLIENT_ID'),
-        os.environ.get('MS365_CLIENT_SECRET')
-    ])
+    """Check if M365 credentials are available.
+    
+    Detects both App Registration credentials (preferred) and Azure CLI.
+    Returns True if either authentication method is available.
+    """
+    # Check for App Registration credentials (preferred method)
+    tenant_id = os.environ.get('MS365_TENANT_ID')
+    client_id = os.environ.get('MS365_CLIENT_ID')
+    client_secret = os.environ.get('MS365_CLIENT_SECRET')
+    
+    if all([tenant_id, client_id, client_secret]):
+        return True
+    
+    # Check for Azure CLI / DefaultAzureCredential
+    # This includes: Azure CLI login, Managed Identity, env vars
+    azure_config = os.path.expanduser('~/.azure/azureProfile.json')
+    if os.path.exists(azure_config):
+        return True
+    
+    # Check for Azure Cloud Shell
+    if os.environ.get('ACC_TERM_ID') or os.path.exists(os.path.expanduser('~/clouddrive')):
+        return True
+    
+    # Check for AZURE_ env vars (service principal)
+    if os.environ.get('AZURE_CLIENT_ID') and os.environ.get('AZURE_TENANT_ID'):
+        return True
+    
+    return False
 
 
 def auto_detect_clouds() -> List[str]:
@@ -1051,6 +1148,11 @@ def run_setup_wizard():
             response = input(color(f"Run collection for {', '.join(c.upper() for c in ready_clouds)} now? [Y/n]: ", Colors.CYAN)).strip().lower()
             if response in ('', 'y', 'yes'):
                 for cloud in ready_clouds:
+                    # Check change rate requirements (no --skip-change-rate in quick run)
+                    cr_ok, cr_err = check_change_rate_requirements(cloud)
+                    if not cr_ok:
+                        print(color(f"\n{cr_err}", Colors.RED))
+                        continue
                     run_collector(cloud, [])
         except (KeyboardInterrupt, EOFError):
             print(color("\n\nCollection skipped.", Colors.YELLOW))
@@ -1233,6 +1335,13 @@ Examples:
                     extra_args.append('--include-resource-ids')
                 extra_args.extend(['-o', aws_org_opts['output']])
 
+                # Check change rate requirements before starting
+                if '--skip-change-rate' not in extra_args:
+                    cr_ok, cr_err = check_change_rate_requirements('aws')
+                    if not cr_ok:
+                        print(color(f"\n{cr_err}", Colors.RED))
+                        sys.exit(1)
+
                 print(color("\nStarting AWS Organization collection...\n", Colors.CYAN))
                 exit_code = run_collector('aws', extra_args)
 
@@ -1302,6 +1411,12 @@ Examples:
                     if not args.skip_check:
                         if not verify_permissions(c):
                             print(color(f"Skipping {c.upper()} due to permission issues.\n", Colors.YELLOW))
+                            continue
+                    # Check change rate requirements
+                    if '--skip-change-rate' not in extra_args:
+                        cr_ok, cr_err = check_change_rate_requirements(c)
+                        if not cr_ok:
+                            print(color(f"\nSkipping {c.upper()}: {cr_err}", Colors.YELLOW))
                             continue
                     exit_code = run_collector(c, extra_args)
                     all_exit_codes.append((c, exit_code))
@@ -1400,6 +1515,13 @@ Examples:
         if not verify_permissions(cloud):
             print(color("Permission check failed. Fix the issues above and try again.", Colors.RED))
             print(color("Or use --skip-check to bypass (not recommended).\n", Colors.YELLOW))
+            sys.exit(1)
+
+    # Check change rate requirements
+    if '--skip-change-rate' not in extra_args:
+        cr_ok, cr_err = check_change_rate_requirements(cloud)
+        if not cr_ok:
+            print(color(f"\n{cr_err}", Colors.RED))
             sys.exit(1)
 
     # Run main collection

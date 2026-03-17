@@ -407,18 +407,77 @@ def get_azure_metric_average(
         return None
 
 
+def get_azure_vm_change_rate(monitor_client, vm_resource_id: str, total_disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+    """
+    Get change rate for an Azure VM using VM-level Disk Write Bytes metric.
+    
+    This is the preferred method as it:
+    - Works for ALL Azure VMs regardless of disk type
+    - Aggregates writes across all attached disks (OS + data disks)
+    - Is more reliable than per-disk metrics which only work for Premium SSD v2/Ultra
+    
+    Args:
+        monitor_client: Azure Monitor client
+        vm_resource_id: Full Azure resource ID of the VM
+        total_disk_size_gb: Total size of all disks attached to VM (OS + data)
+        days: Number of days to sample
+    
+    Returns:
+        DataChangeMetrics with daily change calculated from VM-level disk writes
+    """
+    # VM-level metric gives total bytes written across all disks
+    daily_write_bytes = get_azure_metric_average(
+        monitor_client,
+        resource_id=vm_resource_id,
+        metric_name='Disk Write Bytes',  # VM-level metric (total, not per-second)
+        days=days,
+        aggregation='Total'  # Total bytes written per day
+    )
+
+    if daily_write_bytes is None:
+        return None
+
+    # Convert from bytes to daily GB (already a daily total with Total aggregation)
+    daily_write_gb = daily_write_bytes / (1024 ** 3)
+    change_percent = (daily_write_gb / total_disk_size_gb * 100) if total_disk_size_gb > 0 else None
+
+    return DataChangeMetrics(
+        daily_change_gb=daily_write_gb,
+        daily_change_percent=change_percent,
+        sample_days=days,
+        data_points=days
+    )
+
+
 def get_azure_disk_change_rate(monitor_client, disk_resource_id: str, disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Get change rate for an Azure managed disk using Disk Write Bytes metric.
+    
+    Note: This is a fallback - prefer get_azure_vm_change_rate() which works for all VMs.
+    
+    Metric availability varies by disk type:
+    - Premium SSD v2/Ultra: Composite Disk Write Bytes/sec
+    - Standard/Premium SSD v1: Limited metrics, often need VM-level metrics instead
     """
-    # Note: Managed disks use 'Composite Disk Write Bytes/sec' or need VM-level metrics
-    daily_write_bytes = get_azure_metric_average(
-        monitor_client,
-        resource_id=disk_resource_id,
-        metric_name='Composite Disk Write Bytes/sec',
-        days=days,
-        aggregation='Average'
-    )
+    # Try different metric names in order of preference
+    metric_names = [
+        'Composite Disk Write Bytes/sec',  # Premium SSD v2, Ultra Disk
+        'Disk Write Bytes/sec',            # Some disk types
+        'DiskWriteBytes',                  # Alternative naming
+    ]
+    
+    daily_write_bytes = None
+    for metric_name in metric_names:
+        daily_write_bytes = get_azure_metric_average(
+            monitor_client,
+            resource_id=disk_resource_id,
+            metric_name=metric_name,
+            days=days,
+            aggregation='Average'
+        )
+        if daily_write_bytes is not None:
+            logger.debug(f"Got disk write metric using {metric_name}")
+            break
 
     if daily_write_bytes is None:
         return None

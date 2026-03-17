@@ -78,6 +78,7 @@ from lib.utils import (
     generate_run_id,
     get_name_from_tags,
     get_timestamp,
+    log_arguments,
     mask_account_id,
     print_summary_table,
     redact_sensitive_data,
@@ -3133,6 +3134,7 @@ Large Environment Examples:
     # Setup logging - write to file if output is local directory
     log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
     setup_logging(args.log_level, output_dir=log_dir)
+    log_arguments(args, "AWS collector")
 
     # Load configuration from file/env/args
     try:

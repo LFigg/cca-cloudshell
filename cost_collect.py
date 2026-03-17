@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 # Add lib to path for imports
 sys.path.insert(0, '.')
 from lib.constants import AWS_BACKUP_FILTERS, AZURE_BACKUP_FILTERS, GCP_BACKUP_FILTERS
-from lib.utils import generate_run_id, get_timestamp, setup_logging, validate_bigquery_table, write_json
+from lib.utils import generate_run_id, get_timestamp, log_arguments, setup_logging, validate_bigquery_table, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -665,6 +665,7 @@ Examples:
     # Setup logging - write to file if output is local directory
     log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
     setup_logging(args.log_level, output_dir=log_dir)
+    log_arguments(args, "Cost collector")
 
     # Handle --last-30-days override
     if args.last_30_days:

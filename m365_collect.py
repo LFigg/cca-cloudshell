@@ -86,7 +86,7 @@ def run_sync(result):
 # Add lib to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.models import CloudResource  # noqa: E402
-from lib.utils import ProgressTracker, check_and_raise_auth_error, setup_logging  # noqa: E402
+from lib.utils import ProgressTracker, check_and_raise_auth_error, log_arguments, setup_logging  # noqa: E402
 from lib.utils import write_json as _write_json_to_path  # noqa: E402
 
 # Constants for usage report collection
@@ -1972,6 +1972,7 @@ Required Azure AD App Permissions (Application type):
     # Setup logging - write to file in output directory
     log_level = 'DEBUG' if args.verbose else args.log_level
     setup_logging(log_level, output_dir=args.output)
+    log_arguments(args, "M365 collector")
 
     # Get client secret from environment only (security: not from CLI args)
     client_secret = os.environ.get('MS365_CLIENT_SECRET')

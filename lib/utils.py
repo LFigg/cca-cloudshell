@@ -716,6 +716,7 @@ _SENSITIVE_FIELD_NAMES = {
     'account_id', 'subscription_id', 'tenant_id', 'resource_id',
     'parent_resource_id', 'vpc_id', 'subnet_id', 'security_group_id',
     'endpoint', 'host', 'server', 'connection_string',
+    'external_id', 'client_id', 'client_secret', 'role_arn',
 }
 
 # Field name patterns that indicate arrays of sensitive IDs
@@ -964,6 +965,34 @@ def setup_logging(level: str = "INFO", output_dir: Optional[str] = None) -> logg
         root_logger.info(f"Logging to: {log_file}")
 
     return logging.getLogger(__name__)
+
+
+def log_arguments(args, collector_name: str = "collector") -> None:
+    """
+    Log the command-line arguments used to run a collector.
+
+    Sensitive values (external_id, client_secret, etc.) are redacted.
+    This helps with debugging and understanding what configuration was used.
+
+    Args:
+        args: Parsed argparse.Namespace object
+        collector_name: Name of the collector for log prefix
+    """
+    logger = logging.getLogger(__name__)
+
+    # Convert args namespace to dict
+    args_dict = vars(args).copy()
+
+    # Remove None values and internal args for cleaner output
+    args_dict = {k: v for k, v in args_dict.items() if v is not None}
+
+    # Redact sensitive values
+    redacted_args = redact_sensitive_data(args_dict)
+
+    # Format as key=value pairs
+    arg_str = ", ".join(f"{k}={v}" for k, v in sorted(redacted_args.items()))
+
+    logger.info(f"{collector_name} started with arguments: {arg_str}")
 
 
 def write_json(data: Any, filepath: str) -> None:

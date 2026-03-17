@@ -5,6 +5,39 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-03-17
+
+### Added
+- **Argument Logging**: All collectors now log CLI arguments at startup (with sensitive fields redacted)
+- **M365 Credential Detection**: `collect.py` now detects both App Registration and Azure CLI credentials for M365
+  - App Registration (env vars) preferred, with clear partial-credential error messages
+  - Falls back to Azure CLI / DefaultAzureCredential if no app registration configured
+
+### Changed
+- **Azure Change Rate Collection**: Now uses VM-level metrics instead of per-disk metrics
+  - `Disk Write Bytes` metric at VM level works for ALL VMs regardless of disk type
+  - Much more reliable than per-disk metrics (which only work for Premium SSD v2/Ultra)
+  - Correctly aggregates total disk writes across OS + data disks
+
+### Fixed
+- **Azure Disk Change Rate Metrics**: Fixed metric name for disk write throughput
+  - `Composite Disk Write Bytes/sec` only works for Premium SSD v2 and Ultra Disks
+  - Now tries multiple metric names: `Composite Disk Write Bytes/sec`, `Disk Write Bytes/sec`, `DiskWriteBytes`
+  - Note: Standard/Premium SSD v1 don't expose disk-level write metrics (Azure limitation)
+  - Fixes HTTP 400 errors that caused all disk change rate collection to fail
+- **Azure Resource Group Parsing**: Fixed case-sensitivity issue in resource ID parsing
+  - Azure APIs may return `resourcegroups` (lowercase) instead of `resourceGroups`
+  - Made `_extract_resource_group` case-insensitive to handle both formats
+  - Fixes AKS PVC collection failing with "Resource group 'unknown' could not be found"
+- **Change Rate Requirements Check**: Collection now aborts early if monitoring packages are missing
+  - Azure change rate requires `azure-mgmt-monitor` (pip install azure-mgmt-monitor)
+  - GCP change rate requires `google-cloud-monitoring` (pip install google-cloud-monitoring)
+  - Clear error message with install instructions shown before collection starts
+  - Use `--skip-change-rate` to bypass if package unavailable
+- **Change Rate Error Messaging**: Improved logging when change rate collection fails
+  - User-visible warning shown if no change rate data collected
+  - Explicit pip install instructions in log output
+
 ## [1.0.7] - 2026-03-17
 
 ### Fixed

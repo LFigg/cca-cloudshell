@@ -48,6 +48,7 @@ from lib.change_rate import (
     get_azure_sql_database_capacity,
     get_azure_sql_transaction_log_rate,
     get_azure_storage_account_capacity,
+    get_azure_vm_change_rate,
     merge_change_rates,
 )
 from lib.k8s import collect_aks_pvcs
@@ -59,6 +60,7 @@ from lib.utils import (
     format_bytes_to_gb,
     generate_run_id,
     get_timestamp,
+    log_arguments,
     parallel_collect,
     print_summary_table,
     redact_sensitive_data,
@@ -98,7 +100,9 @@ def _extract_resource_group(resource_id: str) -> str:
     """Extract resource group from Azure resource ID."""
     try:
         parts = resource_id.split('/')
-        rg_index = parts.index('resourceGroups') + 1
+        # Azure APIs may return 'resourceGroups' or 'resourcegroups' - check case-insensitively
+        lower_parts = [p.lower() for p in parts]
+        rg_index = lower_parts.index('resourcegroups') + 1
         return parts[rg_index]
     except (ValueError, IndexError):
         return 'unknown'
@@ -1650,6 +1654,8 @@ def collect_azure_change_rates(
 ) -> Dict[str, Any]:
     """
     Collect change rate metrics from Azure Monitor for the collected resources.
+    
+    Uses VM-level metrics for disk change rate (more reliable than per-disk metrics).
 
     Args:
         credential: Azure credential
@@ -1666,12 +1672,19 @@ def collect_azure_change_rates(
     monitor_client = get_azure_monitor_client(credential, subscription_id)
     if not monitor_client:
         logger.warning("Azure Monitor client not available, skipping change rate collection")
+        logger.warning("Install azure-mgmt-monitor: pip install azure-mgmt-monitor")
         return {}
+
+    # Build a map of disk ID -> size for calculating total VM disk size
+    disk_sizes = {}
+    for resource in resources:
+        if resource.resource_type == 'azure:disk':
+            disk_sizes[resource.resource_id] = resource.size_gb
 
     for resource in resources:
         try:
             rate_entry = _collect_azure_resource_change_rate(
-                monitor_client, resource, days
+                monitor_client, resource, days, disk_sizes
             )
             if rate_entry:
                 change_rates.append(rate_entry)
@@ -1687,25 +1700,35 @@ def collect_azure_change_rates(
 def _collect_azure_resource_change_rate(
     monitor_client,
     resource: CloudResource,
-    days: int
+    days: int,
+    disk_sizes: Dict[str, float] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Collect change rate for a single Azure resource based on its type.
+    
+    For VMs, uses VM-level Disk Write Bytes metric (works for all VMs).
     """
     service_family = resource.service_family
     resource_id = resource.resource_id
     resource_type = resource.resource_type
 
-    # Azure managed disks have service_family='AzureVM' and resource_type='azure:disk'
-    if resource_type == 'azure:disk':
-        data_change = get_azure_disk_change_rate(
-            monitor_client, resource_id, resource.size_gb, days
+    # Azure VMs - use VM-level disk write metrics (preferred over per-disk)
+    if resource_type == 'azure:vm':
+        # Calculate total disk size: OS disk + all attached data disks
+        total_disk_gb = resource.size_gb  # OS disk size
+        attached_disks = resource.metadata.get('attached_disks', [])
+        if disk_sizes:
+            for disk_id in attached_disks:
+                total_disk_gb += disk_sizes.get(disk_id, 0)
+        
+        data_change = get_azure_vm_change_rate(
+            monitor_client, resource_id, total_disk_gb, days
         )
         if data_change:
             return {
                 'provider': 'azure',
-                'service_family': 'AzureVM',  # Match what disks are collected with
-                'size_gb': resource.size_gb,
+                'service_family': 'AzureVM',
+                'size_gb': total_disk_gb,
                 'data_change': data_change
             }
 
@@ -1736,6 +1759,9 @@ def _collect_azure_resource_change_rate(
             # Update resource size_gb with actual capacity
             resource.size_gb = capacity_gb
             logger.debug(f"Storage account {resource.name}: {capacity_gb:.2f} GB")
+
+    # Note: azure:disk resources are skipped - we use VM-level metrics instead
+    # This avoids double-counting and works for all disk types
 
     return None
 
@@ -1785,6 +1811,7 @@ def main():
     # Setup logging - write to file if output is local directory
     log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
     setup_logging(args.log_level, output_dir=log_dir)
+    log_arguments(args, "Azure collector")
 
     # Get credential
     try:
@@ -1878,6 +1905,9 @@ def main():
                 all_change_rates, args.change_rate_days, "Azure Monitor"
             )
             logger.info(f"Collected change rates for {len(all_change_rates)} service families")
+        else:
+            logger.warning("No change rate data collected. Check if azure-mgmt-monitor is installed.")
+            print("⚠ No change rate data collected. Run: pip install azure-mgmt-monitor")
 
     # Generate summaries (after change rate collection so storage capacities are included)
     summaries = aggregate_sizing(all_resources)
