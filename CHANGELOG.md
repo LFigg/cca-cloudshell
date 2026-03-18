@@ -5,6 +5,27 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.9] - 2026-03-18
+
+### Fixed
+- **M365 SharePoint Collection**: Fixed "Event loop is closed" error in Graph API fallback
+  - `run_sync()` now creates fresh event loop when needed instead of crashing
+  - SharePoint sites can now be collected via Graph API when usage reports unavailable
+- **M365 SharePoint Aggregate Sizing**: Added fallback to use storage history for total size
+  - When individual sites can't be enumerated (e.g., concealed reports), aggregate total is now
+    estimated from storage history data
+  - Flags data with `size_estimated: true` and prints diagnostic message
+  - Users get sizing data even with tenant report concealment enabled
+- **M365 Report Inventory Loading**: Fixed `generate_m365_report.py` failing on list-format JSON
+  - `find_m365_files()` now handles both list format (array of resources) and dict format
+
+### Changed
+- **M365 Licensing Report**: Filtered to M365-related SKUs only
+  - Excludes free/viral/trial SKUs (FLOW_FREE, POWER_BI_STANDARD, STREAM, etc.)
+  - Shows relevant SKUs: M365 E3/E5/F1/F3, Exchange, SharePoint, Teams, Copilot, Defender, etc.
+  - Totals now reflect actual M365 license consumption, not inflated by unlimited free SKUs
+  - SKUs sorted by consumed (most active first) instead of purchased
+
 ## [1.0.8] - 2026-03-17
 
 ### Added

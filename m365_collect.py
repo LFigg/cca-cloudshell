@@ -73,10 +73,26 @@ def run_sync(result):
 
     msgraph-sdk 1.55+ returns coroutines from .get() methods.
     This helper ensures compatibility with both sync and async responses.
+
+    Handles the "Event loop is closed" error that can occur on Windows
+    or after multiple asyncio.run() calls by creating a fresh event loop.
     """
-    if inspect.iscoroutine(result):
+    if not inspect.iscoroutine(result):
+        return result
+
+    try:
+        # First try asyncio.run() - works in most cases
         return asyncio.run(result)
-    return result
+    except RuntimeError as e:
+        if "Event loop is closed" in str(e):
+            # Create a fresh event loop and run there
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(result)
+            finally:
+                loop.close()
+        raise
 
 
 # =============================================================================
@@ -1067,12 +1083,21 @@ def collect_sharepoint_usage_report(graph_client: GraphServiceClient) -> Dict[st
 
     rows = _parse_usage_report_csv(csv_content)
 
+    # Debug: log column names from first row to diagnose parsing issues
+    if rows:
+        logger.debug(f"SharePoint usage report columns: {list(rows[0].keys())}")
+    else:
+        logger.debug("SharePoint usage report returned no rows")
+
     # Build lookup by site URL
     # Report includes: Site URL, Site Type, Root Web Template, Storage Used (Byte), etc.
+    # Note: Microsoft may use different column names or concealed data
     sites = {}
+    skipped_no_url = 0
     for row in rows:
-        site_url = _get_csv_field(row, 'Site URL', 'Site Url', 'siteUrl')
+        site_url = _get_csv_field(row, 'Site URL', 'Site Url', 'siteUrl', 'Site Id', 'siteId')
         if not site_url:
+            skipped_no_url += 1
             continue
 
         # Get storage
@@ -1111,7 +1136,16 @@ def collect_sharepoint_usage_report(graph_client: GraphServiceClient) -> Dict[st
             'owner_display_name': _get_csv_field(row, 'Owner Display Name', 'ownerDisplayName') or '',
         }
 
-    # Log summary
+    # Log summary with diagnostic info
+    if skipped_no_url > 0 and len(sites) == 0:
+        logger.warning(
+            f"SharePoint usage report had {len(rows)} rows but {skipped_no_url} were skipped "
+            f"(no Site URL found). This may indicate concealed report data - check tenant "
+            "settings for 'Conceal user, group, and site names in all reports'."
+        )
+    elif skipped_no_url > 0:
+        logger.debug(f"Skipped {skipped_no_url} rows without Site URL")
+
     team_sites = sum(1 for s in sites.values() if s['is_team_site'])
     sp_sites = len(sites) - team_sites
     logger.info(f"Collected usage data for {len(sites)} SharePoint sites ({team_sites} Team Sites, {sp_sites} SharePoint Sites)")
@@ -2091,6 +2125,11 @@ Required Azure AD App Permissions (Application type):
     licensing_info: Dict[str, Any] = {}
     tenant_info: Dict[str, Any] = {}
 
+    # Storage history for change rate fallback
+    sharepoint_history: List[Dict[str, Any]] = []
+    onedrive_history: List[Dict[str, Any]] = []
+    mailbox_history: List[Dict[str, Any]] = []
+
     with ProgressTracker("M365", total_accounts=num_tasks) as tracker:
         # First: Collect usage reports (needed for accurate mailbox sizes)
         tracker.update_task("Collecting usage reports...")
@@ -2212,6 +2251,20 @@ Required Azure AD App Permissions (Application type):
                 service_resources = [r for r in all_resources if r.resource_type in resource_types]
                 change_rate_data[service_name]['resource_count'] = len(service_resources)
                 change_rate_data[service_name]['total_size_gb'] = round(sum(r.size_gb for r in service_resources), 2)
+
+        # Fallback: If we have SharePoint storage history but no resources,
+        # estimate total size from the most recent storage history data point
+        if 'SharePoint' in change_rate_data and change_rate_data['SharePoint'].get('resource_count', 0) == 0:
+            if sharepoint_history:
+                # Use the most recent storage value from history
+                latest_storage_bytes = sharepoint_history[-1].get('storage_bytes', 0)
+                estimated_size_gb = round(latest_storage_bytes / (1024**3), 2)
+                if estimated_size_gb > 0:
+                    change_rate_data['SharePoint']['total_size_gb'] = estimated_size_gb
+                    change_rate_data['SharePoint']['size_estimated'] = True
+                    logger.info(f"SharePoint total size estimated from storage history: {estimated_size_gb:.2f} GB")
+                    print(f"  Note: SharePoint size ({estimated_size_gb:.2f} GB) estimated from storage history - "
+                          "site-level detail unavailable (check tenant report concealment settings)")
 
     # Print comprehensive sizing report
     print("\n")

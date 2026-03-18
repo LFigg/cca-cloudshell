@@ -286,27 +286,73 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
     # === Licensing Information ===
     licensing = summary_data.get('licensing')
     if licensing:
-        row = write_section_header(ws, row, "Licensing Summary")
+        row = write_section_header(ws, row, "Microsoft 365 Licensing Summary")
 
-        ws.cell(row=row, column=1, value="Total Licenses Purchased")
-        ws.cell(row=row, column=2, value=format_number(licensing.get('total_licenses_purchased', 0)))
+        # Filter to M365-related SKUs (exclude free/viral/standalone add-ons)
+        skus = licensing.get('skus', [])
+        # All patterns UPPERCASE for case-insensitive matching
+        m365_sku_patterns = (
+            # Core M365/O365 suites
+            'SPE_',           # Secure Productive Enterprise (M365 E3/E5/F1/F3/F5)
+            'M365_',          # M365 F1/F3 variants
+            'MICROSOFT_365',  # Microsoft 365 E3/E5/F3/Copilot
+            'O365_',          # Office 365 E1/E3/E5
+            'ENTERPRISE',     # E1/E3/E5 plans
+            'BUSINESS',       # Business Basic/Standard/Premium
+            # Core workload standalone
+            'EXCHANGE',       # Exchange Online plans
+            'SHAREPOINT',     # SharePoint Online plans
+            'PROJECT',        # Project Online
+            'VISIO',          # Visio
+            'TEAMS',          # Teams standalone/premium
+            'EMS',            # Enterprise Mobility + Security
+            'AAD_PREMIUM',    # Azure AD Premium
+            'DEFENDER',       # Defender plans
+            'MDATP',          # Microsoft Defender ATP
+            'INTUNE',         # Intune
+        )
+        # Patterns to exclude (free/viral/trial) - UPPERCASE
+        exclude_patterns = (
+            '_FREE', '_VIRAL', '_TRIAL', 'PREVIEW', 'DEVELOPERPACK',
+            'FLOW_FREE', 'POWER_BI_STANDARD', 'STREAM', 'WINDOWS_STORE',
+            'FORMS_PRO', 'CCIBOTS', 'SPZA_IW', 'SMB_APPS', 'MADEIRA',
+        )
+
+        def is_m365_sku(sku_name: str) -> bool:
+            name_upper = sku_name.upper()
+            # Exclude free/viral/trial SKUs
+            for excl in exclude_patterns:
+                if excl in name_upper:
+                    return False
+            # Include M365-related SKUs
+            for pattern in m365_sku_patterns:
+                if pattern in name_upper:
+                    return True
+            return False
+
+        m365_skus = [s for s in skus if is_m365_sku(s.get('name', ''))]
+
+        # Calculate totals for M365 SKUs only
+        m365_purchased = sum(s.get('purchased', 0) for s in m365_skus)
+        m365_consumed = sum(s.get('consumed', 0) for s in m365_skus)
+
+        ws.cell(row=row, column=1, value="M365 Licenses Purchased")
+        ws.cell(row=row, column=2, value=format_number(m365_purchased))
         row += 1
-        ws.cell(row=row, column=1, value="Total Licenses Consumed")
-        ws.cell(row=row, column=2, value=format_number(licensing.get('total_licenses_consumed', 0)))
+        ws.cell(row=row, column=1, value="M365 Licenses Consumed")
+        ws.cell(row=row, column=2, value=format_number(m365_consumed))
         row += 1
-        available = licensing.get('total_licenses_purchased', 0) - licensing.get('total_licenses_consumed', 0)
-        ws.cell(row=row, column=1, value="Licenses Available")
-        ws.cell(row=row, column=2, value=format_number(available))
+        ws.cell(row=row, column=1, value="M365 Licenses Available")
+        ws.cell(row=row, column=2, value=format_number(m365_purchased - m365_consumed))
         row += 2
 
-        # Top SKUs breakdown
-        skus = licensing.get('skus', [])
-        if skus:
+        # M365 SKUs breakdown
+        if m365_skus:
             write_header_row(ws, row, ["SKU Name", "Purchased", "Consumed", "Available"])
             row += 1
 
-            # Sort by purchased descending and show top 10
-            sorted_skus = sorted(skus, key=lambda x: x.get('purchased', 0), reverse=True)[:10]
+            # Sort by consumed descending (most active SKUs first)
+            sorted_skus = sorted(m365_skus, key=lambda x: x.get('consumed', 0), reverse=True)
             for sku in sorted_skus:
                 purchased = sku.get('purchased', 0)
                 consumed = sku.get('consumed', 0)
@@ -316,10 +362,6 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
                     format_number(consumed),
                     format_number(purchased - consumed)
                 ])
-                row += 1
-
-            if len(skus) > 10:
-                ws.cell(row=row, column=1, value=f"... and {len(skus) - 10} more SKUs")
                 row += 1
 
         row += 2
@@ -1414,8 +1456,14 @@ def find_m365_files(directory: str) -> List[str]:
         for match in matches:
             # Check if it's actually M365 data
             data = load_json_file(match)
-            if data and data.get('provider') == 'microsoft365':
-                inventory_files.append(match)
+            if data:
+                # Handle both list format (array of resources) and dict format
+                if isinstance(data, list) and len(data) > 0:
+                    # Check first resource for provider
+                    if data[0].get('provider') == 'microsoft365':
+                        inventory_files.append(match)
+                elif isinstance(data, dict) and data.get('provider') == 'microsoft365':
+                    inventory_files.append(match)
 
     return list(set(inventory_files))
 
