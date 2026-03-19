@@ -68,31 +68,41 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def run_sync(result):
+def run_sync(coro_or_result):
     """Run an async coroutine synchronously if needed.
 
     msgraph-sdk 1.55+ returns coroutines from .get() methods.
     This helper ensures compatibility with both sync and async responses.
 
-    Handles the "Event loop is closed" error that can occur on Windows
-    or after multiple asyncio.run() calls by creating a fresh event loop.
+    Handles event loop state issues that can occur after httpx usage
+    or multiple asyncio.run() calls by proactively checking loop state
+    and creating fresh event loops as needed.
     """
-    if not inspect.iscoroutine(result):
-        return result
+    if not inspect.iscoroutine(coro_or_result):
+        return coro_or_result
 
+    # Check if there's an existing event loop and its state
     try:
-        # First try asyncio.run() - works in most cases
-        return asyncio.run(result)
-    except RuntimeError as e:
-        if "Event loop is closed" in str(e):
-            # Create a fresh event loop and run there
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(result)
-            finally:
-                loop.close()
-        raise
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # No event loop exists, create one
+        loop = None
+
+    if loop is None or loop.is_closed():
+        # Event loop is closed or doesn't exist, create a fresh one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro_or_result)
+        finally:
+            loop.close()
+    elif loop.is_running():
+        # Loop is already running (e.g., in Jupyter) - this is rare
+        # Fall back to asyncio.run() which creates its own loop
+        return asyncio.run(coro_or_result)
+    else:
+        # Normal case - use asyncio.run()
+        return asyncio.run(coro_or_result)
 
 
 # =============================================================================
@@ -101,8 +111,9 @@ def run_sync(result):
 
 # Add lib to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib.__version__ import __version__  # noqa: E402
 from lib.models import CloudResource  # noqa: E402
-from lib.utils import ProgressTracker, check_and_raise_auth_error, log_arguments, setup_logging  # noqa: E402
+from lib.utils import ProgressTracker, check_and_raise_auth_error, get_collector_metadata, log_arguments, setup_logging  # noqa: E402
 from lib.utils import write_json as _write_json_to_path  # noqa: E402
 
 # Constants for usage report collection
@@ -762,9 +773,16 @@ def _collect_exchange_mailboxes_from_users(
 # Teams Collector
 # =============================================================================
 
-def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[CloudResource]:
-    """Collect Microsoft Teams."""
+def collect_teams(graph_client: GraphServiceClient, tenant_id: str, teams_usage: Optional[Dict[str, Dict[str, Any]]] = None) -> List[CloudResource]:
+    """Collect Microsoft Teams with storage from usage report.
+    
+    Args:
+        graph_client: Microsoft Graph client
+        tenant_id: Azure AD tenant ID
+        teams_usage: Optional dict from collect_teams_usage_report() keyed by team_id
+    """
     resources = []
+    teams_usage = teams_usage or {}
 
     try:
         logger.info("Collecting Microsoft Teams...")
@@ -787,6 +805,10 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
                         logger.debug(f"Could not fetch team details for {group.id}: {e}")
                         team = None
 
+                    # Get usage data if available
+                    usage = teams_usage.get(group.id.lower(), {})
+                    size_gb = usage.get('storage_gb', 0.0)
+
                     resource = CloudResource(
                         provider="microsoft365",
                         subscription_id=tenant_id,
@@ -796,14 +818,21 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
                         resource_id=group.id,
                         name=team.display_name if team else group.display_name or "Unknown",
                         tags={},
-                        size_gb=0.0,  # Teams storage is part of SharePoint
+                        size_gb=size_gb,
                         metadata={
                             'group_id': group.id,
                             'description': (team.description if team else group.description) or None,
                             'visibility': (team.visibility if team and hasattr(team, 'visibility') else group.visibility) if hasattr(group, 'visibility') else None,
                             'created_datetime': str(group.created_date_time) if hasattr(group, 'created_date_time') and group.created_date_time else None,
                             'is_archived': team.is_archived if team and hasattr(team, 'is_archived') else False,
-                            'web_url': team.web_url if team and hasattr(team, 'web_url') else None
+                            'web_url': team.web_url if team and hasattr(team, 'web_url') else None,
+                            # Add usage metrics if available
+                            'active_channels': usage.get('active_channels'),
+                            'total_channels': usage.get('total_channels'),
+                            'active_users': usage.get('active_users'),
+                            'active_external_users': usage.get('active_external_users'),
+                            'channel_messages': usage.get('channel_messages'),
+                            'last_activity_date': usage.get('last_activity_date'),
                         }
                     )
                     resources.append(resource)
@@ -811,11 +840,14 @@ def collect_teams(graph_client: GraphServiceClient, tenant_id: str) -> List[Clou
                     logger.debug(f"Failed to process Team {group.id}: {e}")
                     continue
 
-        logger.info(f"Collected {len(resources)} Teams")
+        total_storage = sum(r.size_gb for r in resources)
+        logger.info(f"Collected {len(resources)} Teams ({total_storage:.2f} GB)")
 
     except Exception as e:
         check_and_raise_auth_error(e, "collect Teams", "m365")
         logger.error(f"Failed to collect Teams: {e}")
+
+    return resources
 
     return resources
 
@@ -1452,6 +1484,91 @@ def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str,
     logger.info(f"Collected Teams activity for {totals['active_users']} users: "
                 f"{totals['total_estimated_metered_units']:,} metered units")
     return totals
+
+
+def collect_teams_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
+    """Collect Teams team-level usage report with storage data.
+
+    Returns dict keyed by Team ID with storage and activity metrics.
+    Uses getTeamsTeamActivityDetail report which includes storage used per team.
+    """
+    logger.info("Collecting Teams team usage report...")
+
+    csv_content = _get_usage_report(graph_client, 'getTeamsTeamActivityDetail')
+    if not csv_content:
+        return {}
+
+    rows = _parse_usage_report_csv(csv_content)
+
+    # Debug: log column names from first row
+    if rows:
+        logger.debug(f"Teams team usage report columns: {list(rows[0].keys())}")
+    else:
+        logger.warning("Teams team usage report returned no data")
+        return {}
+
+    teams_usage = {}
+    skipped = 0
+
+    for row in rows:
+        # Get team ID - the key field for matching
+        team_id = _get_csv_field(row, 'Team Id', 'teamId')
+        if not team_id:
+            skipped += 1
+            continue
+
+        # Get team name
+        team_name = _get_csv_field(row, 'Team Name', 'teamName') or ''
+
+        # Storage used (in bytes)
+        storage_bytes = _safe_int(_get_csv_field(row, 'Storage Used (Byte)', 'storageUsedInBytes'))
+        storage_gb = storage_bytes / (1024**3) if storage_bytes else 0.0
+
+        # Channel counts
+        active_channels = _safe_int(_get_csv_field(row, 'Active Channels', 'activeChannels'))
+        active_shared_channels = _safe_int(_get_csv_field(row, 'Active Shared Channels', 'activeSharedChannels'))
+        total_channels = _safe_int(_get_csv_field(row, 'Total Channels', 'totalChannels'))
+
+        # User counts
+        active_users = _safe_int(_get_csv_field(row, 'Active Users', 'activeUsers'))
+        active_external_users = _safe_int(_get_csv_field(row, 'Active External Users', 'activeExternalUsers'))
+        active_guests = _safe_int(_get_csv_field(row, 'Active Guests', 'activeGuests'))
+        
+        # Activity counts  
+        channel_messages = _safe_int(_get_csv_field(row, 'Post Messages', 'postMessages'))
+        reply_messages = _safe_int(_get_csv_field(row, 'Reply Messages', 'replyMessages'))
+        urgent_messages = _safe_int(_get_csv_field(row, 'Urgent Messages', 'urgentMessages'))
+        mentions = _safe_int(_get_csv_field(row, 'Mentions', 'mentions'))
+        meetings_organized = _safe_int(_get_csv_field(row, 'Meetings Organized', 'meetingsOrganized'))
+
+        # Last activity
+        last_activity_date = _get_csv_field(row, 'Last Activity Date', 'lastActivityDate') or ''
+
+        teams_usage[team_id.lower()] = {
+            'team_id': team_id,
+            'team_name': team_name,
+            'storage_bytes': storage_bytes,
+            'storage_gb': storage_gb,
+            'active_channels': active_channels,
+            'active_shared_channels': active_shared_channels,
+            'total_channels': total_channels,
+            'active_users': active_users,
+            'active_external_users': active_external_users,
+            'active_guests': active_guests,
+            'channel_messages': channel_messages,
+            'reply_messages': reply_messages,
+            'urgent_messages': urgent_messages,
+            'mentions': mentions,
+            'meetings_organized': meetings_organized,
+            'last_activity_date': last_activity_date,
+        }
+
+    total_storage_gb = sum(t['storage_gb'] for t in teams_usage.values())
+    logger.info(f"Collected usage data for {len(teams_usage)} Teams ({total_storage_gb:.2f} GB total storage)")
+    if skipped > 0:
+        logger.debug(f"Skipped {skipped} rows without Team ID")
+
+    return teams_usage
 
 
 def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -2217,8 +2334,12 @@ Required Azure AD App Permissions (Application type):
             tracker.complete_account()
 
         if not args.skip_teams:
+            # Collect Teams usage report first (for storage sizes)
+            tracker.update_task("Collecting Teams usage report...")
+            teams_usage = collect_teams_usage_report(graph_client)
+            
             tracker.update_task("Collecting Teams...")
-            resources = collect_teams(graph_client, tenant_id)
+            resources = collect_teams(graph_client, tenant_id, teams_usage)
             all_resources.extend(resources)
             tracker.add_resources(len(resources), sum(r.size_gb for r in resources))
             tracker.complete_account()
@@ -2439,6 +2560,7 @@ Required Azure AD App Permissions (Application type):
 
     # Sizing summary with change rate data
     sizing = aggregate_m365_sizing(all_resources)
+    sizing['collector_metadata'] = get_collector_metadata(args, 'm365', __version__)
     sizing['tenant_id'] = tenant_id
     sizing['tenant_name'] = tenant_info.get('tenant_name')
     sizing['primary_domain'] = tenant_info.get('primary_domain')

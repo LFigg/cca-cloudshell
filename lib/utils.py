@@ -995,6 +995,98 @@ def log_arguments(args, collector_name: str = "collector") -> None:
     logger.info(f"{collector_name} started with arguments: {arg_str}")
 
 
+def get_collector_metadata(args, collector_name: str, version: str) -> Dict[str, Any]:
+    """
+    Generate metadata about the collector run for troubleshooting/debugging.
+
+    Includes version, arguments, environment info, and SDK versions.
+    Sensitive values are redacted.
+
+    Args:
+        args: Parsed argparse.Namespace object
+        collector_name: Name of the collector (e.g., 'aws', 'azure', 'gcp', 'm365', 'cost')
+        version: Collector version string
+
+    Returns:
+        Dict with collector metadata
+    """
+    import platform
+    import socket
+
+    # Get redacted arguments
+    args_dict = vars(args).copy()
+    args_dict = {k: v for k, v in args_dict.items() if v is not None}
+    redacted_args = redact_sensitive_data(args_dict)
+
+    # Get SDK versions based on collector type
+    sdk_versions = {}
+    if collector_name in ('aws', 'cost'):
+        try:
+            import boto3
+            sdk_versions['boto3'] = boto3.__version__
+        except ImportError:
+            pass
+        try:
+            import botocore
+            sdk_versions['botocore'] = botocore.__version__
+        except ImportError:
+            pass
+
+    if collector_name in ('azure', 'cost'):
+        try:
+            import azure.mgmt.compute
+            sdk_versions['azure-mgmt-compute'] = azure.mgmt.compute.VERSION
+        except (ImportError, AttributeError):
+            pass
+        try:
+            import azure.identity
+            sdk_versions['azure-identity'] = azure.identity.VERSION
+        except (ImportError, AttributeError):
+            pass
+
+    if collector_name in ('gcp', 'cost'):
+        try:
+            import google.cloud.compute_v1
+            sdk_versions['google-cloud-compute'] = google.cloud.compute_v1.__version__
+        except (ImportError, AttributeError):
+            pass
+        try:
+            import google.auth
+            sdk_versions['google-auth'] = google.auth.__version__
+        except (ImportError, AttributeError):
+            pass
+
+    if collector_name == 'm365':
+        try:
+            import msgraph
+            sdk_versions['msgraph-sdk'] = getattr(msgraph, '__version__', 'unknown')
+        except (ImportError, AttributeError):
+            pass
+        try:
+            import azure.identity
+            sdk_versions['azure-identity'] = azure.identity.VERSION
+        except (ImportError, AttributeError):
+            pass
+
+    # Build metadata
+    metadata = {
+        'collector_version': version,
+        'collector_name': collector_name,
+        'arguments': redacted_args,
+        'environment': {
+            'python_version': platform.python_version(),
+            'platform': platform.system(),
+            'platform_release': platform.release(),
+            'hostname': mask_account_id(socket.gethostname()),  # Partially redact hostname
+        },
+    }
+
+    if sdk_versions:
+        metadata['sdk_versions'] = sdk_versions
+
+    return metadata
+
+
 def write_json(data: Any, filepath: str) -> None:
     """Write data to JSON file with secure permissions."""
     # Handle S3 paths

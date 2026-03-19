@@ -68,6 +68,7 @@ from lib.change_rate import (
 )
 from lib.config import generate_sample_config, load_config
 from lib.constants import BYTES_PER_GB
+from lib.__version__ import __version__
 from lib.k8s import collect_eks_pvcs
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
@@ -76,6 +77,7 @@ from lib.utils import (
     check_and_raise_auth_error,
     format_bytes_to_gb,
     generate_run_id,
+    get_collector_metadata,
     get_name_from_tags,
     get_timestamp,
     log_arguments,
@@ -3582,6 +3584,7 @@ Large Environment Examples:
         summary_data = {
             'run_id': run_id,
             'timestamp': timestamp,
+            'collector_metadata': get_collector_metadata(args, 'aws', __version__),
             'provider': 'aws',
             'org_name': args.org_name if args.org_name else None,
             'account_id': account_ids[0] if len(account_ids) == 1 else account_ids,

@@ -370,16 +370,22 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
     row = write_section_header(ws, row, "Storage Summary by Service")
 
     # Categorize resources
+    # Teams storage comes from SharePoint Group/Channel sites, so we need to separate them
     services = {
         'Exchange Online': {'count': 0, 'size_gb': 0, 'type': 'mailbox'},
         'OneDrive for Business': {'count': 0, 'size_gb': 0, 'type': 'onedrive'},
         'SharePoint Online': {'count': 0, 'size_gb': 0, 'type': 'sharepoint'},
         'Microsoft Teams': {'count': 0, 'size_gb': 0, 'type': 'teams'},
     }
+    
+    # Track Teams-related SharePoint separately
+    teams_sp_count = 0
+    teams_sp_size = 0
 
     for r in resources:
         rtype = r.get('resource_type', '')
         size = r.get('size_gb', 0) or 0
+        metadata = r.get('metadata', {}) or {}
 
         if 'mailbox' in rtype:
             services['Exchange Online']['count'] += 1
@@ -388,10 +394,36 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
             services['OneDrive for Business']['count'] += 1
             services['OneDrive for Business']['size_gb'] += size
         elif 'sharepoint' in rtype:
-            services['SharePoint Online']['count'] += 1
-            services['SharePoint Online']['size_gb'] += size
+            # Check if this is a Teams-related site
+            template = metadata.get('root_web_template', '')
+            if template in ('Group', 'Team Channel'):
+                # This is Teams storage - count separately
+                teams_sp_count += 1
+                teams_sp_size += size
+            else:
+                # Non-Teams SharePoint
+                services['SharePoint Online']['count'] += 1
+                services['SharePoint Online']['size_gb'] += size
         elif 'teams' in rtype:
             services['Microsoft Teams']['count'] += 1
+            # Get Teams storage from metadata (correlated from SharePoint Group sites)
+            teams_storage = metadata.get('sharepoint_storage_gb') or metadata.get('estimated_storage_gb', 0)
+            services['Microsoft Teams']['size_gb'] += teams_storage
+
+    # If no Teams storage from metadata but we have Teams-related SP sites, use that
+    if services['Microsoft Teams']['size_gb'] == 0 and teams_sp_size > 0:
+        services['Microsoft Teams']['size_gb'] = teams_sp_size
+
+    # If SharePoint has no resources but we have change rate data, estimate size
+    change_rates = summary_data.get('change_rates', {})
+    sp_change = change_rates.get('SharePoint', {})
+    if services['SharePoint Online']['count'] == 0 and sp_change:
+        daily_change_gb = sp_change.get('daily_change_gb', 0)
+        daily_change_pct = sp_change.get('daily_change_percent', 0)
+        if daily_change_gb > 0 and daily_change_pct > 0:
+            estimated_size = daily_change_gb / (daily_change_pct / 100)
+            services['SharePoint Online']['size_gb'] = estimated_size
+            services['SharePoint Online']['estimated'] = True
 
     write_header_row(ws, row, ["Service", "Objects", "Storage (GB)", "Storage (TB)"])
     row += 1
@@ -399,12 +431,14 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
     total_size = 0
     total_count = 0
     for service, data in services.items():
-        if data['count'] > 0:
+        if data['count'] > 0 or data.get('size_gb', 0) > 0:
             total_size += data['size_gb']
             total_count += data['count']
+            count_display = format_number(data['count']) if data['count'] > 0 else "Unknown*"
+            service_display = service + " (estimated)" if data.get('estimated') else service
             write_data_row(ws, row, [
-                service,
-                format_number(data['count']),
+                service_display,
+                count_display,
                 f"{data['size_gb']:,.1f}",
                 f"{data['size_gb'] / 1024:.2f}"
             ])
@@ -415,7 +449,13 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
     ws.cell(row=row, column=2, value=format_number(total_count)).font = Font(bold=True)
     ws.cell(row=row, column=3, value=f"{total_size:,.1f}").font = Font(bold=True)
     ws.cell(row=row, column=4, value=f"{total_size / 1024:.2f}").font = Font(bold=True)
-    row += 3
+    row += 2
+
+    # Note about Teams/SharePoint separation
+    teams_correlation = summary_data.get('teams_sharepoint_correlation', {})
+    if teams_correlation:
+        ws.cell(row=row, column=1, value="* Note: Teams storage = SharePoint Group + Channel sites. SharePoint = non-Teams sites only.").font = Font(italic=True)
+    row += 2
 
     # === Quick Stats ===
     row = write_section_header(ws, row, "Quick Statistics")
@@ -629,29 +669,43 @@ def generate_sharepoint_tab(wb: Workbook, resources: List[Dict], summary_data: D
 
     for r in sites:
         metadata = r.get('metadata', {}) or {}
-        stype = metadata.get('site_type', 'Unknown')
+        # Use root_web_template if available, fall back to site_type
+        stype = metadata.get('root_web_template') or metadata.get('site_type') or 'Unknown'
+        if not stype or stype == '':
+            stype = 'Unknown'
         site_types[stype]['count'] += 1
         site_types[stype]['size_gb'] += r.get('size_gb', 0) or 0
 
         if metadata.get('is_deleted'):
             deleted_count += 1
 
-    write_header_row(ws, row, ["Site Type", "Count", "Size (GB)", "Size (TB)", "Avg Size (GB)"])
+    write_header_row(ws, row, ["Site Type", "Count", "Size (GB)", "Size (TB)", "Avg Size (GB)", "Notes"])
     row += 1
 
+    # Site type display names and notes
+    site_type_info = {
+        'Group': ('M365 Group Sites', 'Includes Teams file storage'),
+        'Team Channel': ('Private/Shared Channels', 'Separate from main Team site'),
+        'Team Site': ('Classic Team Sites', 'Not associated with Teams'),
+        'Communication Site': ('Communication Sites', 'Publishing/intranet sites'),
+        'Site Page Publishing': ('Publishing Sites', 'Content publishing'),
+        'Personal': ('Personal (OneDrive)', 'User OneDrive sites'),
+    }
+
     total_size = 0
-    for stype in ['Team Site', 'Communication Site', 'Group Site', 'Personal', 'Unknown']:
-        data = site_types.get(stype, {'count': 0, 'size_gb': 0})
+    # Sort by size descending
+    for stype, data in sorted(site_types.items(), key=lambda x: -x[1]['size_gb']):
         if data['count'] > 0:
             total_size += data['size_gb']
             avg_size = data['size_gb'] / data['count'] if data['count'] > 0 else 0
-            display_name = 'Personal (OneDrive)' if stype == 'Personal' else stype
+            display_name, note = site_type_info.get(stype, (stype, ''))
             write_data_row(ws, row, [
                 display_name,
                 data['count'],
                 round(data['size_gb'], 1),
                 round(data['size_gb'] / 1024, 2),
-                round(avg_size, 2)
+                round(avg_size, 2),
+                note
             ])
             row += 1
 
@@ -949,7 +1003,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
     headers = [
         "Workload", "Type", "Count", "Item Count", "Item Size (GiB)",
         "Recoverable Item Count", "Recoverable Item Size (GiB)",
-        "Total Item Count", "Total Item Size (GiB)", "Effective Size in ASP (GiB)",
+        "Total Item Count", "Total Item Size (GiB)", "Effective Size (GiB)",
         "Data Growth over last 180 days (GiB)", "Growth Rate over last 180 days (%)"
     ]
 
@@ -1122,14 +1176,39 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
     else:
-        # Fallback
+        # Fallback: try resources first, then estimate from change rates
         sp_resources = [r for r in resources if 'sharepoint' in r.get('resource_type', '')]
         total_sp_gb = sum(r.get('size_gb', 0) or 0 for r in sp_resources)
+        sp_count = len(sp_resources)
+        sp_note = ""
+        growth_180d_gb = ""
+        growth_180d_pct = ""
+        
+        # If no resources but we have change rate data, estimate total size
+        change_rates = summary_data.get('change_rates', {})
+        sp_change = change_rates.get('SharePoint', {})
+        if total_sp_gb == 0 and sp_change:
+            daily_change_gb = sp_change.get('daily_change_gb', 0)
+            daily_change_pct = sp_change.get('daily_change_percent', 0)
+            if daily_change_gb > 0 and daily_change_pct > 0:
+                # Estimate: total = daily_change_gb / (daily_change_percent / 100)
+                total_sp_gb = daily_change_gb / (daily_change_pct / 100)
+                sp_note = " (estimated from change rate)"
+                sp_count = sp_change.get('resource_count', 0) or "Unknown"
+                # Calculate 180-day growth from daily change
+                growth_180d_gb = round(daily_change_gb * 180, 2)
+                growth_180d_pct = round(daily_change_pct * 180, 2)
+        
+        # Use sp_growth if available, else use calculated values
+        if sp_growth:
+            growth_180d_gb = round(sp_growth.get('growth_gib', 0), 2) or growth_180d_gb
+            growth_180d_pct = sp_growth.get('growth_rate_percent', 0) or growth_180d_pct
+        
         write_data_row(ws, row, [
-            "SharePoint Online", "Total Sites", len(sp_resources),
+            "SharePoint Online", f"Total Sites{sp_note}", sp_count,
             "", "", "", "", "", round(total_sp_gb, 3),
             round(total_sp_gb * asp_factor, 3),
-            "", ""
+            growth_180d_gb, growth_180d_pct
         ])
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)

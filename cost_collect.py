@@ -28,8 +28,9 @@ from typing import Any, Dict, List, Optional
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
+from lib.__version__ import __version__
 from lib.constants import AWS_BACKUP_FILTERS, AZURE_BACKUP_FILTERS, GCP_BACKUP_FILTERS
-from lib.utils import generate_run_id, get_timestamp, log_arguments, setup_logging, validate_bigquery_table, write_json
+from lib.utils import generate_run_id, get_collector_metadata, get_timestamp, log_arguments, setup_logging, validate_bigquery_table, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -800,6 +801,7 @@ Examples:
     summary_data = {
         'run_id': run_id,
         'timestamp': timestamp,
+        'collector_metadata': get_collector_metadata(args, 'cost', __version__),
         'providers': collected_providers,
         'period': {
             'start': args.start_date,

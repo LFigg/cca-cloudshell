@@ -51,6 +51,7 @@ from lib.change_rate import (
     get_azure_vm_change_rate,
     merge_change_rates,
 )
+from lib.__version__ import __version__
 from lib.k8s import collect_aks_pvcs
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
@@ -59,6 +60,7 @@ from lib.utils import (
     check_and_raise_auth_error,
     format_bytes_to_gb,
     generate_run_id,
+    get_collector_metadata,
     get_timestamp,
     log_arguments,
     parallel_collect,
@@ -1973,6 +1975,7 @@ def main():
     summary_data = {
         'run_id': run_id,
         'timestamp': timestamp,
+        'collector_metadata': get_collector_metadata(args, 'azure', __version__),
         'provider': 'azure',
         'subscription_id': subscription_ids,  # List of IDs for backward compatibility
         'subscriptions': subscription_info,   # List of {subscription_id, subscription_name}

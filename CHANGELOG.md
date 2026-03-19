@@ -5,6 +5,31 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] - 2026-03-19
+
+### Added
+- **M365 Teams Usage Report**: New `collect_teams_usage_report()` function fetches Teams storage from Graph API
+  - Uses `getTeamsTeamActivityDetail` report for per-team storage sizes
+  - Includes activity metrics: active channels, users, messages, last activity date
+- **Collector Metadata**: All collectors now include debugging metadata in summary output
+  - `collector_version`, `collector_name`, `arguments` (redacted), `environment`, `sdk_versions`
+  - Helps diagnose issues by knowing exact version and configuration used
+
+### Changed
+- **M365 Report Storage Summary**: Teams and SharePoint storage now properly separated
+  - Teams shows capacity from SharePoint Group + Team Channel sites
+  - SharePoint shows only non-Teams sites (classic Team Sites, Communication Sites, etc.)
+  - No double-counting - each GB attributed to exactly one service
+- **M365 Report Site Types**: SharePoint tab now uses `root_web_template` field
+  - Shows actual site types: M365 Group Sites, Private/Shared Channels, Classic Team Sites, etc.
+  - Includes notes explaining what each site type represents
+  - Sorted by storage size descending
+
+### Fixed
+- **M365 Teams Collection**: Improved event loop handling in `run_sync()`
+  - Proactively checks `loop.is_closed()` before running coroutines
+  - Prevents "cannot reuse already awaited coroutine" errors
+
 ## [1.0.9] - 2026-03-18
 
 ### Fixed

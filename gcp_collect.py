@@ -40,6 +40,7 @@ from lib.change_rate import (
     get_gcp_monitoring_client,
     merge_change_rates,
 )
+from lib.__version__ import __version__
 from lib.k8s import collect_gke_pvcs
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
@@ -47,6 +48,7 @@ from lib.utils import (
     ProgressTracker,
     check_and_raise_auth_error,
     generate_run_id,
+    get_collector_metadata,
     get_timestamp,
     log_arguments,
     parallel_collect,
@@ -1456,6 +1458,7 @@ def main():
         summary_data = {
             'run_id': run_id,
             'timestamp': timestamp,
+            'collector_metadata': get_collector_metadata(args, 'gcp', __version__),
             'provider': 'gcp',
             'project_id': successful_project_ids,  # List of IDs for backward compatibility
             'projects': successful_projects,       # List of {project_id, project_name}
