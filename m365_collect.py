@@ -957,6 +957,105 @@ def get_tenant_licensing(graph_client: GraphServiceClient) -> Dict[str, Any]:
     return licensing
 
 
+def get_user_license_assignments(
+    graph_client: GraphServiceClient,
+    sku_mapping: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """Get license assignments for all users in the tenant.
+
+    Args:
+        graph_client: Microsoft Graph client
+        sku_mapping: Dict mapping SKU IDs to friendly SKU names
+
+    Returns:
+        List of dicts with user info and assigned license names.
+        Each dict contains:
+        - user_principal_name: User's UPN (email)
+        - display_name: User's display name
+        - user_id: User's object ID
+        - account_enabled: Whether account is active
+        - licenses: List of assigned license names (e.g., ['ENTERPRISEPACK', 'POWER_BI_PRO'])
+        - license_count: Number of licenses assigned
+    """
+    import httpx
+
+    license_assignments = []
+
+    try:
+        logger.info("Collecting user license assignments...")
+
+        if _graph_credential is None:
+            logger.warning("Graph credential not initialized - cannot fetch license assignments")
+            return license_assignments
+
+        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
+        headers = {
+            'Authorization': f'Bearer {token.token}',
+            'Accept': 'application/json'
+        }
+
+        # Query users with assignedLicenses - paginate through all results
+        next_url: Optional[str] = (
+            "https://graph.microsoft.com/v1.0/users"
+            "?$select=id,userPrincipalName,displayName,accountEnabled,assignedLicenses"
+            "&$top=999"
+        )
+        page_count = 0
+        max_pages = 1000  # Safety limit
+
+        with httpx.Client(timeout=60.0) as client:
+            while next_url and page_count < max_pages:
+                response = client.get(next_url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
+                for user in data.get('value', []):
+                    upn = user.get('userPrincipalName', '')
+                    if not upn:
+                        continue
+
+                    assigned = user.get('assignedLicenses', [])
+                    license_names = []
+
+                    for lic in assigned:
+                        sku_id = lic.get('skuId', '')
+                        # Map SKU ID to friendly name, fallback to SKU ID itself
+                        sku_name = sku_mapping.get(sku_id, sku_id)
+                        if sku_name:
+                            license_names.append(sku_name)
+
+                    license_assignments.append({
+                        'user_principal_name': upn,
+                        'display_name': user.get('displayName', ''),
+                        'user_id': user.get('id', ''),
+                        'account_enabled': user.get('accountEnabled', False),
+                        'licenses': sorted(license_names),
+                        'license_count': len(license_names),
+                    })
+
+                # Get next page URL
+                next_url = data.get('@odata.nextLink')
+                page_count += 1
+
+        # Sort by license count (descending), then by UPN
+        license_assignments.sort(key=lambda x: (-x['license_count'], x['user_principal_name']))
+
+        licensed_count = sum(1 for u in license_assignments if u['license_count'] > 0)
+        logger.info(f"Collected license assignments for {len(license_assignments)} users "
+                   f"({licensed_count} with licenses)")
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            logger.warning("Insufficient permissions to read user license assignments. "
+                         "Requires User.Read.All permission")
+        else:
+            logger.warning(f"Failed to get user license assignments: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to get user license assignments: {e}")
+
+    return license_assignments
+
+
 def get_tenant_info(graph_client: GraphServiceClient) -> Dict[str, Any]:
     """Get tenant organization information from Microsoft Graph.
 
@@ -2192,6 +2291,7 @@ Required Azure AD App Permissions (Application type):
         else:
             logger.info("Initializing Microsoft Graph client with client credentials...")
             print(f"Tenant: {args.tenant_id[:8]}...{args.tenant_id[-4:]}")
+            assert client_secret is not None  # Validated above
             graph_client = get_graph_client(
                 args.tenant_id,
                 args.client_id,
@@ -2241,6 +2341,7 @@ Required Azure AD App Permissions (Application type):
     sharepoint_summary: Dict[str, Any] = {}
     licensing_info: Dict[str, Any] = {}
     tenant_info: Dict[str, Any] = {}
+    user_license_assignments: List[Dict[str, Any]] = []
 
     # Storage history for change rate fallback
     sharepoint_history: List[Dict[str, Any]] = []
@@ -2259,6 +2360,16 @@ Required Azure AD App Permissions (Application type):
 
             # Get licensing information
             licensing_info = get_tenant_licensing(graph_client)
+
+            # Build SKU ID to name mapping for license assignment lookup
+            sku_mapping: Dict[str, str] = {}
+            if licensing_info and licensing_info.get('skus'):
+                for sku in licensing_info['skus']:
+                    if sku.get('sku_id') and sku.get('sku_name'):
+                        sku_mapping[sku['sku_id']] = sku['sku_name']
+
+            # Get per-user license assignments
+            user_license_assignments = get_user_license_assignments(graph_client, sku_mapping)
 
             # Collect usage reports for each service
             mailbox_usage = collect_mailbox_usage_report(graph_client)
@@ -2585,6 +2696,10 @@ Required Azure AD App Permissions (Application type):
                 for sku in licensing_info['skus']
             ],
         }
+
+    # Add per-user license assignments
+    if user_license_assignments:
+        sizing['user_license_assignments'] = user_license_assignments
 
     # Add change rate data to sizing summary
     if change_rate_data:

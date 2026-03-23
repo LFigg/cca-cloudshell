@@ -150,6 +150,8 @@ def load_summary_data(inventory_paths: List[str]) -> Dict[str, Any]:
         'licensing': None,
         'tenant_name': None,
         'primary_domain': None,
+        # Per-user license assignments
+        'user_license_assignments': None,
     }
 
     for inv_path in inventory_paths:
@@ -190,6 +192,9 @@ def load_summary_data(inventory_paths: List[str]) -> Dict[str, Any]:
             summary_data['tenant_name'] = data['tenant_name']
         if 'primary_domain' in data:
             summary_data['primary_domain'] = data['primary_domain']
+        # Per-user license assignments
+        if 'user_license_assignments' in data:
+            summary_data['user_license_assignments'] = data['user_license_assignments']
 
     return summary_data
 
@@ -208,12 +213,25 @@ def write_header_row(ws, row: int, headers: List[str]) -> None:
         cell.alignment = Alignment(horizontal='center')
 
 
-def write_data_row(ws, row: int, values: List[Any], borders: bool = True) -> None:
-    """Write a data row with optional borders."""
+def write_data_row(ws, row: int, values: List[Any], borders: bool = True,
+                   formats: Optional[List[Optional[str]]] = None) -> None:
+    """
+    Write a data row with optional borders and number formatting.
+    
+    Args:
+        ws: Worksheet
+        row: Row number
+        values: List of values to write
+        borders: Whether to apply borders
+        formats: Optional list of Excel number format strings (one per column, None for no format)
+    """
     for col, value in enumerate(values, start=1):
         cell = ws.cell(row=row, column=col, value=value)
         if borders:
             cell.border = THIN_BORDER
+        # Apply number format if provided
+        if formats and col <= len(formats) and formats[col - 1]:
+            cell.number_format = formats[col - 1]
 
 
 def write_section_header(ws, row: int, title: str, subtitle: Optional[str] = None) -> int:
@@ -232,15 +250,36 @@ def set_column_widths(ws, widths: Dict[str, int]) -> None:
 
 
 def format_size(size_gb: float) -> str:
-    """Format size with appropriate units."""
+    """Format size with appropriate units (for text display only)."""
     if size_gb >= 1024:
         return f"{size_gb / 1024:.2f} TB"
     return f"{size_gb:.1f} GB"
 
 
 def format_number(num: int) -> str:
-    """Format number with thousand separators."""
+    """Format number with thousand separators (for text display only)."""
     return f"{num:,}"
+
+
+# Excel number format strings
+NUMBER_FORMAT_INT = '#,##0'           # 1,234
+NUMBER_FORMAT_1DP = '#,##0.0'         # 1,234.5
+NUMBER_FORMAT_2DP = '#,##0.00'        # 1,234.56
+NUMBER_FORMAT_3DP = '#,##0.000'       # 1,234.567
+NUMBER_FORMAT_PCT = '0.0%'            # 12.3% (value should be 0.123)
+NUMBER_FORMAT_PCT_1DP = '0.0"%"'      # 12.3% (value is already 12.3)
+
+
+def write_numeric_cell(ws, row: int, col: int, value, number_format: Optional[str] = None,
+                       font: Optional[Font] = None, border: bool = True) -> None:
+    """Write a numeric value with Excel number formatting."""
+    cell = ws.cell(row=row, column=col, value=value)
+    if number_format:
+        cell.number_format = number_format
+    if font:
+        cell.font = font
+    if border:
+        cell.border = THIN_BORDER
 
 
 # =============================================================================
@@ -270,16 +309,18 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
     primary_domain = summary_data.get('primary_domain') or 'N/A'
 
     tenant_info = [
-        ("Tenant Name", tenant_name),
-        ("Primary Domain", primary_domain),
-        ("Tenant ID", metadata.get('tenant_id', 'N/A')),
-        ("Total Users", format_number(summary_data.get('total_user_count', 0))),
-        ("Collection Date", metadata['timestamps'][0][:10] if metadata.get('timestamps') else 'N/A'),
+        ("Tenant Name", tenant_name, None),
+        ("Primary Domain", primary_domain, None),
+        ("Tenant ID", metadata.get('tenant_id', 'N/A'), None),
+        ("Total Users", summary_data.get('total_user_count', 0), NUMBER_FORMAT_INT),
+        ("Collection Date", metadata['timestamps'][0][:10] if metadata.get('timestamps') else 'N/A', None),
     ]
 
-    for label, value in tenant_info:
+    for label, value, fmt in tenant_info:
         ws.cell(row=row, column=1, value=label)
-        ws.cell(row=row, column=2, value=value)
+        cell = ws.cell(row=row, column=2, value=value)
+        if fmt:
+            cell.number_format = fmt
         row += 1
     row += 2
 
@@ -337,13 +378,13 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         m365_consumed = sum(s.get('consumed', 0) for s in m365_skus)
 
         ws.cell(row=row, column=1, value="M365 Licenses Purchased")
-        ws.cell(row=row, column=2, value=format_number(m365_purchased))
+        write_numeric_cell(ws, row, 2, m365_purchased, NUMBER_FORMAT_INT, border=False)
         row += 1
         ws.cell(row=row, column=1, value="M365 Licenses Consumed")
-        ws.cell(row=row, column=2, value=format_number(m365_consumed))
+        write_numeric_cell(ws, row, 2, m365_consumed, NUMBER_FORMAT_INT, border=False)
         row += 1
         ws.cell(row=row, column=1, value="M365 Licenses Available")
-        ws.cell(row=row, column=2, value=format_number(m365_purchased - m365_consumed))
+        write_numeric_cell(ws, row, 2, m365_purchased - m365_consumed, NUMBER_FORMAT_INT, border=False)
         row += 2
 
         # M365 SKUs breakdown
@@ -358,10 +399,10 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
                 consumed = sku.get('consumed', 0)
                 write_data_row(ws, row, [
                     sku.get('name', 'Unknown'),
-                    format_number(purchased),
-                    format_number(consumed),
-                    format_number(purchased - consumed)
-                ])
+                    purchased,
+                    consumed,
+                    purchased - consumed
+                ], formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_INT, NUMBER_FORMAT_INT])
                 row += 1
 
         row += 2
@@ -434,21 +475,23 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         if data['count'] > 0 or data.get('size_gb', 0) > 0:
             total_size += data['size_gb']
             total_count += data['count']
-            count_display = format_number(data['count']) if data['count'] > 0 else "Unknown*"
+            # For count, use actual number or string for unknown
+            count_value = data['count'] if data['count'] > 0 else "Unknown*"
             service_display = service + " (estimated)" if data.get('estimated') else service
             write_data_row(ws, row, [
                 service_display,
-                count_display,
-                f"{data['size_gb']:,.1f}",
-                f"{data['size_gb'] / 1024:.2f}"
-            ])
+                count_value,
+                round(data['size_gb'], 1),
+                round(data['size_gb'] / 1024, 2)
+            ], formats=[None, NUMBER_FORMAT_INT if isinstance(count_value, int) else None,
+                        NUMBER_FORMAT_1DP, NUMBER_FORMAT_2DP])
             row += 1
 
     # Total row
     ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
-    ws.cell(row=row, column=2, value=format_number(total_count)).font = Font(bold=True)
-    ws.cell(row=row, column=3, value=f"{total_size:,.1f}").font = Font(bold=True)
-    ws.cell(row=row, column=4, value=f"{total_size / 1024:.2f}").font = Font(bold=True)
+    write_numeric_cell(ws, row, 2, total_count, NUMBER_FORMAT_INT, Font(bold=True))
+    write_numeric_cell(ws, row, 3, round(total_size, 1), NUMBER_FORMAT_1DP, Font(bold=True))
+    write_numeric_cell(ws, row, 4, round(total_size / 1024, 2), NUMBER_FORMAT_2DP, Font(bold=True))
     row += 2
 
     # Note about Teams/SharePoint separation
@@ -469,10 +512,10 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         ws.cell(row=row, column=1, value="Exchange:")
         row += 1
         ws.cell(row=row, column=1, value="  Archive-enabled mailboxes")
-        ws.cell(row=row, column=2, value=format_number(archive_count))
+        write_numeric_cell(ws, row, 2, archive_count, NUMBER_FORMAT_INT, border=False)
         row += 1
         ws.cell(row=row, column=1, value="  Soft-deleted mailboxes")
-        ws.cell(row=row, column=2, value=format_number(deleted_count))
+        write_numeric_cell(ws, row, 2, deleted_count, NUMBER_FORMAT_INT, border=False)
         row += 2
 
     # SharePoint stats
@@ -482,7 +525,7 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         ws.cell(row=row, column=1, value="SharePoint:")
         row += 1
         ws.cell(row=row, column=1, value="  Deleted sites")
-        ws.cell(row=row, column=2, value=format_number(deleted_sites))
+        write_numeric_cell(ws, row, 2, deleted_sites, NUMBER_FORMAT_INT, border=False)
         row += 2
 
     # Teams stats
@@ -491,11 +534,11 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         ws.cell(row=row, column=1, value="Teams Activity:")
         row += 1
         ws.cell(row=row, column=1, value="  Active users")
-        ws.cell(row=row, column=2, value=format_number(teams_activity.get('active_users', 0)))
+        write_numeric_cell(ws, row, 2, teams_activity.get('active_users', 0), NUMBER_FORMAT_INT, border=False)
         row += 1
         ws.cell(row=row, column=1, value="  Total messages (30 days)")
         total_msgs = teams_activity.get('team_chat_messages', 0) + teams_activity.get('private_chat_messages', 0)
-        ws.cell(row=row, column=2, value=format_number(total_msgs))
+        write_numeric_cell(ws, row, 2, total_msgs, NUMBER_FORMAT_INT, border=False)
         row += 1
 
     set_column_widths(ws, {'A': 35, 'B': 20, 'C': 15, 'D': 15})
@@ -555,7 +598,7 @@ def generate_exchange_tab(wb: Workbook, resources: List[Dict], summary_data: Dic
                 round(data['size_gb'], 1),
                 round(data['size_gb'] / 1024, 2),
                 round(avg_size, 2)
-            ])
+            ], formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP, NUMBER_FORMAT_2DP, NUMBER_FORMAT_2DP])
             row += 1
 
     row - 1
@@ -563,10 +606,10 @@ def generate_exchange_tab(wb: Workbook, resources: List[Dict], summary_data: Dic
     # Total
     avg_total = total_size / len(mailboxes) if mailboxes else 0
     ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
-    ws.cell(row=row, column=2, value=len(mailboxes)).font = Font(bold=True)
-    ws.cell(row=row, column=3, value=round(total_size, 1)).font = Font(bold=True)
-    ws.cell(row=row, column=4, value=round(total_size / 1024, 2)).font = Font(bold=True)
-    ws.cell(row=row, column=5, value=round(avg_total, 2)).font = Font(bold=True)
+    write_numeric_cell(ws, row, 2, len(mailboxes), NUMBER_FORMAT_INT, Font(bold=True))
+    write_numeric_cell(ws, row, 3, round(total_size, 1), NUMBER_FORMAT_1DP, Font(bold=True))
+    write_numeric_cell(ws, row, 4, round(total_size / 1024, 2), NUMBER_FORMAT_2DP, Font(bold=True))
+    write_numeric_cell(ws, row, 5, round(avg_total, 2), NUMBER_FORMAT_2DP, Font(bold=True))
     row += 3
 
     # === Archive and Deleted Status ===
@@ -575,12 +618,19 @@ def generate_exchange_tab(wb: Workbook, resources: List[Dict], summary_data: Dic
     write_header_row(ws, row, ["Status", "Count", "Percentage"])
     row += 1
 
-    write_data_row(ws, row, ["Archive Enabled", archive_count, f"{archive_count/len(mailboxes)*100:.1f}%"])
+    archive_pct = archive_count / len(mailboxes) * 100 if mailboxes else 0
+    deleted_pct = deleted_count / len(mailboxes) * 100 if mailboxes else 0
+    active_count = len(mailboxes) - deleted_count
+    active_pct = active_count / len(mailboxes) * 100 if mailboxes else 0
+
+    write_data_row(ws, row, ["Archive Enabled", archive_count, archive_pct],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
     row += 1
-    write_data_row(ws, row, ["Soft Deleted", deleted_count, f"{deleted_count/len(mailboxes)*100:.1f}%"])
+    write_data_row(ws, row, ["Soft Deleted", deleted_count, deleted_pct],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
     row += 1
-    write_data_row(ws, row, ["Active (not deleted)", len(mailboxes) - deleted_count,
-                             f"{(len(mailboxes)-deleted_count)/len(mailboxes)*100:.1f}%"])
+    write_data_row(ws, row, ["Active (not deleted)", active_count, active_pct],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
     row += 3
 
     # === Quota Analysis ===
@@ -610,7 +660,8 @@ def generate_exchange_tab(wb: Workbook, resources: List[Dict], summary_data: Dic
 
     for range_name, count in quota_ranges.items():
         pct = count / len(mailboxes) * 100 if mailboxes else 0
-        write_data_row(ws, row, [range_name, count, f"{pct:.1f}%"])
+        write_data_row(ws, row, [range_name, count, pct],
+                       formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
 
         # Color critical ranges
         if range_name == 'Over quota':
@@ -634,9 +685,9 @@ def generate_exchange_tab(wb: Workbook, resources: List[Dict], summary_data: Dic
             r.get('name', 'Unknown'),
             metadata.get('mailbox_type', 'Unknown'),
             round(r.get('size_gb', 0) or 0, 2),
-            format_number(metadata.get('item_count', 0) or 0),
-            f"{metadata.get('quota_usage_percent', 0) or 0:.1f}%"
-        ])
+            metadata.get('item_count', 0) or 0,
+            metadata.get('quota_usage_percent', 0) or 0
+        ], formats=[None, None, NUMBER_FORMAT_2DP, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
         row += 1
 
     set_column_widths(ws, {'A': 35, 'B': 15, 'C': 15, 'D': 15, 'E': 15})
@@ -706,16 +757,16 @@ def generate_sharepoint_tab(wb: Workbook, resources: List[Dict], summary_data: D
                 round(data['size_gb'] / 1024, 2),
                 round(avg_size, 2),
                 note
-            ])
+            ], formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP, NUMBER_FORMAT_2DP, NUMBER_FORMAT_2DP, None])
             row += 1
 
     # Total
     avg_total = total_size / len(sites) if sites else 0
     ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
-    ws.cell(row=row, column=2, value=len(sites)).font = Font(bold=True)
-    ws.cell(row=row, column=3, value=round(total_size, 1)).font = Font(bold=True)
-    ws.cell(row=row, column=4, value=round(total_size / 1024, 2)).font = Font(bold=True)
-    ws.cell(row=row, column=5, value=round(avg_total, 2)).font = Font(bold=True)
+    write_numeric_cell(ws, row, 2, len(sites), NUMBER_FORMAT_INT, Font(bold=True))
+    write_numeric_cell(ws, row, 3, round(total_size, 1), NUMBER_FORMAT_1DP, Font(bold=True))
+    write_numeric_cell(ws, row, 4, round(total_size / 1024, 2), NUMBER_FORMAT_2DP, Font(bold=True))
+    write_numeric_cell(ws, row, 5, round(avg_total, 2), NUMBER_FORMAT_2DP, Font(bold=True))
     row += 3
 
     # === Site Status ===
@@ -725,9 +776,13 @@ def generate_sharepoint_tab(wb: Workbook, resources: List[Dict], summary_data: D
     row += 1
 
     active_count = len(sites) - deleted_count
-    write_data_row(ws, row, ["Active Sites", active_count, f"{active_count/len(sites)*100:.1f}%"])
+    active_pct = active_count / len(sites) * 100 if sites else 0
+    deleted_pct = deleted_count / len(sites) * 100 if sites else 0
+    write_data_row(ws, row, ["Active Sites", active_count, active_pct],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
     row += 1
-    write_data_row(ws, row, ["Deleted Sites", deleted_count, f"{deleted_count/len(sites)*100:.1f}%"])
+    write_data_row(ws, row, ["Deleted Sites", deleted_count, deleted_pct],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
     ws.cell(row=row, column=1).fill = STATUS_COLORS['archived']
     row += 3
 
@@ -754,7 +809,8 @@ def generate_sharepoint_tab(wb: Workbook, resources: List[Dict], summary_data: D
 
     for range_name, count in size_ranges.items():
         pct = count / len(sites) * 100 if sites else 0
-        write_data_row(ws, row, [range_name, count, f"{pct:.1f}%"])
+        write_data_row(ws, row, [range_name, count, pct],
+                       formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
         row += 1
     row += 2
 
@@ -772,9 +828,9 @@ def generate_sharepoint_tab(wb: Workbook, resources: List[Dict], summary_data: D
             r.get('name', 'Unknown')[:40],  # Truncate long names
             metadata.get('site_type', 'Unknown'),
             round(r.get('size_gb', 0) or 0, 2),
-            format_number(metadata.get('file_count', 0) or 0),
+            metadata.get('file_count', 0) or 0,
             metadata.get('web_url', '')[:50]  # Truncate URLs
-        ])
+        ], formats=[None, None, NUMBER_FORMAT_2DP, NUMBER_FORMAT_INT, None])
         row += 1
 
     set_column_widths(ws, {'A': 40, 'B': 20, 'C': 15, 'D': 15, 'E': 50})
@@ -811,20 +867,25 @@ def generate_onedrive_tab(wb: Workbook, resources: List[Dict]) -> None:
 
     active_drives = [d for d in drives if (d.get('size_gb', 0) or 0) > 0.001]  # > 1 MB
 
+    # Stats with number formatting - (label, value, format)
     stats = [
-        ("Total OneDrive Accounts", format_number(len(drives))),
-        ("Active Accounts (>1 MB)", format_number(len(active_drives))),
-        ("Total Storage (GB)", f"{total_size:,.1f}"),
-        ("Total Storage (TB)", f"{total_size / 1024:.2f}"),
-        ("Average per User (GB)", f"{avg_size:.2f}"),
-        ("Largest Account", f"{largest.get('name', 'N/A')} ({largest.get('size_gb', 0):.1f} GB)" if largest else "N/A"),
+        ("Total OneDrive Accounts", len(drives), NUMBER_FORMAT_INT),
+        ("Active Accounts (>1 MB)", len(active_drives), NUMBER_FORMAT_INT),
+        ("Total Storage (GB)", round(total_size, 1), NUMBER_FORMAT_1DP),
+        ("Total Storage (TB)", round(total_size / 1024, 2), NUMBER_FORMAT_2DP),
+        ("Average per User (GB)", round(avg_size, 2), NUMBER_FORMAT_2DP),
+        ("Largest Account", f"{largest.get('name', 'N/A')} ({largest.get('size_gb', 0):.1f} GB)" if largest else "N/A", None),
     ]
 
     write_header_row(ws, row, ["Metric", "Value"])
     row += 1
 
-    for label, value in stats:
-        write_data_row(ws, row, [label, value])
+    for label, value, fmt in stats:
+        ws.cell(row=row, column=1, value=label).border = THIN_BORDER
+        cell = ws.cell(row=row, column=2, value=value)
+        cell.border = THIN_BORDER
+        if fmt:
+            cell.number_format = fmt
         row += 1
     row += 2
 
@@ -865,7 +926,8 @@ def generate_onedrive_tab(wb: Workbook, resources: List[Dict]) -> None:
     for range_name, count in size_ranges.items():
         pct = count / len(drives) * 100 if drives else 0
         cumulative += pct
-        write_data_row(ws, row, [range_name, count, f"{pct:.1f}%", f"{cumulative:.1f}%"])
+        write_data_row(ws, row, [range_name, count, pct, cumulative],
+                       formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP, NUMBER_FORMAT_1DP])
         row += 1
     row += 2
 
@@ -881,8 +943,8 @@ def generate_onedrive_tab(wb: Workbook, resources: List[Dict]) -> None:
         write_data_row(ws, row, [
             r.get('name', 'Unknown'),
             round(size, 2),
-            f"{pct:.2f}%"
-        ])
+            pct
+        ], formats=[None, NUMBER_FORMAT_2DP, NUMBER_FORMAT_2DP])
         row += 1
 
     set_column_widths(ws, {'A': 40, 'B': 20, 'C': 15, 'D': 15})
@@ -924,12 +986,12 @@ def generate_teams_tab(wb: Workbook, resources: List[Dict], summary_data: Dict) 
         write_header_row(ws, row, ["Metric", "Count"])
         row += 1
 
-        write_data_row(ws, row, ["Total Teams", len(teams)])
+        write_data_row(ws, row, ["Total Teams", len(teams)], formats=[None, NUMBER_FORMAT_INT])
         row += 1
-        write_data_row(ws, row, ["Active Teams", active])
+        write_data_row(ws, row, ["Active Teams", active], formats=[None, NUMBER_FORMAT_INT])
         ws.cell(row=row, column=1).fill = STATUS_COLORS['active']
         row += 1
-        write_data_row(ws, row, ["Archived Teams", len(archived)])
+        write_data_row(ws, row, ["Archived Teams", len(archived)], formats=[None, NUMBER_FORMAT_INT])
         ws.cell(row=row, column=1).fill = STATUS_COLORS['archived']
         row += 3
 
@@ -941,7 +1003,8 @@ def generate_teams_tab(wb: Workbook, resources: List[Dict], summary_data: Dict) 
 
         for vis, count in sorted(visibility.items(), key=lambda x: -x[1]):
             pct = count / len(teams) * 100 if teams else 0
-            write_data_row(ws, row, [vis, count, f"{pct:.1f}%"])
+            write_data_row(ws, row, [vis, count, pct],
+                           formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
             row += 1
         row += 2
 
@@ -962,7 +1025,7 @@ def generate_teams_tab(wb: Workbook, resources: List[Dict], summary_data: Dict) 
         ]
 
         for label, value in activity_metrics:
-            write_data_row(ws, row, [label, format_number(value)])
+            write_data_row(ws, row, [label, value], formats=[None, NUMBER_FORMAT_INT])
             row += 1
         row += 2
 
@@ -975,11 +1038,14 @@ def generate_teams_tab(wb: Workbook, resources: List[Dict], summary_data: Dict) 
             row += 1
 
             total_msgs = teams_activity.get('team_chat_messages', 0) + teams_activity.get('private_chat_messages', 0)
-            write_data_row(ws, row, ["Messages per User", f"{total_msgs / active_users:.1f}"])
+            write_data_row(ws, row, ["Messages per User", total_msgs / active_users],
+                           formats=[None, NUMBER_FORMAT_1DP])
             row += 1
-            write_data_row(ws, row, ["Calls per User", f"{teams_activity.get('calls', 0) / active_users:.1f}"])
+            write_data_row(ws, row, ["Calls per User", teams_activity.get('calls', 0) / active_users],
+                           formats=[None, NUMBER_FORMAT_1DP])
             row += 1
-            write_data_row(ws, row, ["Meetings per User", f"{teams_activity.get('meetings', 0) / active_users:.1f}"])
+            write_data_row(ws, row, ["Meetings per User", teams_activity.get('meetings', 0) / active_users],
+                           formats=[None, NUMBER_FORMAT_1DP])
             row += 1
 
     set_column_widths(ws, {'A': 35, 'B': 20, 'C': 15})
@@ -1010,6 +1076,13 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
     write_header_row(ws, row, headers)
     row += 1
 
+    # Standard format for sizing rows: text, text, int, int, 3dp, int, 3dp, int, 3dp, 3dp, 2dp, 2dp
+    SIZING_FORMATS = [
+        None, None, NUMBER_FORMAT_INT, NUMBER_FORMAT_INT, NUMBER_FORMAT_3DP,
+        NUMBER_FORMAT_INT, NUMBER_FORMAT_3DP, NUMBER_FORMAT_INT, NUMBER_FORMAT_3DP,
+        NUMBER_FORMAT_3DP, NUMBER_FORMAT_2DP, NUMBER_FORMAT_2DP
+    ]
+
     # ASP overhead factor
     asp_factor = 1.1
 
@@ -1032,7 +1105,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             ua.get('total_item_count', 0), round(ua.get('total_item_size_gib', 0), 3),
             round(ua.get('total_item_size_gib', 0) * asp_factor, 3),
             "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         # User Archive Mailboxes
@@ -1040,7 +1113,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
         write_data_row(ws, row, [
             "", "User Archive Mailboxes", uar.get('count', 0),
             "", "", "", "", "", "", "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         # SoftDeleted Active Mailboxes
@@ -1051,7 +1124,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             sda.get('recoverable_item_count', 0), round(sda.get('recoverable_item_size_gib', 0), 3),
             sda.get('total_item_count', 0), round(sda.get('total_item_size_gib', 0), 3),
             "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         # SoftDeleted Archive Mailboxes
@@ -1059,7 +1132,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
         write_data_row(ws, row, [
             "", "SoftDeleted Archive Mailboxes", sdar.get('count', 0),
             "", "", "", "", "", "", "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         # Group Active Mailboxes
@@ -1071,7 +1144,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             ga.get('total_item_count', 0), round(ga.get('total_item_size_gib', 0), 3),
             round(ga.get('total_item_size_gib', 0) * asp_factor, 3),
             "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         # Group Archive Mailboxes
@@ -1079,7 +1152,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
         write_data_row(ws, row, [
             "", "Group Archive Mailboxes", gar.get('count', 0),
             "", "", "", "", "", "", "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         # PublicFolder Active Mailboxes
@@ -1091,7 +1164,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             pfa.get('item_count', 0), round(pfa.get('item_size_gib', 0), 3),
             round(pfa.get('item_size_gib', 0) * asp_factor, 3),
             "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         # Totals with Default Options Only
@@ -1105,7 +1178,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             td.get('total_item_count', 0), round(td.get('total_item_size_gib', 0), 3),
             round(td.get('effective_size_asp_gib', 0), 3),
             round(ex_growth.get('growth_gib', 0), 2), ex_growth.get('growth_rate_percent', 0)
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1120,7 +1193,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             ta.get('total_item_count', 0), round(ta.get('total_item_size_gib', 0), 3),
             round(ta.get('effective_size_asp_gib', 0), 3),
             round(ex_growth.get('growth_gib', 0), 2), ex_growth.get('growth_rate_percent', 0)
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1139,7 +1212,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             total_items + total_recoverable, round(total_exchange_gb + total_recoverable_gb, 3),
             round((total_exchange_gb + total_recoverable_gb) * asp_factor, 3),
             "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1154,7 +1227,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             "", "SharePoint Sites", sps.get('count', 0),
             "", "", "", "", "", round(sps.get('storage_gib', 0), 3),
             "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         ts = sharepoint_summary.get('team_sites', {})
@@ -1162,7 +1235,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             "", "Team Sites", ts.get('count', 0),
             "", "", "", "", "", round(ts.get('storage_gib', 0), 3),
             "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         spt = sharepoint_summary.get('total', {})
@@ -1171,7 +1244,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             "", "", "", "", "", round(spt.get('storage_gib', 0), 3),
             round(spt.get('effective_size_asp_gib', spt.get('storage_gib', 0) * asp_factor), 3),
             round(sp_growth.get('growth_gib', 0), 2), sp_growth.get('growth_rate_percent', 0)
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1209,7 +1282,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             "", "", "", "", "", round(total_sp_gb, 3),
             round(total_sp_gb * asp_factor, 3),
             growth_180d_gb, growth_180d_pct
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1225,7 +1298,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             "", "", "", "", "", round(ps.get('storage_gib', 0), 3),
             round(ps.get('effective_size_asp_gib', ps.get('storage_gib', 0) * asp_factor), 3),
             round(od_growth.get('growth_gib', 0), 2), od_growth.get('growth_rate_percent', 0)
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1238,7 +1311,7 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
             "", "", "", "", "", round(total_od_gb, 3),
             round(total_od_gb * asp_factor, 3),
             "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1259,25 +1332,25 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
         write_data_row(ws, row, [
             "", "Estimated Metered Units for User Chats", user_chats,
             "", "", "", "", "", "", "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         write_data_row(ws, row, [
             "", "Estimated Metered Units for Teams Channel Conversations", channel_chats,
             "", "", "", "", "", "", "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         write_data_row(ws, row, [
             "", "Total Estimated Metered Units (Last 180 Days)", total_metered,
             "", "", "", "", "", "", "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         row += 1
 
         write_data_row(ws, row, [
             "Teams Chat", "Total Estimated Metered Units (Last 180 Days + Next 1 Year)", projected_annual,
             "", "", "", "", "", "", "", "", ""
-        ])
+        ], formats=SIZING_FORMATS)
         for col in range(1, 13):
             ws.cell(row=row, column=col).font = Font(bold=True)
         row += 1
@@ -1305,14 +1378,14 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
     write_data_row(ws, row, [
         "M365 Tenant", "Licensed Users", licensed_users,
         "", "", "", "", "", "", "", "", ""
-    ])
+    ], formats=SIZING_FORMATS)
     row += 1
 
     write_data_row(ws, row, [
         "M365 Tenant", "Total Size", "",
         "", "", "", "", "", round(total_size_gib, 3),
         round(total_asp_gib, 3), "", ""
-    ])
+    ], formats=SIZING_FORMATS)
     for col in range(1, 13):
         ws.cell(row=row, column=col).font = Font(bold=True)
     row += 3
@@ -1323,7 +1396,6 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
     notes = [
         "• Item Count = number of emails/items in mailbox",
         "• Recoverable Items = items in the Recoverable Items folder (deleted items that can still be recovered)",
-        "• ASP (Application Specific Protection) = Total size + ~10% overhead for metadata",
         "• Growth rates are calculated from 180-day storage history when available",
         "• Teams Chat metered units are based on message counts from Teams User Activity report",
         "• Archive mailbox sizes require Exchange PowerShell; only archive-enabled counts shown here",
@@ -1338,6 +1410,170 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
         'F': 20, 'G': 22, 'H': 16, 'I': 18, 'J': 22,
         'K': 30, 'L': 28
     })
+
+
+# =============================================================================
+# REPORT GENERATION - LICENSE ASSIGNMENTS
+# =============================================================================
+
+def generate_license_assignments_tab(wb: Workbook, summary_data: Dict) -> None:
+    """Generate License Assignments tab showing per-user license distribution."""
+    ws = wb.create_sheet(title="License Assignments")
+
+    row = 1
+    ws.cell(row=row, column=1, value="User License Assignments").font = TITLE_FONT
+    row += 3
+
+    user_assignments = summary_data.get('user_license_assignments', [])
+    licensing = summary_data.get('licensing', {})
+
+    if not user_assignments:
+        ws.cell(row=row, column=1, value="No user license assignment data available")
+        ws.cell(row=row + 1, column=1,
+                value="Note: Requires User.Read.All permission during collection")
+        return
+
+    # === License Pool Summary ===
+    if licensing and licensing.get('skus'):
+        row = write_section_header(ws, row, "License Pool Summary")
+
+        write_header_row(ws, row, ["SKU Name", "Purchased", "Consumed", "Available", "Utilization %"])
+        row += 1
+
+        for sku in sorted(licensing['skus'], key=lambda x: x.get('purchased', 0), reverse=True):
+            purchased = sku.get('purchased', 0)
+            consumed = sku.get('consumed', 0)
+            available = purchased - consumed
+            utilization = (consumed / purchased * 100) if purchased > 0 else 0
+
+            write_data_row(ws, row, [
+                sku.get('name', 'Unknown'),
+                purchased,
+                consumed,
+                available,
+                utilization
+            ], formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_INT, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
+
+            # Color code utilization
+            if utilization >= 90:
+                ws.cell(row=row, column=5).fill = STATUS_COLORS['error']
+            elif utilization >= 75:
+                ws.cell(row=row, column=5).fill = STATUS_COLORS['warning']
+            else:
+                ws.cell(row=row, column=5).fill = STATUS_COLORS['active']
+            row += 1
+
+        # Totals row
+        total_purchased = licensing.get('total_licenses_purchased', 0)
+        total_consumed = licensing.get('total_licenses_consumed', 0)
+        total_available = total_purchased - total_consumed
+        total_utilization = (total_consumed / total_purchased * 100) if total_purchased > 0 else 0
+
+        write_data_row(ws, row, [
+            "TOTAL",
+            total_purchased,
+            total_consumed,
+            total_available,
+            total_utilization
+        ], formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_INT, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
+        ws.cell(row=row, column=1).font = Font(bold=True)
+        row += 3
+
+    # === License Distribution Summary ===
+    row = write_section_header(ws, row, "License Distribution Summary")
+
+    # Count users by license count
+    license_counts = defaultdict(int)
+    for user in user_assignments:
+        count = user.get('license_count', 0)
+        license_counts[count] += 1
+
+    total_users = len(user_assignments)
+    licensed_users = sum(1 for u in user_assignments if u.get('license_count', 0) > 0)
+    unlicensed_users = total_users - licensed_users
+
+    write_header_row(ws, row, ["Metric", "Count", "Percentage"])
+    row += 1
+
+    write_data_row(ws, row, ["Total Users", total_users, 100.0],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
+    row += 1
+    write_data_row(ws, row, ["Users with Licenses", licensed_users,
+                             (licensed_users / total_users * 100) if total_users > 0 else 0],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
+    ws.cell(row=row, column=1).fill = STATUS_COLORS['active']
+    row += 1
+    write_data_row(ws, row, ["Users without Licenses", unlicensed_users,
+                             (unlicensed_users / total_users * 100) if total_users > 0 else 0],
+                   formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
+    if unlicensed_users > 0:
+        ws.cell(row=row, column=1).fill = STATUS_COLORS['warning']
+    row += 3
+
+    # === License Type Distribution ===
+    row = write_section_header(ws, row, "License Type Distribution",
+                               subtitle="How many users have each license type")
+
+    # Count how many users have each license type
+    license_type_counts = defaultdict(int)
+    for user in user_assignments:
+        for lic in user.get('licenses', []):
+            license_type_counts[lic] += 1
+
+    write_header_row(ws, row, ["License Type", "User Count", "% of Licensed Users"])
+    row += 1
+
+    for lic_name, count in sorted(license_type_counts.items(), key=lambda x: -x[1]):
+        pct = (count / licensed_users * 100) if licensed_users > 0 else 0
+        write_data_row(ws, row, [lic_name, count, pct],
+                       formats=[None, NUMBER_FORMAT_INT, NUMBER_FORMAT_1DP])
+        row += 1
+    row += 2
+
+    # === User Details ===
+    row = write_section_header(ws, row, "User License Details")
+
+    write_header_row(ws, row, ["User Principal Name", "Display Name", "Enabled",
+                               "License Count", "Assigned Licenses"])
+    row += 1
+
+    # Show all users, sorted by license count (most first), then by UPN
+    for user in user_assignments:
+        licenses_str = ", ".join(user.get('licenses', [])) if user.get('licenses') else "(none)"
+        enabled = "Yes" if user.get('account_enabled') else "No"
+
+        write_data_row(ws, row, [
+            user.get('user_principal_name', ''),
+            user.get('display_name', ''),
+            enabled,
+            user.get('license_count', 0),
+            licenses_str
+        ], formats=[None, None, None, NUMBER_FORMAT_INT, None])
+
+        # Color code based on license status
+        if user.get('license_count', 0) == 0:
+            ws.cell(row=row, column=4).fill = STATUS_COLORS['warning']
+        if not user.get('account_enabled'):
+            ws.cell(row=row, column=3).fill = STATUS_COLORS['archived']
+        row += 1
+
+    row += 2
+
+    # === Notes ===
+    row = write_section_header(ws, row, "Notes")
+
+    notes = [
+        "• Users without licenses may be shared mailboxes, service accounts, or external guests",
+        "• Disabled accounts with licenses may indicate departing employees still consuming licenses",
+        "• License utilization over 90% is highlighted in red - consider purchasing more",
+        "• Some users may have multiple licenses (e.g., E3 + Power BI Pro)",
+    ]
+
+    for note in notes:
+        ws.cell(row=row, column=1, value=note)
+        row += 1
+
+    set_column_widths(ws, {'A': 45, 'B': 35, 'C': 12, 'D': 15, 'E': 60})
 
 
 # =============================================================================
@@ -1387,11 +1623,11 @@ def generate_growth_analysis(wb: Workbook, resources: List[Dict], summary_data: 
     for service, data in change_rates.items():
         write_data_row(ws, row, [
             service,
-            f"{data.get('daily_change_gb', 0):.2f}",
-            f"{data.get('daily_change_percent', 0):.2f}%",
-            f"{data.get('annual_growth_percent', 0):.1f}%",
+            data.get('daily_change_gb', 0),
+            data.get('daily_change_percent', 0),
+            data.get('annual_growth_percent', 0),
             f"{data.get('sample_period_days', 0)} days"
-        ])
+        ], formats=[None, NUMBER_FORMAT_2DP, NUMBER_FORMAT_2DP, NUMBER_FORMAT_1DP, None])
         row += 1
 
     set_column_widths(ws, {'A': 30, 'B': 20, 'C': 20, 'D': 20, 'E': 15})
@@ -1443,7 +1679,7 @@ def generate_raw_data(wb: Workbook, resources: List[Dict]) -> None:
             type_status,
             metadata.get('created_date', metadata.get('created_datetime', ''))[:10] if metadata.get('created_date') or metadata.get('created_datetime') else '',
             metadata.get('last_activity_date', '')[:10] if metadata.get('last_activity_date') else '',
-        ])
+        ], formats=[None, None, None, None, NUMBER_FORMAT_2DP, None, None, None])
         row += 1
 
     # Freeze header row
@@ -1494,6 +1730,7 @@ def generate_report(inventory_files: List[str], output_path: str) -> None:
     generate_onedrive_tab(wb, resources)
     generate_teams_tab(wb, resources, summary_data)
     generate_sizing_inputs(wb, resources, summary_data)
+    generate_license_assignments_tab(wb, summary_data)
     generate_growth_analysis(wb, resources, summary_data)
     generate_raw_data(wb, resources)
 

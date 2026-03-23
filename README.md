@@ -253,7 +253,6 @@ cca-cloudshell/
 │   ├── generate_cost_report.py
 │   └── merge_batch_outputs.py
 ├── docs/                   # Documentation
-└── tests/                  # Test suite
 ```
 
 ## Development

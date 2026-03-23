@@ -5,6 +5,23 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.11] - 2026-03-23
+
+### Added
+- **M365 User License Assignments**: New `get_user_license_assignments()` function collects per-user license data
+  - Queries Graph API for all users with `assignedLicenses` field
+  - Maps SKU IDs to friendly license names (e.g., ENTERPRISEPACK → E3)
+  - Outputs to `user_license_assignments` array in summary JSON
+- **M365 Report License Assignments Tab**: New "License Assignments" sheet in M365 Excel report
+  - License Pool Summary: Shows purchased/consumed/available counts per SKU with utilization %
+  - License Distribution Summary: Users with/without licenses breakdown
+  - License Type Distribution: Most common licenses across users
+  - User License Details: Full list of every user with their assigned license names
+  - Color coding for high utilization (>90%), disabled accounts, and unlicensed users
+
+### Changed
+- **M365 Report Notes**: Removed outdated ASP overhead reference from Exchange notes
+
 ## [1.0.10] - 2026-03-19
 
 ### Added
