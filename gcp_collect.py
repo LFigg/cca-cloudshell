@@ -13,27 +13,40 @@ Usage:
 import argparse
 import logging
 import sys
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Google Cloud SDK - pre-installed in Cloud Shell
 try:
-    import google.auth  # noqa: F401 - used by submodules
+    import google.auth
     from google.api_core.exceptions import NotFound, PermissionDenied  # noqa: F401 - used in exception handlers
-    from google.cloud import compute_v1, storage  # noqa: F401 - test core SDK
-    from googleapiclient.discovery import build as discovery_build  # noqa: F401 - for Cloud SQL
+    from google.cloud import compute_v1, storage
+    from googleapiclient.discovery import build as discovery_build
     HAS_GCP_SDK = True
 except ImportError:
     HAS_GCP_SDK = False
+    compute_v1: Any = None
+    storage: Any = None
+    google: Any = None
+    discovery_build: Any = None
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
+from lib.change_rate import (
+    aggregate_change_rates,
+    finalize_change_rate_output,
+    format_change_rate_output,
+    get_cloudsql_change_rate,
+    get_gcp_disk_change_rate,
+    get_gcp_monitoring_client,
+    merge_change_rates,
+)
 from lib.__version__ import __version__
-from lib.change_rate import finalize_change_rate_output, merge_change_rates
 from lib.k8s import collect_gke_pvcs
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
     AuthError,
     ProgressTracker,
+    check_and_raise_auth_error,
     generate_run_id,
     get_collector_metadata,
     get_timestamp,
@@ -41,37 +54,1073 @@ from lib.utils import (
     parallel_collect,
     print_summary_table,
     redact_sensitive_data,
+    retry_with_backoff,
     setup_logging,
     write_json,
 )
 
-# GCP module imports - only when SDK is available
-if HAS_GCP_SDK:
-    from lib.gcp.auth import get_credentials, get_projects
-    from lib.gcp.compute import (
-        collect_compute_instances,
-        collect_disk_snapshots,
-        collect_persistent_disks,
-    )
-    from lib.gcp.storage import collect_filestore_instances, collect_storage_buckets
-    from lib.gcp.databases import (
-        collect_alloydb_clusters,
-        collect_bigquery_datasets,
-        collect_bigtable_instances,
-        collect_cloud_sql_instances,
-        collect_memorystore_redis,
-        collect_spanner_instances,
-    )
-    from lib.gcp.container import collect_cloud_functions, collect_gke_clusters
-    from lib.gcp.backup import (
-        collect_backup_data_sources,
-        collect_backup_plans,
-        collect_backup_vaults,
-        collect_backups,
-    )
-    from lib.gcp.monitoring import collect_gcp_change_rates
-
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Authentication & Projects
+# =============================================================================
+
+def get_credentials():
+    """Get GCP credentials. In Cloud Shell, uses application default credentials."""
+    if not HAS_GCP_SDK:
+        raise ImportError("Google Cloud SDK not installed. Run: pip install google-cloud-compute google-cloud-storage google-cloud-sql")
+    credentials, project = google.auth.default()
+    return credentials, project
+
+
+def get_projects(credentials) -> List[Dict]:
+    """Get all accessible projects."""
+    from google.cloud import resourcemanager_v3
+
+    client = resourcemanager_v3.ProjectsClient(credentials=credentials)
+    projects = []
+
+    try:
+        for project in client.search_projects():
+            if project.state.name == 'ACTIVE':
+                projects.append({
+                    'id': project.project_id,
+                    'name': project.display_name,
+                    'number': project.name.split('/')[-1]
+                })
+    except Exception as e:
+        logger.warning(f"Could not list projects: {e}")
+
+    return projects
+
+
+def get_regions(project_id: str) -> List[str]:
+    """Get all available regions."""
+    client = compute_v1.RegionsClient()
+    regions = []
+
+    try:
+        for region in client.list(project=project_id):
+            if region.status == 'UP':
+                regions.append(region.name)
+    except Exception as e:
+        logger.warning(f"Could not list regions: {e}")
+
+    return sorted(regions)
+
+
+def get_zones(project_id: str) -> List[str]:
+    """Get all available zones."""
+    client = compute_v1.ZonesClient()
+    zones = []
+
+    try:
+        for zone in client.list(project=project_id):
+            if zone.status == 'UP':
+                zones.append(zone.name)
+    except Exception as e:
+        logger.warning(f"Could not list zones: {e}")
+
+    return sorted(zones)
+
+
+# =============================================================================
+# Compute Engine Collectors
+# =============================================================================
+
+@retry_with_backoff(max_attempts=3)
+def collect_compute_instances(project_id: str) -> List[CloudResource]:
+    """Collect Compute Engine instances across all zones."""
+    resources = []
+    try:
+        client = compute_v1.InstancesClient()
+
+        # Use aggregated list to get instances from all zones
+        request = compute_v1.AggregatedListInstancesRequest(project=project_id)
+
+        for zone, response in client.aggregated_list(request=request):
+            if response.instances:
+                for instance in response.instances:
+                    # Extract zone name from zone URL
+                    zone_name = zone.split('/')[-1] if '/' in zone else zone
+                    region = '-'.join(zone_name.split('-')[:-1])  # e.g., us-central1 from us-central1-a
+
+                    # Get attached disks
+                    attached_disks = []
+                    total_disk_size_gb = 0
+                    for disk in instance.disks:
+                        if disk.source:
+                            disk_name = disk.source.split('/')[-1]
+                            attached_disks.append(disk_name)
+                        if disk.disk_size_gb:
+                            total_disk_size_gb += disk.disk_size_gb
+
+                    # Parse labels (GCP's equivalent of tags)
+                    labels = dict(instance.labels) if instance.labels else {}
+
+                    resource = CloudResource(
+                        provider="gcp",
+                        account_id=project_id,
+                        region=region,
+                        resource_type="gcp:compute:instance",
+                        service_family="Compute",
+                        resource_id=f"projects/{project_id}/zones/{zone_name}/instances/{instance.name}",
+                        name=instance.name,
+                        tags=labels,
+                        size_gb=float(total_disk_size_gb),
+                        metadata={
+                            'machine_type': instance.machine_type.split('/')[-1] if instance.machine_type else '',
+                            'status': instance.status,
+                            'zone': zone_name,
+                            'attached_disks': attached_disks,
+                            'network_interfaces': len(instance.network_interfaces) if instance.network_interfaces else 0,
+                            'preemptible': instance.scheduling.preemptible if instance.scheduling else False,
+                        }
+                    )
+                    resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Compute Engine instances")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Compute Engine instances", "gcp")
+        logger.error(f"Failed to collect Compute Engine instances: {e}")
+
+    return resources
+
+
+def collect_persistent_disks(project_id: str) -> List[CloudResource]:
+    """Collect Persistent Disks across all zones."""
+    resources = []
+    try:
+        client = compute_v1.DisksClient()
+
+        request = compute_v1.AggregatedListDisksRequest(project=project_id)
+
+        for zone, response in client.aggregated_list(request=request):
+            if response.disks:
+                for disk in response.disks:
+                    zone_name = zone.split('/')[-1] if '/' in zone else zone
+                    region = '-'.join(zone_name.split('-')[:-1])
+
+                    labels = dict(disk.labels) if disk.labels else {}
+
+                    # Get attached instances
+                    attached_to = []
+                    if disk.users:
+                        for user in disk.users:
+                            attached_to.append(user.split('/')[-1])
+
+                    resource = CloudResource(
+                        provider="gcp",
+                        account_id=project_id,
+                        region=region,
+                        resource_type="gcp:compute:disk",
+                        service_family="Compute",
+                        resource_id=disk.self_link or f"projects/{project_id}/zones/{zone_name}/disks/{disk.name}",
+                        name=disk.name,
+                        tags=labels,
+                        size_gb=float(disk.size_gb) if disk.size_gb else 0.0,
+                        parent_resource_id=attached_to[0] if attached_to else None,
+                        metadata={
+                            'zone': zone_name,
+                            'disk_type': disk.type_.split('/')[-1] if disk.type_ else '',
+                            'status': disk.status,
+                            'attached_to': attached_to,
+                            'source_image': disk.source_image.split('/')[-1] if disk.source_image else '',
+                            'source_snapshot': disk.source_snapshot.split('/')[-1] if disk.source_snapshot else '',
+                            'encrypted': True,  # All GCP disks are encrypted at rest by default
+                            'cmek_enabled': bool(disk.disk_encryption_key),  # Customer-managed keys
+                        }
+                    )
+                    resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Persistent Disks")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Persistent Disks", "gcp")
+        logger.error(f"Failed to collect Persistent Disks: {e}")
+
+    return resources
+
+
+def collect_disk_snapshots(project_id: str) -> List[CloudResource]:
+    """Collect disk snapshots."""
+    resources = []
+    try:
+        client = compute_v1.SnapshotsClient()
+
+        for snapshot in client.list(project=project_id):
+            labels = dict(snapshot.labels) if snapshot.labels else {}
+
+            # Extract source disk name
+            source_disk = ''
+            if snapshot.source_disk:
+                source_disk = snapshot.source_disk.split('/')[-1]
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region="global",  # Snapshots are global resources
+                resource_type="gcp:compute:snapshot",
+                service_family="Compute",
+                resource_id=snapshot.self_link or f"projects/{project_id}/global/snapshots/{snapshot.name}",
+                name=snapshot.name,
+                tags=labels,
+                size_gb=float(snapshot.storage_bytes or 0) / (1024**3),  # Convert bytes to GB
+                parent_resource_id=source_disk,
+                metadata={
+                    'status': snapshot.status,
+                    'source_disk': source_disk,
+                    'disk_size_gb': snapshot.disk_size_gb,
+                    'storage_bytes': snapshot.storage_bytes,
+                    'storage_locations': list(snapshot.storage_locations) if snapshot.storage_locations else [],
+                    'creation_timestamp': snapshot.creation_timestamp,
+                    'auto_created': snapshot.auto_created if hasattr(snapshot, 'auto_created') else False,
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} disk snapshots")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect disk snapshots", "gcp")
+        logger.error(f"Failed to collect disk snapshots: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Cloud Storage Collector
+# =============================================================================
+
+def collect_storage_buckets(project_id: str) -> List[CloudResource]:
+    """Collect Cloud Storage buckets."""
+    resources = []
+    try:
+        client = storage.Client(project=project_id)
+
+        for bucket in client.list_buckets():
+            labels = dict(bucket.labels) if bucket.labels else {}
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=bucket.location.lower() if bucket.location else 'unknown',
+                resource_type="gcp:storage:bucket",
+                service_family="Storage",
+                resource_id=f"projects/{project_id}/buckets/{bucket.name}",
+                name=bucket.name,
+                tags=labels,
+                size_gb=0.0,  # Would require listing all objects to calculate
+                metadata={
+                    'location': bucket.location,
+                    'location_type': bucket.location_type,
+                    'storage_class': bucket.storage_class,
+                    'versioning_enabled': bucket.versioning_enabled,
+                    'lifecycle_rules': len(bucket.lifecycle_rules) if bucket.lifecycle_rules else 0,
+                    'created': bucket.time_created.isoformat() if bucket.time_created else '',
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Cloud Storage buckets")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Cloud Storage buckets", "gcp")
+        logger.error(f"Failed to collect Cloud Storage buckets: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Cloud SQL Collector
+# =============================================================================
+
+def collect_cloud_sql_instances(project_id: str) -> List[CloudResource]:
+    """Collect Cloud SQL instances using Discovery API."""
+    resources = []
+    try:
+        credentials, _ = google.auth.default()
+        service = discovery_build('sqladmin', 'v1beta4', credentials=credentials)
+
+        request = service.instances().list(project=project_id)
+        while request is not None:
+            response = request.execute()
+            for instance in response.get('items', []):
+                settings = instance.get('settings', {})
+                labels = settings.get('userLabels', {})
+                storage_gb = int(settings.get('dataDiskSizeGb', 0))
+                is_read_replica = bool(instance.get('masterInstanceName'))
+
+                resource = CloudResource(
+                    provider="gcp",
+                    account_id=project_id,
+                    region=instance.get('region', ''),
+                    resource_type="gcp:sql:instance",
+                    service_family="SQL",
+                    resource_id=f"projects/{project_id}/instances/{instance.get('name')}",
+                    name=instance.get('name', ''),
+                    tags=labels,
+                    size_gb=float(storage_gb),
+                    metadata={
+                        'database_version': instance.get('databaseVersion', ''),
+                        'tier': settings.get('tier', ''),
+                        'state': instance.get('state', ''),
+                        'backend_type': instance.get('backendType', ''),
+                        'availability_type': settings.get('availabilityType', ''),
+                        'backup_enabled': settings.get('backupConfiguration', {}).get('enabled', False),
+                        'is_read_replica': is_read_replica,
+                        'master_instance_name': instance.get('masterInstanceName'),
+                        'encrypted': True,
+                    }
+                )
+                resources.append(resource)
+            request = service.instances().list_next(previous_request=request, previous_response=response)
+
+        logger.info(f"Found {len(resources)} Cloud SQL instances")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Cloud SQL instances", "gcp")
+        logger.error(f"Failed to collect Cloud SQL instances: {e}")
+
+    return resources
+
+
+# =============================================================================
+# GKE Collector
+# =============================================================================
+
+def collect_gke_clusters(project_id: str) -> List[CloudResource]:
+    """Collect GKE clusters."""
+    resources = []
+    try:
+        from google.cloud import container_v1
+
+        client = container_v1.ClusterManagerClient()
+
+        # List clusters in all locations
+        parent = f"projects/{project_id}/locations/-"
+
+        response = client.list_clusters(parent=parent)
+
+        for cluster in response.clusters:
+            labels = dict(cluster.resource_labels) if cluster.resource_labels else {}
+
+            # Count total nodes
+            total_nodes = 0
+            node_pools = []
+            if cluster.node_pools:
+                for pool in cluster.node_pools:
+                    node_pools.append(pool.name)
+                    total_nodes += pool.initial_node_count or 0
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=cluster.location,
+                resource_type="gcp:container:cluster",
+                service_family="GKE",
+                resource_id=f"projects/{project_id}/locations/{cluster.location}/clusters/{cluster.name}",
+                name=cluster.name,
+                tags=labels,
+                size_gb=0.0,
+                metadata={
+                    'status': cluster.status.name if cluster.status else '',
+                    'current_master_version': cluster.current_master_version,
+                    'current_node_version': cluster.current_node_version,
+                    'node_pools': node_pools,
+                    'total_nodes': total_nodes,
+                    'network': cluster.network,
+                    'subnetwork': cluster.subnetwork,
+                    'endpoint': cluster.endpoint,
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} GKE clusters")
+    except ImportError:
+        logger.warning("GKE client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect GKE clusters", "gcp")
+        logger.error(f"Failed to collect GKE clusters: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Cloud Functions Collector
+# =============================================================================
+
+def collect_cloud_functions(project_id: str) -> List[CloudResource]:
+    """Collect Cloud Functions."""
+    resources = []
+    try:
+        from google.cloud import functions_v2
+
+        client = functions_v2.FunctionServiceClient()
+
+        # List functions in all locations
+        parent = f"projects/{project_id}/locations/-"
+
+        for function in client.list_functions(parent=parent):
+            labels = dict(function.labels) if function.labels else {}
+
+            # Extract location from name
+            location = function.name.split('/')[3] if '/' in function.name else 'unknown'
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:functions:function",
+                service_family="Functions",
+                resource_id=function.name,
+                name=function.name.split('/')[-1],
+                tags=labels,
+                size_gb=0.0,
+                metadata={
+                    'state': function.state.name if function.state else '',
+                    'runtime': function.build_config.runtime if function.build_config else '',
+                    'entry_point': function.build_config.entry_point if function.build_config else '',
+                    'available_memory': function.service_config.available_memory if function.service_config else '',
+                    'timeout_seconds': function.service_config.timeout_seconds if function.service_config else 0,
+                    'environment': function.environment.name if function.environment else '',
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Cloud Functions")
+    except ImportError:
+        logger.warning("Cloud Functions client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Cloud Functions", "gcp")
+        logger.error(f"Failed to collect Cloud Functions: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Filestore Collector
+# =============================================================================
+
+def collect_filestore_instances(project_id: str) -> List[CloudResource]:
+    """Collect Filestore instances."""
+    resources = []
+    try:
+        from google.cloud import filestore_v1
+
+        client = filestore_v1.CloudFilestoreManagerClient()
+
+        # List instances in all locations
+        parent = f"projects/{project_id}/locations/-"
+
+        for instance in client.list_instances(parent=parent):
+            labels = dict(instance.labels) if instance.labels else {}
+
+            # Get total capacity
+            total_capacity_gb = 0
+            if instance.file_shares:
+                for share in instance.file_shares:
+                    total_capacity_gb += share.capacity_gb or 0
+
+            # Extract location
+            location = instance.name.split('/')[3] if '/' in instance.name else 'unknown'
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:filestore:instance",
+                service_family="Filestore",
+                resource_id=instance.name,
+                name=instance.name.split('/')[-1],
+                tags=labels,
+                size_gb=float(total_capacity_gb),
+                metadata={
+                    'state': instance.state.name if instance.state else '',
+                    'tier': instance.tier.name if instance.tier else '',
+                    'file_shares': [{'name': s.name, 'capacity_gb': s.capacity_gb} for s in instance.file_shares] if instance.file_shares else [],
+                    'networks': [n.network for n in instance.networks] if instance.networks else [],
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Filestore instances")
+    except ImportError:
+        logger.warning("Filestore client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Filestore instances", "gcp")
+        logger.error(f"Failed to collect Filestore instances: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Memorystore (Redis) Collector
+# =============================================================================
+
+def collect_memorystore_redis(project_id: str) -> List[CloudResource]:
+    """Collect Memorystore for Redis instances."""
+    resources = []
+    try:
+        from google.cloud import redis_v1
+
+        client = redis_v1.CloudRedisClient()
+
+        # List instances in all locations
+        parent = f"projects/{project_id}/locations/-"
+
+        for instance in client.list_instances(parent=parent):
+            labels = dict(instance.labels) if instance.labels else {}
+
+            # Extract location
+            location = instance.name.split('/')[3] if '/' in instance.name else 'unknown'
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:redis:instance",
+                service_family="Redis",
+                resource_id=instance.name,
+                name=instance.display_name or instance.name.split('/')[-1],
+                tags=labels,
+                size_gb=float(instance.memory_size_gb) if instance.memory_size_gb else 0.0,
+                metadata={
+                    'state': instance.state.name if instance.state else '',
+                    'tier': instance.tier.name if instance.tier else '',
+                    'redis_version': instance.redis_version,
+                    'memory_size_gb': instance.memory_size_gb,
+                    'host': instance.host,
+                    'port': instance.port,
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Memorystore Redis instances")
+    except ImportError:
+        logger.warning("Redis client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Memorystore Redis instances", "gcp")
+        logger.error(f"Failed to collect Memorystore Redis instances: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Backup & DR Collectors
+# =============================================================================
+
+def collect_backup_plans(project_id: str) -> List[CloudResource]:
+    """Collect Backup & DR backup plans."""
+    resources = []
+    try:
+        from google.cloud import backupdr_v1
+
+        client = backupdr_v1.BackupDRClient()
+
+        # List backup plans in all locations
+        parent = f"projects/{project_id}/locations/-"
+
+        for plan in client.list_backup_plans(parent=parent):
+            labels = dict(plan.labels) if plan.labels else {}
+
+            location = plan.name.split('/')[3] if '/' in plan.name else 'unknown'
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:backupdr:plan",
+                service_family="Backup",
+                resource_id=plan.name,
+                name=plan.name.split('/')[-1],
+                tags=labels,
+                size_gb=0.0,
+                metadata={
+                    'state': plan.state.name if hasattr(plan, 'state') and plan.state else '',
+                    'description': plan.description if hasattr(plan, 'description') else '',
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Backup & DR plans")
+    except ImportError:
+        logger.warning("Backup & DR client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Backup & DR plans", "gcp")
+        logger.error(f"Failed to collect Backup & DR plans: {e}")
+
+    return resources
+
+
+def collect_backup_vaults(project_id: str) -> List[CloudResource]:
+    """Collect Backup & DR backup vaults."""
+    resources = []
+    try:
+        from google.cloud import backupdr_v1
+
+        client = backupdr_v1.BackupDRClient()
+
+        # List backup vaults in all locations
+        parent = f"projects/{project_id}/locations/-"
+
+        for vault in client.list_backup_vaults(parent=parent):
+            labels = dict(vault.labels) if vault.labels else {}
+
+            location = vault.name.split('/')[3] if '/' in vault.name else 'unknown'
+
+            # Get total backup size if available
+            total_size_bytes = getattr(vault, 'total_stored_bytes', 0) or 0
+            size_gb = total_size_bytes / (1024 ** 3)
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:backupdr:vault",
+                service_family="Backup",
+                resource_id=vault.name,
+                name=vault.name.split('/')[-1],
+                tags=labels,
+                size_gb=round(size_gb, 2),
+                metadata={
+                    'state': vault.state.name if hasattr(vault, 'state') and vault.state else '',
+                    'description': getattr(vault, 'description', ''),
+                    'backup_count': getattr(vault, 'backup_count', 0),
+                    'total_stored_bytes': total_size_bytes,
+                    'deletable': getattr(vault, 'deletable', True),
+                    'etag': getattr(vault, 'etag', ''),
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Backup & DR vaults")
+    except ImportError:
+        logger.warning("Backup & DR client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Backup & DR vaults", "gcp")
+        logger.error(f"Failed to collect Backup & DR vaults: {e}")
+
+    return resources
+
+
+def collect_backup_data_sources(project_id: str) -> List[CloudResource]:
+    """Collect Backup & DR data sources (protected resources)."""
+    resources = []
+    try:
+        from google.cloud import backupdr_v1
+
+        client = backupdr_v1.BackupDRClient()
+
+        # First get all backup vaults
+        parent = f"projects/{project_id}/locations/-"
+        vault_names = []
+
+        try:
+            for vault in client.list_backup_vaults(parent=parent):
+                vault_names.append(vault.name)
+        except Exception:
+            pass
+
+        # Then get data sources from each vault
+        for vault_name in vault_names:
+            try:
+                for ds in client.list_data_sources(parent=vault_name):
+                    labels = dict(ds.labels) if hasattr(ds, 'labels') and ds.labels else {}
+
+                    location = ds.name.split('/')[3] if '/' in ds.name else 'unknown'
+
+                    # Get total backup size
+                    total_size_bytes = getattr(ds, 'total_stored_bytes', 0) or 0
+                    size_gb = total_size_bytes / (1024 ** 3)
+
+                    resource = CloudResource(
+                        provider="gcp",
+                        account_id=project_id,
+                        region=location,
+                        resource_type="gcp:backupdr:datasource",
+                        service_family="Backup",
+                        resource_id=ds.name,
+                        name=ds.name.split('/')[-1],
+                        tags=labels,
+                        size_gb=round(size_gb, 2),
+                        parent_resource_id=vault_name,
+                        metadata={
+                            'state': ds.state.name if hasattr(ds, 'state') and ds.state else '',
+                            'data_source_gcp_resource': getattr(ds, 'data_source_gcp_resource', {}).get('gcp_resourcename', ''),
+                            'backup_count': getattr(ds, 'backup_count', 0),
+                            'total_stored_bytes': total_size_bytes,
+                            'backup_vault': vault_name.split('/')[-1],
+                        }
+                    )
+                    resources.append(resource)
+            except Exception as e:
+                check_and_raise_auth_error(e, f"collect data sources from vault {vault_name}", "gcp")
+                logger.warning(f"Failed to collect data sources from vault {vault_name}: {e}")
+
+        logger.info(f"Found {len(resources)} Backup & DR data sources")
+    except ImportError:
+        logger.warning("Backup & DR client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Backup & DR data sources", "gcp")
+        logger.error(f"Failed to collect Backup & DR data sources: {e}")
+
+    return resources
+
+
+def collect_backups(project_id: str) -> List[CloudResource]:
+    """Collect Backup & DR backups (recovery points)."""
+    resources = []
+    try:
+        from google.cloud import backupdr_v1
+
+        client = backupdr_v1.BackupDRClient()
+
+        # First get all backup vaults
+        parent = f"projects/{project_id}/locations/-"
+        vault_names = []
+
+        try:
+            for vault in client.list_backup_vaults(parent=parent):
+                vault_names.append(vault.name)
+        except Exception:
+            pass
+
+        # Get data sources from each vault, then backups from each data source
+        for vault_name in vault_names:
+            try:
+                for ds in client.list_data_sources(parent=vault_name):
+                    try:
+                        for backup in client.list_backups(parent=ds.name):
+                            labels = dict(backup.labels) if hasattr(backup, 'labels') and backup.labels else {}
+
+                            location = backup.name.split('/')[3] if '/' in backup.name else 'unknown'
+
+                            # Get backup size
+                            size_bytes = getattr(backup, 'backup_appliance_backup_size_bytes', 0) or 0
+                            if not size_bytes:
+                                size_bytes = getattr(backup, 'gc_backup_size_bytes', 0) or 0
+                            size_gb = size_bytes / (1024 ** 3)
+
+                            resource = CloudResource(
+                                provider="gcp",
+                                account_id=project_id,
+                                region=location,
+                                resource_type="gcp:backupdr:backup",
+                                service_family="Backup",
+                                resource_id=backup.name,
+                                name=backup.name.split('/')[-1],
+                                tags=labels,
+                                size_gb=round(size_gb, 2),
+                                parent_resource_id=ds.name,
+                                metadata={
+                                    'state': backup.state.name if hasattr(backup, 'state') and backup.state else '',
+                                    'backup_type': backup.backup_type.name if hasattr(backup, 'backup_type') and backup.backup_type else '',
+                                    'create_time': str(getattr(backup, 'create_time', '')),
+                                    'expire_time': str(getattr(backup, 'expire_time', '')),
+                                    'consistency_time': str(getattr(backup, 'consistency_time', '')),
+                                    'data_source': ds.name.split('/')[-1],
+                                    'backup_vault': vault_name.split('/')[-1],
+                                    'size_bytes': size_bytes,
+                                }
+                            )
+                            resources.append(resource)
+                    except Exception as e:
+                        check_and_raise_auth_error(e, f"collect backups from data source {ds.name}", "gcp")
+                        logger.warning(f"Failed to collect backups from data source {ds.name}: {e}")
+            except Exception as e:
+                check_and_raise_auth_error(e, f"collect data sources from vault {vault_name}", "gcp")
+                logger.warning(f"Failed to collect data sources from vault {vault_name}: {e}")
+
+        logger.info(f"Found {len(resources)} Backup & DR backups")
+    except ImportError:
+        logger.warning("Backup & DR client not available")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Backup & DR backups", "gcp")
+        logger.error(f"Failed to collect Backup & DR backups: {e}")
+
+    return resources
+
+
+# =============================================================================
+# BigQuery Collector
+# =============================================================================
+
+def collect_bigquery_datasets(project_id: str) -> List[CloudResource]:
+    """Collect BigQuery datasets and tables with storage size."""
+    resources = []
+    try:
+        from google.cloud import bigquery
+
+        client = bigquery.Client(project=project_id)
+
+        # List all datasets
+        for dataset_ref in client.list_datasets():
+            dataset = client.get_dataset(dataset_ref.reference)
+
+            labels = dict(dataset.labels) if dataset.labels else {}
+            location = dataset.location or 'US'
+
+            # Calculate total size from all tables
+            total_bytes = 0
+            table_count = 0
+
+            for table_ref in client.list_tables(dataset.reference):
+                table_count += 1
+                try:
+                    table = client.get_table(table_ref.reference)
+                    if table.num_bytes:
+                        total_bytes += table.num_bytes
+                except Exception:
+                    pass
+
+            total_gb = float(total_bytes) / (1024 ** 3) if total_bytes else 0.0
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:bigquery:dataset",
+                service_family="BigQuery",
+                resource_id=f"projects/{project_id}/datasets/{dataset.dataset_id}",
+                name=dataset.dataset_id,
+                tags=labels,
+                size_gb=total_gb,
+                metadata={
+                    'location': location,
+                    'table_count': table_count,
+                    'total_bytes': total_bytes,
+                    'default_table_expiration_ms': dataset.default_table_expiration_ms,
+                    'creation_time': str(dataset.created),
+                    'modified_time': str(dataset.modified),
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} BigQuery datasets")
+    except ImportError:
+        logger.warning("BigQuery client not available. Install with: pip install google-cloud-bigquery")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect BigQuery datasets", "gcp")
+        logger.error(f"Failed to collect BigQuery datasets: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Cloud Spanner Collector
+# =============================================================================
+
+def collect_spanner_instances(project_id: str) -> List[CloudResource]:
+    """Collect Cloud Spanner instances and databases."""
+    resources = []
+    try:
+        from google.cloud import spanner_v1
+
+        client = spanner_v1.InstanceAdminClient()  # type: ignore[attr-defined]
+
+        parent = f"projects/{project_id}"
+
+        for instance in client.list_instances(parent=parent):
+            labels = dict(instance.labels) if instance.labels else {}
+
+            # Extract region from instance config
+            config_name = instance.config or ''
+            location = 'global'
+            if 'regional' in config_name:
+                location = config_name.split('-')[-1] if '-' in config_name else 'unknown'
+
+            # Node count and processing units for sizing
+            node_count = instance.node_count or 0
+            processing_units = instance.processing_units or 0
+
+            # Estimate storage (Spanner charges per GB stored)
+            # No direct API, but we can list databases and get metadata
+            db_client = spanner_v1.DatabaseAdminClient()  # type: ignore[attr-defined]
+            db_parent = instance.name
+
+            db_count = 0
+            try:
+                for _db in db_client.list_databases(parent=db_parent):
+                    db_count += 1
+            except Exception:
+                pass
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:spanner:instance",
+                service_family="Spanner",
+                resource_id=instance.name,
+                name=instance.display_name or instance.name.split('/')[-1],
+                tags=labels,
+                size_gb=0.0,  # Storage size not directly available via API
+                metadata={
+                    'state': instance.state.name if instance.state else '',
+                    'config': config_name,
+                    'node_count': node_count,
+                    'processing_units': processing_units,
+                    'database_count': db_count,
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Cloud Spanner instances")
+    except ImportError:
+        logger.warning("Spanner client not available. Install with: pip install google-cloud-spanner")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Spanner instances", "gcp")
+        logger.error(f"Failed to collect Spanner instances: {e}")
+
+    return resources
+
+
+# =============================================================================
+# Bigtable Collector
+# =============================================================================
+
+def collect_bigtable_instances(project_id: str) -> List[CloudResource]:
+    """Collect Cloud Bigtable instances and clusters."""
+    resources = []
+    try:
+        from google.cloud import bigtable
+        from google.cloud.bigtable import enums  # noqa: F401 - used for storage type enum
+
+        client = bigtable.Client(project=project_id, admin=True)
+
+        for instance in client.list_instances()[0]:  # Returns (instances, failed_locations)
+            labels = dict(instance.labels) if hasattr(instance, 'labels') and instance.labels else {}
+
+            # Get clusters for this instance
+            cluster_count = 0
+            total_nodes = 0
+            locations = []
+            storage_type = 'unknown'
+
+            try:
+                clusters = instance.list_clusters()[0]  # Returns (clusters, failed_locations)
+                for cluster in clusters:
+                    cluster_count += 1
+                    if hasattr(cluster, 'serve_nodes') and cluster.serve_nodes:
+                        total_nodes += cluster.serve_nodes
+                    if hasattr(cluster, 'location_id') and cluster.location_id:
+                        locations.append(cluster.location_id)
+                    if hasattr(cluster, 'default_storage_type'):
+                        storage_type = str(cluster.default_storage_type)
+            except Exception as e:
+                logger.debug(f"Failed to get clusters for instance {instance.instance_id}: {e}")
+
+            location = locations[0] if locations else 'unknown'
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:bigtable:instance",
+                service_family="Bigtable",
+                resource_id=f"projects/{project_id}/instances/{instance.instance_id}",
+                name=instance.display_name or instance.instance_id,
+                tags=labels,
+                size_gb=0.0,  # Bigtable storage size not directly available
+                metadata={
+                    'instance_type': str(instance.type_) if hasattr(instance, 'type_') else 'unknown',
+                    'cluster_count': cluster_count,
+                    'total_nodes': total_nodes,
+                    'locations': locations,
+                    'storage_type': storage_type,
+                }
+            )
+            resources.append(resource)
+
+        logger.info(f"Found {len(resources)} Bigtable instances")
+    except ImportError:
+        logger.warning("Bigtable client not available. Install with: pip install google-cloud-bigtable")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect Bigtable instances", "gcp")
+        logger.error(f"Failed to collect Bigtable instances: {e}")
+
+    return resources
+
+
+# =============================================================================
+# AlloyDB Collector
+# =============================================================================
+
+def collect_alloydb_clusters(project_id: str) -> List[CloudResource]:
+    """Collect AlloyDB for PostgreSQL clusters and instances."""
+    resources = []
+    try:
+        from google.cloud import alloydb_v1
+
+        client = alloydb_v1.AlloyDBAdminClient()
+
+        # List clusters in all locations
+        parent = f"projects/{project_id}/locations/-"
+
+        for cluster in client.list_clusters(parent=parent):
+            labels = dict(cluster.labels) if cluster.labels else {}
+
+            # Extract location from cluster name
+            location = cluster.name.split('/')[3] if '/' in cluster.name else 'unknown'
+
+            # Get cluster network config
+            cluster.network_config if hasattr(cluster, 'network_config') else None
+
+            resource = CloudResource(
+                provider="gcp",
+                account_id=project_id,
+                region=location,
+                resource_type="gcp:alloydb:cluster",
+                service_family="AlloyDB",
+                resource_id=cluster.name,
+                name=cluster.display_name or cluster.name.split('/')[-1],
+                tags=labels,
+                size_gb=0.0,  # Storage auto-scales; size tracked by instances
+                metadata={
+                    'state': cluster.state.name if hasattr(cluster, 'state') and cluster.state else '',
+                    'cluster_type': cluster.cluster_type.name if hasattr(cluster, 'cluster_type') and cluster.cluster_type else 'unknown',
+                    'database_version': str(cluster.database_version) if hasattr(cluster, 'database_version') else '',
+                }
+            )
+            resources.append(resource)
+
+            # List instances for this cluster
+            try:
+                for instance in client.list_instances(parent=cluster.name):
+                    instance_labels = dict(instance.labels) if instance.labels else {}
+
+                    # Get instance size from machine config
+                    machine_config = instance.machine_config if hasattr(instance, 'machine_config') else None
+                    cpu_count = getattr(machine_config, 'cpu_count', 0) if machine_config else 0
+
+                    instance_resource = CloudResource(
+                        provider="gcp",
+                        account_id=project_id,
+                        region=location,
+                        resource_type="gcp:alloydb:instance",
+                        service_family="AlloyDB",
+                        resource_id=instance.name,
+                        name=instance.display_name or instance.name.split('/')[-1],
+                        tags=instance_labels,
+                        size_gb=0.0,
+                        parent_resource_id=cluster.name,
+                        metadata={
+                            'state': instance.state.name if hasattr(instance, 'state') and instance.state else '',
+                            'instance_type': instance.instance_type.name if hasattr(instance, 'instance_type') and instance.instance_type else 'unknown',
+                            'cpu_count': cpu_count,
+                            'availability_type': instance.availability_type.name if hasattr(instance, 'availability_type') and instance.availability_type else 'unknown',
+                        }
+                    )
+                    resources.append(instance_resource)
+            except Exception as e:
+                logger.debug(f"Failed to list instances for cluster {cluster.name}: {e}")
+
+        logger.info(f"Found {len(resources)} AlloyDB clusters and instances")
+    except ImportError:
+        logger.warning("AlloyDB client not available. Install with: pip install google-cloud-alloydb")
+    except Exception as e:
+        check_and_raise_auth_error(e, "collect AlloyDB clusters", "gcp")
+        logger.error(f"Failed to collect AlloyDB clusters: {e}")
+
+    return resources
 
 
 # =============================================================================
@@ -128,6 +1177,98 @@ def collect_project(
     )
 
     return all_resources
+
+
+# =============================================================================
+# Change Rate Collection
+# =============================================================================
+
+def collect_gcp_change_rates(
+    project_id: str,
+    resources: List[CloudResource],
+    days: int = 7
+) -> Dict[str, Any]:
+    """
+    Collect change rate metrics from Cloud Monitoring for the collected resources.
+
+    Args:
+        project_id: GCP project ID
+        resources: List of CloudResource objects collected from the project
+        days: Number of days to sample for metrics
+
+    Returns:
+        Dict with change rate summaries by service family
+    """
+    change_rates = []
+
+    # Get Monitoring client
+    monitoring_client = get_gcp_monitoring_client(project_id)
+    if not monitoring_client:
+        logger.warning("Cloud Monitoring client not available, skipping change rate collection")
+        logger.warning("Install google-cloud-monitoring: pip install google-cloud-monitoring")
+        return {}
+
+    for resource in resources:
+        try:
+            rate_entry = _collect_gcp_resource_change_rate(
+                monitoring_client, project_id, resource, days
+            )
+            if rate_entry:
+                change_rates.append(rate_entry)
+        except Exception as e:
+            logger.debug(f"Error collecting change rate for {resource.resource_id}: {e}")
+            continue
+
+    # Aggregate change rates by service family
+    summaries = aggregate_change_rates(change_rates)
+    return format_change_rate_output(summaries)
+
+
+def _collect_gcp_resource_change_rate(
+    monitoring_client,
+    project_id: str,
+    resource: CloudResource,
+    days: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Collect change rate for a single GCP resource based on its type.
+    """
+    service_family = resource.service_family
+
+    if service_family == 'PersistentDisk':
+        # GCP persistent disks
+        disk_name = resource.metadata.get('disk_name', resource.name)
+        zone = resource.region  # For zonal disks, this would be the zone
+
+        if disk_name and zone:
+            data_change = get_gcp_disk_change_rate(
+                monitoring_client, project_id, disk_name, zone, resource.size_gb, days
+            )
+            if data_change:
+                return {
+                    'provider': 'gcp',
+                    'service_family': 'PersistentDisk',
+                    'size_gb': resource.size_gb,
+                    'data_change': data_change
+                }
+
+    elif service_family == 'CloudSQL':
+        # Cloud SQL instances
+        instance_id = resource.metadata.get('instance_name', resource.name)
+
+        if instance_id:
+            data_change = get_cloudsql_change_rate(
+                monitoring_client, project_id, instance_id, resource.size_gb, days
+            )
+            if data_change:
+                return {
+                    'provider': 'gcp',
+                    'service_family': 'CloudSQL',
+                    'size_gb': resource.size_gb,
+                    'data_change': data_change
+                }
+
+    return None
 
 
 def main():
