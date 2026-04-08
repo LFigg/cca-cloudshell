@@ -4,13 +4,20 @@ CCA CloudShell - Microsoft 365 Collector
 Standalone collector for M365 resources using Microsoft Graph API.
 
 Authentication Options:
-1. DefaultAzureCredential (recommended) - Uses Azure CLI, Managed Identity, etc.
-   - In Azure Cloud Shell: credentials are automatic
-   - Local with Azure CLI: run 'az login' first
-
-2. App Registration with client secret (for automated/service scenarios)
-   - Create App Registration in Entra ID
+1. App Registration with client secret (RECOMMENDED for full functionality)
+   - Create App Registration in Entra ID with Application permissions
    - Set MS365_TENANT_ID, MS365_CLIENT_ID, MS365_CLIENT_SECRET env vars
+   - Required for usage reports API (Reports.Read.All) which enables:
+     * Bulk mailbox data collection (all mailbox types, storage, quotas)
+     * SharePoint/OneDrive usage reports with accurate storage metrics
+     * Teams activity and storage reports
+     * Change rate and growth metrics
+
+2. DefaultAzureCredential (limited - for quick testing only)
+   - Uses Azure CLI, Managed Identity, etc. with Delegated permissions
+   - Falls back to slower user-by-user iteration (no usage reports)
+   - Only collects user mailboxes, not shared/room/group mailboxes
+   - No storage metrics for SharePoint/Teams without Reports.Read.All
 
 Required Azure AD App Permissions (Application type):
   - Sites.Read.All (SharePoint)
@@ -19,27 +26,27 @@ Required Azure AD App Permissions (Application type):
   - Mail.Read (Exchange mailbox metadata)
   - Group.Read.All (Groups, Teams)
   - Team.ReadBasic.All (Teams details)
-  - Reports.Read.All (Usage reports for change rate and growth metrics)
+  - Reports.Read.All (Usage reports - CRITICAL for complete data collection)
+  - Organization.Read.All (Tenant licensing info)
+  - Directory.Read.All (Optional - for --include-entra)
 
 Usage:
-    # Option 1: Using Azure CLI (recommended)
-    az login
-    python m365_collect.py --use-default-credential
-
-    # Option 2: Using environment variables
+    # Option 1: App Registration (RECOMMENDED)
     export MS365_TENANT_ID="your-tenant-id"
     export MS365_CLIENT_ID="your-client-id"
     export MS365_CLIENT_SECRET="your-client-secret"
     python m365_collect.py
+
+    # Option 2: Azure CLI (limited functionality)
+    az login
+    python m365_collect.py --use-default-credential
 
     # Include Entra ID collection
     python m365_collect.py --include-entra
 """
 
 import argparse
-import asyncio
 import csv
-import inspect
 import io
 import logging
 import os
@@ -48,12 +55,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-# Module-level credential storage (avoids accessing SDK internals which change between versions)
-_graph_credential = None
-
 # Check for required packages
 try:
-    from azure.identity import ClientSecretCredential, DefaultAzureCredential
     from msgraph.graph_service_client import GraphServiceClient
 except ImportError:
     print("ERROR: Required packages not found.")
@@ -65,60 +68,57 @@ except ImportError:
     print("    python -m pip install msgraph-sdk azure-identity")
     sys.exit(1)
 
+# Add lib to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Import from modularized lib.m365
+from lib.m365 import (
+    AttrDict,
+    USAGE_REPORT_PERIOD,
+    USAGE_REPORT_PERIOD_DAYS,
+    collect_all_pages_sync,
+    collect_entra_groups,
+    collect_entra_users,
+    collect_exchange_mailboxes,
+    collect_mailbox_usage_report,
+    collect_onedrive_accounts,
+    collect_onedrive_usage_report,
+    collect_sharepoint_sites,
+    collect_sharepoint_usage_report,
+    collect_teams,
+    collect_teams_activity_report,
+    collect_teams_usage_report,
+    generate_exchange_summary,
+    generate_sharepoint_summary,
+    get_csv_field,
+    get_graph_client,
+    get_graph_client_default_credential,
+    get_graph_credential,
+    get_usage_report,
+    parse_usage_report_csv,
+    run_sync,
+    safe_float,
+    safe_int,
+)
+
 logger = logging.getLogger(__name__)
 
-
-def run_sync(coro_or_result):
-    """Run an async coroutine synchronously if needed.
-
-    msgraph-sdk 1.55+ returns coroutines from .get() methods.
-    This helper ensures compatibility with both sync and async responses.
-
-    Handles event loop state issues that can occur after httpx usage
-    or multiple asyncio.run() calls by proactively checking loop state
-    and creating fresh event loops as needed.
-    """
-    if not inspect.iscoroutine(coro_or_result):
-        return coro_or_result
-
-    # Check if there's an existing event loop and its state
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        # No event loop exists, create one
-        loop = None
-
-    if loop is None or loop.is_closed():
-        # Event loop is closed or doesn't exist, create a fresh one
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro_or_result)
-        finally:
-            loop.close()
-    elif loop.is_running():
-        # Loop is already running (e.g., in Jupyter) - this is rare
-        # Fall back to asyncio.run() which creates its own loop
-        return asyncio.run(coro_or_result)
-    else:
-        # Normal case - use asyncio.run()
-        return asyncio.run(coro_or_result)
+# Internal library imports
+from lib.__version__ import __version__
+from lib.models import CloudResource
+from lib.utils import (
+    ProgressTracker,
+    check_and_raise_auth_error,
+    get_collector_metadata,
+    log_arguments,
+    setup_logging,
+    write_json as _write_json_to_path,
+)
 
 
 # =============================================================================
 # Data Models
 # =============================================================================
-
-# Add lib to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.__version__ import __version__  # noqa: E402
-from lib.models import CloudResource  # noqa: E402
-from lib.utils import ProgressTracker, check_and_raise_auth_error, get_collector_metadata, log_arguments, setup_logging  # noqa: E402
-from lib.utils import write_json as _write_json_to_path  # noqa: E402
-
-# Constants for usage report collection
-USAGE_REPORT_PERIOD = 'D180'  # 180 days of historical data
-USAGE_REPORT_PERIOD_DAYS = 180
 
 
 @dataclass
@@ -153,703 +153,6 @@ class ServiceUsageMetrics:
             'sample_period_days': self.sample_period_days,
             'data_points_collected': self.data_points_collected
         }
-
-# =============================================================================
-# Graph Client
-# =============================================================================
-
-def get_graph_client(tenant_id: str, client_id: str, client_secret: str) -> GraphServiceClient:
-    """Create Microsoft Graph API client using client credentials."""
-    global _graph_credential
-    credential = ClientSecretCredential(
-        tenant_id=tenant_id,
-        client_id=client_id,
-        client_secret=client_secret
-    )
-    _graph_credential = credential  # Store for direct API calls
-    scopes = ['https://graph.microsoft.com/.default']
-    return GraphServiceClient(credentials=credential, scopes=scopes)
-
-
-def _is_azure_environment() -> bool:
-    """Check if running in Azure Cloud Shell or Azure VM."""
-    # Azure Cloud Shell sets these
-    if os.environ.get('AZURE_HTTP_USER_AGENT') or os.environ.get('ACC_CLOUD'):
-        return True
-    # Azure IMDS is only available on Azure VMs
-    if os.environ.get('MSI_ENDPOINT') or os.environ.get('IDENTITY_ENDPOINT'):
-        return True
-    return False
-
-
-def get_graph_client_default_credential() -> GraphServiceClient:
-    """Create Microsoft Graph API client using DefaultAzureCredential.
-
-    This uses the Azure Identity credential chain, which tries (in order):
-    1. Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
-    2. Managed Identity (when running on Azure VMs, App Service, etc.)
-    3. Azure CLI credentials (az login)
-    4. Azure PowerShell credentials
-    5. Interactive browser login (if enabled)
-
-    This is the recommended approach for:
-    - Azure Cloud Shell (uses managed identity automatically)
-    - Azure VMs with managed identity
-    - Local development with Azure CLI login
-    """
-    # Skip ManagedIdentityCredential on non-Azure machines to avoid IMDS timeout
-    # IMDS endpoint doesn't exist outside Azure, causing long hangs
-    exclude_mi = not _is_azure_environment()
-    if exclude_mi:
-        logger.debug("Not in Azure environment, skipping ManagedIdentityCredential")
-
-    global _graph_credential
-    credential = DefaultAzureCredential(
-        exclude_managed_identity_credential=exclude_mi
-    )
-    _graph_credential = credential  # Store for direct API calls
-    scopes = ['https://graph.microsoft.com/.default']
-    return GraphServiceClient(credentials=credential, scopes=scopes)
-
-
-async def collect_all_pages(initial_response, get_next_page_func) -> List[Any]:
-    """Helper to collect all pages from a paginated Graph API response.
-
-    Microsoft Graph API returns max 100 items per page by default.
-    This helper follows odata_next_link to collect all items.
-
-    Args:
-        initial_response: The first response from a Graph API call
-        get_next_page_func: Async function to get next page given a next_link
-
-    Returns:
-        List of all items from all pages
-    """
-    all_items = []
-    response = initial_response
-
-    while response:
-        if hasattr(response, 'value') and response.value:
-            all_items.extend(response.value)
-
-        # Check for next page
-        if hasattr(response, 'odata_next_link') and response.odata_next_link:
-            try:
-                response = await get_next_page_func(response.odata_next_link)
-            except Exception as e:
-                logger.warning(f"Failed to fetch next page: {e}")
-                break
-        else:
-            break
-
-    return all_items
-
-
-class AttrDict:
-    """Wrapper for dicts that allows attribute-style access (e.g., obj.key instead of obj['key']).
-
-    This allows raw JSON responses from Graph API pagination to be accessed
-    the same way as msgraph-sdk objects.
-    """
-    def __init__(self, data: dict):
-        self._data = data or {}
-
-    def __getattr__(self, name):
-        # Convert camelCase to snake_case for common Graph API fields
-        snake_name = ''.join(['_' + c.lower() if c.isupper() else c for c in name]).lstrip('_')
-        camel_name = name
-
-        # Try both snake_case (Python style) and camelCase (API style)
-        if snake_name in self._data:
-            val = self._data[snake_name]
-        elif camel_name in self._data:
-            val = self._data[camel_name]
-        # Also try the original name as-is for exact match
-        elif name in self._data:
-            val = self._data[name]
-        # Check for common Graph API field name mappings
-        else:
-            # Map Python-style names to Graph API JSON names
-            mappings = {
-                'id': 'id',
-                'display_name': 'displayName',
-                'user_principal_name': 'userPrincipalName',
-                'mail': 'mail',
-                'created_date_time': 'createdDateTime',
-                'account_enabled': 'accountEnabled',
-                'visibility': 'visibility',
-                'resource_provisioning_options': 'resourceProvisioningOptions',
-                'group_types': 'groupTypes',
-                'description': 'description',
-                'web_url': 'webUrl',
-                'root': 'root',
-                'drive_type': 'driveType',
-                'quota': 'quota',
-                'owner': 'owner',
-                'site_collection': 'siteCollection',
-            }
-            json_name = mappings.get(name, name)
-            val = self._data.get(json_name)
-
-        # Recursively wrap dicts
-        if isinstance(val, dict):
-            return AttrDict(val)
-        return val
-
-    def get(self, key, default=None):
-        return self._data.get(key, default)
-
-    def __repr__(self):
-        return f"AttrDict({self._data})"
-
-
-def collect_all_pages_sync(initial_response, max_pages: int = 1000) -> List[Any]:
-    """Synchronous helper to collect all items from paginated Graph API response.
-
-    Microsoft Graph API returns max 100 items per page. This follows odata_next_link
-    to collect ALL items across all pages using raw HTTP requests.
-
-    Args:
-        initial_response: Response from a Graph API call
-        max_pages: Maximum pages to fetch (safety limit, default 1000 = 100,000 items)
-
-    Returns:
-        List of all items from all pages
-    """
-    import httpx
-
-    items = []
-    page_count = 0
-
-    # Get items from first page
-    if initial_response and hasattr(initial_response, 'value') and initial_response.value:
-        items.extend(initial_response.value)
-        page_count = 1
-
-    # Check if there are more pages
-    next_link = getattr(initial_response, 'odata_next_link', None) if initial_response else None
-
-    if next_link:
-        logger.debug("Response has more pages, fetching all...")
-
-        # Get token for subsequent requests
-        if _graph_credential is None:
-            logger.warning("Graph credential not initialized - cannot fetch additional pages")
-            return items
-
-        try:
-            token = _graph_credential.get_token("https://graph.microsoft.com/.default")
-            headers = {
-                'Authorization': f'Bearer {token.token}',
-                'Accept': 'application/json'
-            }
-
-            with httpx.Client(timeout=60.0) as client:
-                while next_link and page_count < max_pages:
-                    try:
-                        response = client.get(next_link, headers=headers)
-                        response.raise_for_status()
-                        data = response.json()
-
-                        # Extract items from this page (wrap in AttrDict for attribute access)
-                        page_items = data.get('value', [])
-                        if page_items:
-                            items.extend(AttrDict(item) for item in page_items)
-                        page_count += 1
-
-                        # Log progress for large collections
-                        if page_count % 100 == 0:
-                            logger.info(f"Pagination progress: {len(items):,} items from {page_count} pages...")
-
-                        # Get next link
-                        next_link = data.get('@odata.nextLink')
-
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch page {page_count + 1}: {e}")
-                        break
-
-            if page_count >= max_pages:
-                logger.warning(f"Hit max page limit ({max_pages:,} pages = {max_pages * 100:,} items). "
-                             f"Data may be incomplete for very large tenants.")
-
-        except Exception as e:
-            logger.warning(f"Failed to get token for pagination: {e}")
-
-    if page_count > 1:
-        logger.info(f"Collected {len(items):,} items from {page_count} pages")
-    return items
-
-
-# =============================================================================
-# SharePoint Collector
-# =============================================================================
-
-def collect_sharepoint_sites(
-    graph_client: GraphServiceClient,
-    tenant_id: str,
-    sharepoint_usage: Optional[Dict[str, Dict[str, Any]]] = None
-) -> List[CloudResource]:
-    """Collect SharePoint sites.
-
-    Args:
-        graph_client: Microsoft Graph client
-        tenant_id: Azure AD tenant ID
-        sharepoint_usage: Dict from collect_sharepoint_usage_report() - if provided, creates
-                          resources from usage report (recommended for complete data)
-    """
-    resources = []
-
-    try:
-        # If usage report provided, use it (much more complete than API)
-        if sharepoint_usage:
-            logger.info("Creating SharePoint resources from usage report...")
-            for site_url, site_data in sharepoint_usage.items():
-                # Skip deleted sites and OneDrive personal sites
-                if site_data.get('is_deleted'):
-                    continue
-                if 'personal' in site_data.get('site_type', '').lower():
-                    continue  # OneDrive sites, handled separately
-
-                storage_gb = site_data.get('storage_gb', 0.0)
-                site_id = site_data.get('site_id', site_url)
-
-                # Determine resource type based on site type
-                is_team_site = site_data.get('is_team_site', False)
-                resource_type = "m365:sharepoint:teamsite" if is_team_site else "m365:sharepoint:site"
-
-                resource = CloudResource(
-                    provider="microsoft365",
-                    subscription_id=tenant_id,
-                    region="global",
-                    resource_type=resource_type,
-                    service_family="SharePoint",
-                    resource_id=site_id,
-                    name=site_data.get('owner_display_name') or site_url.split('/')[-1] or "SharePoint Site",
-                    tags={},
-                    size_gb=storage_gb,
-                    metadata={
-                        'web_url': site_url,
-                        'site_type': site_data.get('site_type', ''),
-                        'root_web_template': site_data.get('root_web_template', ''),
-                        'is_team_site': is_team_site,
-                        'storage_used_gb': round(storage_gb, 2),
-                        'file_count': site_data.get('file_count', 0),
-                        'active_file_count': site_data.get('active_file_count', 0),
-                        'page_view_count': site_data.get('page_view_count', 0),
-                        'last_activity_date': site_data.get('last_activity_date', ''),
-                        'owner_display_name': site_data.get('owner_display_name', ''),
-                    }
-                )
-                resources.append(resource)
-
-            logger.info(f"Collected {len(resources)} SharePoint sites from usage report")
-            return resources
-
-        # Fallback: Use Graph API (may be incomplete)
-        logger.warning(
-            "SharePoint usage report not available - falling back to Graph API. "
-            "This may miss some sites. To fix: Add 'Reports.Read.All' permission to your app registration."
-        )
-        logger.info("Collecting SharePoint sites via Graph API...")
-        sites_response = run_sync(graph_client.sites.get())
-
-        # Collect all sites across all pages
-        all_sites = collect_all_pages_sync(sites_response)
-
-        if all_sites:
-            for site in all_sites:
-                try:
-                    storage_used = 0.0
-                    storage_quota = 0.0
-
-                    if hasattr(site, 'quota') and site.quota:
-                        storage_used = float(site.quota.used or 0) / (1024**3)
-                        storage_quota = float(site.quota.total or 0) / (1024**3)
-
-                    resource = CloudResource(
-                        provider="microsoft365",
-                        subscription_id=tenant_id,
-                        region="global",
-                        resource_type="m365:sharepoint:site",
-                        service_family="SharePoint",
-                        resource_id=site.id,
-                        name=site.display_name or site.name or "Unknown",
-                        tags={},
-                        size_gb=storage_used,
-                        metadata={
-                            'web_url': site.web_url,
-                            'created_datetime': str(site.created_date_time) if hasattr(site, 'created_date_time') and site.created_date_time else None,
-                            'last_modified': str(site.last_modified_date_time) if hasattr(site, 'last_modified_date_time') and site.last_modified_date_time else None,
-                            'storage_quota_gb': round(storage_quota, 2),
-                            'storage_used_gb': round(storage_used, 2),
-                            'storage_used_percentage': round((storage_used / storage_quota * 100) if storage_quota > 0 else 0, 2)
-                        }
-                    )
-                    resources.append(resource)
-                except Exception as e:
-                    logger.debug(f"Failed to process SharePoint site: {e}")
-                    continue
-
-        logger.info(f"Collected {len(resources)} SharePoint sites via API")
-
-    except Exception as e:
-        check_and_raise_auth_error(e, "collect SharePoint sites", "m365")
-        logger.error(f"Failed to collect SharePoint sites: {e}")
-
-    return resources
-
-
-# =============================================================================
-# OneDrive Collector
-# =============================================================================
-
-def collect_onedrive_accounts(
-    graph_client: GraphServiceClient,
-    tenant_id: str,
-    onedrive_usage: Optional[Dict[str, Dict[str, Any]]] = None
-) -> List[CloudResource]:
-    """Collect OneDrive for Business accounts.
-
-    Args:
-        graph_client: Microsoft Graph client
-        tenant_id: Azure AD tenant ID
-        onedrive_usage: Dict from collect_onedrive_usage_report() - if provided, creates
-                        resources from usage report (recommended for complete data)
-    """
-    resources = []
-
-    try:
-        # If usage report provided, use it (much more complete than iterating users)
-        if onedrive_usage:
-            logger.info("Creating OneDrive resources from usage report...")
-            for upn, account_data in onedrive_usage.items():
-                storage_gb = account_data.get('storage_gb', 0.0)
-
-                resource = CloudResource(
-                    provider="microsoft365",
-                    subscription_id=tenant_id,
-                    region="global",
-                    resource_type="m365:onedrive:account",
-                    service_family="OneDrive",
-                    resource_id=upn,
-                    name=upn,
-                    tags={},
-                    size_gb=storage_gb,
-                    metadata={
-                        'user_principal_name': upn,
-                        'storage_used_gb': round(storage_gb, 2),
-                        'file_count': account_data.get('file_count', 0),
-                        'active_file_count': account_data.get('active_file_count', 0),
-                        'last_activity_date': account_data.get('last_activity_date', ''),
-                    }
-                )
-                resources.append(resource)
-
-            logger.info(f"Collected {len(resources)} OneDrive accounts from usage report")
-            return resources
-
-        # Fallback: Iterate users and get drive (VERY SLOW for large tenants)
-        logger.warning(
-            "OneDrive usage report not available - falling back to per-user API calls. "
-            "This can take HOURS for large tenants (1000+ users). "
-            "To fix: Add 'Reports.Read.All' permission to your app registration, "
-            "or use --skip-onedrive flag to skip OneDrive collection."
-        )
-        logger.info("Collecting OneDrive accounts via user iteration...")
-        users_response = run_sync(graph_client.users.get())
-
-        # Collect all users across all pages
-        all_users = collect_all_pages_sync(users_response)
-
-        if all_users:
-            for user in all_users:
-                try:
-                    drive = run_sync(graph_client.users.by_user_id(user.id).drive.get())
-
-                    if drive:
-                        storage_used = 0.0
-                        storage_quota = 0.0
-
-                        if hasattr(drive, 'quota') and drive.quota:
-                            storage_used = float(drive.quota.used or 0) / (1024**3)
-                            storage_quota = float(drive.quota.total or 0) / (1024**3)
-
-                        resource = CloudResource(
-                            provider="microsoft365",
-                            subscription_id=tenant_id,
-                            region="global",
-                            resource_type="m365:onedrive:account",
-                            service_family="OneDrive",
-                            resource_id=drive.id,
-                            name=user.user_principal_name or user.display_name or "Unknown",
-                            tags={},
-                            size_gb=storage_used,
-                            metadata={
-                                'user_id': user.id,
-                                'user_principal_name': user.user_principal_name,
-                                'display_name': user.display_name,
-                                'mail': user.mail,
-                                'storage_quota_gb': round(storage_quota, 2),
-                                'storage_used_gb': round(storage_used, 2),
-                                'storage_used_percentage': round((storage_used / storage_quota * 100) if storage_quota > 0 else 0, 2),
-                                'drive_type': drive.drive_type if hasattr(drive, 'drive_type') else 'business',
-                                'web_url': drive.web_url if hasattr(drive, 'web_url') else None
-                            }
-                        )
-                        resources.append(resource)
-                except Exception as e:
-                    logger.debug(f"Failed to process OneDrive for user {user.id}: {e}")
-                    continue
-
-        logger.info(f"Collected {len(resources)} OneDrive accounts")
-
-    except Exception as e:
-        check_and_raise_auth_error(e, "collect OneDrive accounts", "m365")
-        logger.error(f"Failed to collect OneDrive accounts: {e}")
-
-    return resources
-
-
-# =============================================================================
-# Exchange Collector
-# =============================================================================
-
-def collect_exchange_mailboxes(
-    graph_client: GraphServiceClient,
-    tenant_id: str,
-    mailbox_usage: Optional[Dict[str, Dict[str, Any]]] = None
-) -> List[CloudResource]:
-    """Collect Exchange Online mailboxes from usage report data.
-
-    The usage report is the authoritative source as it includes all mailbox types:
-    - User mailboxes (regular user mailboxes)
-    - Shared mailboxes (shared departmental mailboxes)
-    - Room/Equipment mailboxes (scheduling mailboxes)
-    - Group mailboxes (M365 Group mailboxes)
-
-    Args:
-        graph_client: Microsoft Graph client
-        tenant_id: Azure AD tenant ID
-        mailbox_usage: Dict from collect_mailbox_usage_report() - if not provided, will collect
-    """
-    resources = []
-
-    try:
-        logger.info("Collecting Exchange mailboxes...")
-
-        # Get mailbox data from usage report if not provided
-        if mailbox_usage is None:
-            mailbox_usage = collect_mailbox_usage_report(graph_client)
-
-        if not mailbox_usage:
-            logger.warning("No mailbox usage data available - mailbox collection may be incomplete")
-            # Fall back to user-based collection
-            return _collect_exchange_mailboxes_from_users(graph_client, tenant_id)
-
-        # Create resources from usage report data (includes all mailbox types)
-        for upn, usage_data in mailbox_usage.items():
-            try:
-                # Skip deleted mailboxes unless specifically tracking them
-                if usage_data.get('is_deleted', False):
-                    continue
-
-                storage_gb = usage_data.get('storage_gb', 0.0)
-
-                resource = CloudResource(
-                    provider="microsoft365",
-                    subscription_id=tenant_id,
-                    region="global",
-                    resource_type="m365:exchange:mailbox",
-                    service_family="Exchange",
-                    resource_id=upn,  # UPN as resource ID
-                    name=usage_data.get('display_name') or upn,
-                    tags={},
-                    size_gb=storage_gb,
-                    metadata={
-                        'user_principal_name': usage_data.get('user_principal_name', upn),
-                        'display_name': usage_data.get('display_name', ''),
-
-                        # Mailbox type info
-                        'mailbox_type': usage_data.get('mailbox_type', 'User'),
-                        'recipient_type': usage_data.get('recipient_type', 'UserMailbox'),
-                        'has_archive': usage_data.get('has_archive', False),
-
-                        # Storage
-                        'storage_used_gb': round(storage_gb, 2),
-                        'item_count': usage_data.get('item_count', 0),
-
-                        # Deleted items (recoverable items)
-                        'deleted_item_count': usage_data.get('deleted_item_count', 0),
-                        'deleted_item_size_gb': round(usage_data.get('deleted_item_size_gb', 0.0), 2),
-
-                        # Quotas
-                        'prohibit_send_receive_quota_gb': round(usage_data.get('prohibit_send_receive_quota_gb', 0.0), 2),
-                        'quota_usage_percent': round(usage_data.get('quota_usage_percent', 0.0), 1),
-
-                        # Activity
-                        'last_activity_date': usage_data.get('last_activity_date', ''),
-                        'created_date': usage_data.get('created_date', ''),
-                    }
-                )
-                resources.append(resource)
-            except Exception as e:
-                logger.debug(f"Failed to process mailbox {upn}: {e}")
-                continue
-
-        # Log summary by type
-        type_counts = {}
-        for r in resources:
-            t = r.metadata.get('mailbox_type', 'Unknown')
-            type_counts[t] = type_counts.get(t, 0) + 1
-
-        logger.info(f"Collected {len(resources)} Exchange mailboxes by type: {type_counts}")
-
-    except Exception as e:
-        check_and_raise_auth_error(e, "collect Exchange mailboxes", "m365")
-        logger.error(f"Failed to collect Exchange mailboxes: {e}")
-
-    return resources
-
-
-def _collect_exchange_mailboxes_from_users(
-    graph_client: GraphServiceClient,
-    tenant_id: str
-) -> List[CloudResource]:
-    """Fallback: Collect Exchange mailboxes by iterating users.
-
-    This is used when usage report data is not available.
-    Note: This only captures user mailboxes, not shared/room/group mailboxes.
-    """
-    resources = []
-
-    try:
-        logger.info("Collecting Exchange mailboxes from users (fallback)...")
-        users_response = run_sync(graph_client.users.get())
-        all_users = collect_all_pages_sync(users_response)
-
-        if all_users:
-            for user in all_users:
-                try:
-                    if not user.mail:
-                        continue
-
-                    resource = CloudResource(
-                        provider="microsoft365",
-                        subscription_id=tenant_id,
-                        region="global",
-                        resource_type="m365:exchange:mailbox",
-                        service_family="Exchange",
-                        resource_id=user.id,
-                        name=user.user_principal_name or user.display_name or "Unknown",
-                        tags={},
-                        size_gb=0.0,  # Size unknown without usage report
-                        metadata={
-                            'user_id': user.id,
-                            'user_principal_name': user.user_principal_name,
-                            'display_name': user.display_name,
-                            'mail': user.mail,
-                            'mailbox_type': 'User',
-                            'recipient_type': 'UserMailbox',
-                            'has_archive': False,
-                            'account_enabled': user.account_enabled if hasattr(user, 'account_enabled') else True,
-                            'created_datetime': str(user.created_date_time) if hasattr(user, 'created_date_time') and user.created_date_time else None,
-                        }
-                    )
-                    resources.append(resource)
-                except Exception as e:
-                    logger.debug(f"Failed to process mailbox for user {user.id}: {e}")
-                    continue
-
-        logger.info(f"Collected {len(resources)} user mailboxes (fallback mode)")
-
-    except Exception as e:
-        check_and_raise_auth_error(e, "collect Exchange mailboxes from users", "m365")
-        logger.error(f"Failed to collect Exchange mailboxes: {e}")
-
-    return resources
-
-
-# =============================================================================
-# Teams Collector
-# =============================================================================
-
-def collect_teams(graph_client: GraphServiceClient, tenant_id: str, teams_usage: Optional[Dict[str, Dict[str, Any]]] = None) -> List[CloudResource]:
-    """Collect Microsoft Teams with storage from usage report.
-    
-    Args:
-        graph_client: Microsoft Graph client
-        tenant_id: Azure AD tenant ID
-        teams_usage: Optional dict from collect_teams_usage_report() keyed by team_id
-    """
-    resources = []
-    teams_usage = teams_usage or {}
-
-    try:
-        logger.info("Collecting Microsoft Teams...")
-        groups_response = run_sync(graph_client.groups.get())
-
-        # Collect all groups across all pages
-        all_groups = collect_all_pages_sync(groups_response)
-
-        if all_groups:
-            for group in all_groups:
-                try:
-                    if not hasattr(group, 'resource_provisioning_options') or \
-                       'Team' not in (group.resource_provisioning_options or []):
-                        continue
-
-                    # Get team details
-                    try:
-                        team = run_sync(graph_client.teams.by_team_id(group.id).get())
-                    except Exception as e:
-                        logger.debug(f"Could not fetch team details for {group.id}: {e}")
-                        team = None
-
-                    # Get usage data if available
-                    usage = teams_usage.get(group.id.lower(), {})
-                    size_gb = usage.get('storage_gb', 0.0)
-
-                    resource = CloudResource(
-                        provider="microsoft365",
-                        subscription_id=tenant_id,
-                        region="global",
-                        resource_type="m365:teams:team",
-                        service_family="Teams",
-                        resource_id=group.id,
-                        name=team.display_name if team else group.display_name or "Unknown",
-                        tags={},
-                        size_gb=size_gb,
-                        metadata={
-                            'group_id': group.id,
-                            'description': (team.description if team else group.description) or None,
-                            'visibility': (team.visibility if team and hasattr(team, 'visibility') else group.visibility) if hasattr(group, 'visibility') else None,
-                            'created_datetime': str(group.created_date_time) if hasattr(group, 'created_date_time') and group.created_date_time else None,
-                            'is_archived': team.is_archived if team and hasattr(team, 'is_archived') else False,
-                            'web_url': team.web_url if team and hasattr(team, 'web_url') else None,
-                            # Add usage metrics if available
-                            'active_channels': usage.get('active_channels'),
-                            'total_channels': usage.get('total_channels'),
-                            'active_users': usage.get('active_users'),
-                            'active_external_users': usage.get('active_external_users'),
-                            'channel_messages': usage.get('channel_messages'),
-                            'last_activity_date': usage.get('last_activity_date'),
-                        }
-                    )
-                    resources.append(resource)
-                except Exception as e:
-                    logger.debug(f"Failed to process Team {group.id}: {e}")
-                    continue
-
-        total_storage = sum(r.size_gb for r in resources)
-        logger.info(f"Collected {len(resources)} Teams ({total_storage:.2f} GB)")
-
-    except Exception as e:
-        check_and_raise_auth_error(e, "collect Teams", "m365")
-        logger.error(f"Failed to collect Teams: {e}")
-
-    return resources
-
-    return resources
 
 
 def get_total_user_count(graph_client: GraphServiceClient) -> int:
@@ -891,11 +194,12 @@ def get_tenant_licensing(graph_client: GraphServiceClient) -> Dict[str, Any]:
     try:
         logger.info("Getting tenant licensing information...")
 
-        if _graph_credential is None:
+        credential = get_graph_credential()
+        if credential is None:
             logger.warning("Graph credential not initialized - cannot fetch licensing")
             return licensing
 
-        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
+        token = credential.get_token("https://graph.microsoft.com/.default")
         headers = {
             'Authorization': f'Bearer {token.token}',
             'Accept': 'application/json'
@@ -984,11 +288,12 @@ def get_user_license_assignments(
     try:
         logger.info("Collecting user license assignments...")
 
-        if _graph_credential is None:
+        credential = get_graph_credential()
+        if credential is None:
             logger.warning("Graph credential not initialized - cannot fetch license assignments")
             return license_assignments
 
-        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
+        token = credential.get_token("https://graph.microsoft.com/.default")
         headers = {
             'Authorization': f'Bearer {token.token}',
             'Accept': 'application/json'
@@ -1083,11 +388,12 @@ def get_tenant_info(graph_client: GraphServiceClient) -> Dict[str, Any]:
     try:
         logger.info("Getting tenant organization information...")
 
-        if _graph_credential is None:
+        credential = get_graph_credential()
+        if credential is None:
             logger.warning("Graph credential not initialized - cannot fetch tenant info")
             return tenant_info
 
-        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
+        token = credential.get_token("https://graph.microsoft.com/.default")
         headers = {
             'Authorization': f'Bearer {token.token}',
             'Accept': 'application/json'
@@ -1137,713 +443,8 @@ def get_tenant_info(graph_client: GraphServiceClient) -> Dict[str, Any]:
 
 
 # =============================================================================
-# Usage Reports Collection (Change Rate & Growth)
+# Change Rate & Growth Metrics
 # =============================================================================
-
-def _parse_usage_report_csv(csv_content: str) -> List[Dict[str, Any]]:
-    """Parse CSV content from Microsoft Graph usage reports.
-
-    Microsoft Graph reports API returns CSV with a BOM marker and
-    the first line contains report metadata that we skip.
-    """
-    # Remove BOM if present
-    if csv_content.startswith('\ufeff'):
-        csv_content = csv_content[1:]
-
-    # Parse CSV
-    reader = csv.DictReader(io.StringIO(csv_content))
-    return list(reader)
-
-
-def _get_usage_report(graph_client: GraphServiceClient, report_name: str) -> Optional[str]:
-    """Fetch a usage report from Microsoft Graph.
-
-    Args:
-        graph_client: Microsoft Graph client
-        report_name: Report name like 'getSharePointSiteUsageDetail'
-
-    Returns:
-        CSV content as string, or None on failure
-    """
-    try:
-        # Build the report URL with period parameter
-        # Note: The msgraph-sdk doesn't have typed methods for all reports,
-        # so we use the underlying request builder
-        import httpx
-
-        # Get access token from stored credential (avoids accessing SDK internals)
-        # We need to make a raw HTTP request for the reports API
-        if _graph_credential is None:
-            raise RuntimeError("Graph credential not initialized. Call get_graph_client first.")
-        token = _graph_credential.get_token("https://graph.microsoft.com/.default")
-
-        url = f"https://graph.microsoft.com/v1.0/reports/{report_name}(period='{USAGE_REPORT_PERIOD}')"
-
-        headers = {
-            'Authorization': f'Bearer {token.token}',
-            'Accept': 'application/json'
-        }
-
-        with httpx.Client(follow_redirects=True, timeout=120.0) as client:
-            response = client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.text
-
-    except Exception as e:
-        error_msg = str(e)
-        if '403' in error_msg or 'Forbidden' in error_msg or 'Authorization' in error_msg:
-            logger.warning(
-                f"Failed to fetch usage report {report_name}: Permission denied. "
-                "Ensure 'Reports.Read.All' (Application) permission is granted and admin consent provided."
-            )
-        else:
-            logger.warning(f"Failed to fetch usage report {report_name}: {e}")
-        return None
-
-
-def collect_sharepoint_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
-    """Collect SharePoint site usage report with historical storage data.
-
-    Returns dict keyed by site URL with storage and site type.
-    """
-    logger.info("Collecting SharePoint usage report...")
-
-    csv_content = _get_usage_report(graph_client, 'getSharePointSiteUsageDetail')
-    if not csv_content:
-        return {}
-
-    rows = _parse_usage_report_csv(csv_content)
-
-    # Debug: log column names from first row to diagnose parsing issues
-    if rows:
-        logger.debug(f"SharePoint usage report columns: {list(rows[0].keys())}")
-    else:
-        logger.debug("SharePoint usage report returned no rows")
-
-    # Build lookup by site URL
-    # Report includes: Site URL, Site Type, Root Web Template, Storage Used (Byte), etc.
-    # Note: Microsoft may use different column names or concealed data
-    sites = {}
-    skipped_no_url = 0
-    for row in rows:
-        site_url = _get_csv_field(row, 'Site URL', 'Site Url', 'siteUrl', 'Site Id', 'siteId')
-        if not site_url:
-            skipped_no_url += 1
-            continue
-
-        # Get storage
-        storage_bytes = _safe_int(_get_csv_field(
-            row, 'Storage Used (Byte)', 'Storage Used (Bytes)', 'storageUsedInBytes'
-        ))
-
-        # Get site type - this distinguishes Team Sites from SharePoint Sites
-        # Common values: Team Site, Communication Site, Group, Personal Site (OneDrive)
-        site_type = _get_csv_field(row, 'Site Type', 'siteType') or ''
-        root_web_template = _get_csv_field(row, 'Root Web Template', 'rootWebTemplate') or ''
-
-        # Determine if it's a Team Site (Teams-connected) or SharePoint Site
-        is_team_site = (
-            'group' in site_type.lower() or
-            'team' in site_type.lower() or
-            root_web_template in ('GROUP', 'Group#0', 'TEAMCHANNEL')
-        )
-
-        # Is deleted
-        is_deleted_raw = _get_csv_field(row, 'Is Deleted', 'isDeleted')
-        is_deleted = str(is_deleted_raw).lower() in ('yes', 'true', '1') if is_deleted_raw else False
-
-        sites[site_url] = {
-            'storage_bytes': storage_bytes,
-            'storage_gb': storage_bytes / (1024**3),
-            'last_activity_date': _get_csv_field(row, 'Last Activity Date', 'lastActivityDate') or '',
-            'file_count': _safe_int(_get_csv_field(row, 'File Count', 'fileCount')),
-            'active_file_count': _safe_int(_get_csv_field(row, 'Active File Count', 'activeFileCount')),
-            'page_view_count': _safe_int(_get_csv_field(row, 'Page View Count', 'pageViewCount')),
-            'site_id': _get_csv_field(row, 'Site Id', 'siteId') or '',
-            'site_type': site_type,
-            'root_web_template': root_web_template,
-            'is_team_site': is_team_site,
-            'is_deleted': is_deleted,
-            'owner_display_name': _get_csv_field(row, 'Owner Display Name', 'ownerDisplayName') or '',
-        }
-
-    # Log summary with diagnostic info
-    if skipped_no_url > 0 and len(sites) == 0:
-        logger.warning(
-            f"SharePoint usage report had {len(rows)} rows but {skipped_no_url} were skipped "
-            f"(no Site URL found). This may indicate concealed report data - check tenant "
-            "settings for 'Conceal user, group, and site names in all reports'."
-        )
-    elif skipped_no_url > 0:
-        logger.debug(f"Skipped {skipped_no_url} rows without Site URL")
-
-    team_sites = sum(1 for s in sites.values() if s['is_team_site'])
-    sp_sites = len(sites) - team_sites
-    logger.info(f"Collected usage data for {len(sites)} SharePoint sites ({team_sites} Team Sites, {sp_sites} SharePoint Sites)")
-    return sites
-
-
-def collect_onedrive_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
-    """Collect OneDrive usage report with historical storage data.
-
-    Returns dict keyed by user principal name with storage history.
-    """
-    logger.info("Collecting OneDrive usage report...")
-
-    csv_content = _get_usage_report(graph_client, 'getOneDriveUsageAccountDetail')
-    if not csv_content:
-        return {}
-
-    rows = _parse_usage_report_csv(csv_content)
-
-    # Build lookup by user principal name
-    accounts = {}
-    for row in rows:
-        upn = row.get('Owner Principal Name', row.get('User Principal Name', ''))
-        if not upn:
-            continue
-
-        # Get storage
-        storage_bytes = 0
-        for key in ['Storage Used (Byte)', 'Storage Used (Bytes)', 'storageUsedInBytes']:
-            if key in row and row[key]:
-                try:
-                    storage_bytes = int(row[key])
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-        accounts[upn.lower()] = {
-            'storage_bytes': storage_bytes,
-            'storage_gb': storage_bytes / (1024**3),
-            'last_activity_date': row.get('Last Activity Date', ''),
-            'file_count': int(row.get('File Count', 0) or 0),
-            'active_file_count': int(row.get('Active File Count', 0) or 0)
-        }
-
-    logger.info(f"Collected usage data for {len(accounts)} OneDrive accounts")
-    return accounts
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    """Safely convert value to int."""
-    if value is None or value == '':
-        return default
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Safely convert value to float."""
-    if value is None or value == '':
-        return default
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def _get_csv_field(row: Dict[str, Any], *keys: str) -> Any:
-    """Get field value trying multiple possible key names."""
-    for key in keys:
-        if key in row and row[key] is not None and row[key] != '':
-            return row[key]
-    return None
-
-
-def collect_mailbox_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
-    """Collect Exchange mailbox usage report with comprehensive data.
-
-    Returns dict keyed by user principal name with full mailbox details including:
-    - Storage size (primary mailbox)
-    - Item counts
-    - Mailbox type (UserMailbox, SharedMailbox, SchedulingMailbox, GroupMailbox)
-    - Archive status
-    - Quotas
-    - Activity dates
-    - Deleted item info
-    """
-    logger.info("Collecting Exchange mailbox usage report...")
-
-    csv_content = _get_usage_report(graph_client, 'getMailboxUsageDetail')
-    if not csv_content:
-        return {}
-
-    rows = _parse_usage_report_csv(csv_content)
-
-    # Build lookup by user principal name
-    mailboxes = {}
-    for row in rows:
-        upn = _get_csv_field(row, 'User Principal Name', 'userPrincipalName')
-        if not upn:
-            continue
-
-        # Storage used (bytes)
-        storage_bytes = _safe_int(_get_csv_field(
-            row, 'Storage Used (Byte)', 'Storage Used (Bytes)', 'storageUsedInBytes'
-        ))
-
-        # Item count
-        item_count = _safe_int(_get_csv_field(row, 'Item Count', 'itemCount'))
-
-        # Deleted items
-        deleted_item_count = _safe_int(_get_csv_field(
-            row, 'Deleted Item Count', 'deletedItemCount'
-        ))
-        deleted_item_size_bytes = _safe_int(_get_csv_field(
-            row, 'Deleted Item Size (Byte)', 'Deleted Item Size (Bytes)', 'deletedItemSizeInBytes'
-        ))
-
-        # Mailbox type from Recipient Type field
-        recipient_type = _get_csv_field(row, 'Recipient Type', 'recipientType')
-
-        # Map recipient types to friendly names
-        mailbox_type_map = {
-            'UserMailbox': 'User',
-            'SharedMailbox': 'Shared',
-            'RoomMailbox': 'Room',
-            'EquipmentMailbox': 'Equipment',
-            'SchedulingMailbox': 'Scheduling',
-            'GroupMailbox': 'Group',
-            'DiscoveryMailbox': 'Discovery',
-        }
-        mailbox_type = mailbox_type_map.get(recipient_type, recipient_type or 'User')
-
-        # Archive status
-        has_archive_raw = _get_csv_field(row, 'Has Archive', 'hasArchive')
-        has_archive = str(has_archive_raw).lower() in ('yes', 'true', '1') if has_archive_raw else False
-
-        # Is deleted
-        is_deleted_raw = _get_csv_field(row, 'Is Deleted', 'isDeleted')
-        is_deleted = str(is_deleted_raw).lower() in ('yes', 'true', '1') if is_deleted_raw else False
-
-        # Quotas (bytes)
-        issue_warning_quota = _safe_int(_get_csv_field(
-            row, 'Issue Warning Quota (Byte)', 'Issue Warning Quota (Bytes)', 'issueWarningQuotaInBytes'
-        ))
-        prohibit_send_quota = _safe_int(_get_csv_field(
-            row, 'Prohibit Send Quota (Byte)', 'Prohibit Send Quota (Bytes)', 'prohibitSendQuotaInBytes'
-        ))
-        prohibit_send_receive_quota = _safe_int(_get_csv_field(
-            row, 'Prohibit Send/Receive Quota (Byte)', 'Prohibit Send/Receive Quota (Bytes)',
-            'prohibitSendReceiveQuotaInBytes'
-        ))
-        deleted_item_quota = _safe_int(_get_csv_field(
-            row, 'Deleted Item Quota (Byte)', 'Deleted Item Quota (Bytes)', 'deletedItemQuotaInBytes'
-        ))
-
-        # Dates
-        display_name = _get_csv_field(row, 'Display Name', 'displayName') or ''
-        last_activity_date = _get_csv_field(row, 'Last Activity Date', 'lastActivityDate') or ''
-        created_date = _get_csv_field(row, 'Created Date', 'createdDate') or ''
-        deleted_date = _get_csv_field(row, 'Deleted Date', 'deletedDate') or ''
-
-        mailboxes[upn.lower()] = {
-            # Identity
-            'user_principal_name': upn,
-            'display_name': display_name,
-
-            # Type and status
-            'recipient_type': recipient_type or 'UserMailbox',
-            'mailbox_type': mailbox_type,
-            'has_archive': has_archive,
-            'is_deleted': is_deleted,
-
-            # Storage
-            'storage_bytes': storage_bytes,
-            'storage_gb': storage_bytes / (1024**3),
-            'item_count': item_count,
-
-            # Deleted items (recoverable)
-            'deleted_item_count': deleted_item_count,
-            'deleted_item_size_bytes': deleted_item_size_bytes,
-            'deleted_item_size_gb': deleted_item_size_bytes / (1024**3),
-
-            # Quotas (in GB for readability)
-            'issue_warning_quota_gb': issue_warning_quota / (1024**3) if issue_warning_quota else 0.0,
-            'prohibit_send_quota_gb': prohibit_send_quota / (1024**3) if prohibit_send_quota else 0.0,
-            'prohibit_send_receive_quota_gb': prohibit_send_receive_quota / (1024**3) if prohibit_send_receive_quota else 0.0,
-            'deleted_item_quota_gb': deleted_item_quota / (1024**3) if deleted_item_quota else 0.0,
-
-            # Calculate quota usage percentage
-            'quota_usage_percent': (storage_bytes / prohibit_send_receive_quota * 100) if prohibit_send_receive_quota else 0.0,
-
-            # Dates
-            'last_activity_date': last_activity_date,
-            'created_date': created_date,
-            'deleted_date': deleted_date,
-        }
-
-    # Log summary by type
-    type_counts = {}
-    for mb in mailboxes.values():
-        t = mb['mailbox_type']
-        type_counts[t] = type_counts.get(t, 0) + 1
-
-    logger.info(f"Collected usage data for {len(mailboxes)} Exchange mailboxes: {type_counts}")
-    return mailboxes
-
-
-def collect_teams_activity_report(graph_client: GraphServiceClient) -> Dict[str, Any]:
-    """Collect Teams activity report for chat/meeting metrics.
-
-    Returns dict with Teams chat and meeting activity data including:
-    - Team chat message counts
-    - Private chat message counts
-    - Calls and meetings counts
-    - Total estimated metered units
-    """
-    logger.info("Collecting Teams activity report...")
-
-    csv_content = _get_usage_report(graph_client, 'getTeamsUserActivityUserDetail')
-    if not csv_content:
-        return {}
-
-    rows = _parse_usage_report_csv(csv_content)
-
-    # Aggregate activity across all users
-    totals = {
-        'team_chat_message_count': 0,
-        'private_chat_message_count': 0,
-        'call_count': 0,
-        'meeting_count': 0,
-        'meetings_organized_count': 0,
-        'meetings_attended_count': 0,
-        'ad_hoc_meetings_organized_count': 0,
-        'scheduled_one_time_meetings_organized_count': 0,
-        'scheduled_recurring_meetings_organized_count': 0,
-        'audio_duration_seconds': 0,
-        'video_duration_seconds': 0,
-        'screen_share_duration_seconds': 0,
-        'active_users': 0,
-        'users_with_activity': 0,
-    }
-
-    for row in rows:
-        # Check if user had any activity
-        has_activity = any([
-            _safe_int(_get_csv_field(row, 'Team Chat Message Count', 'teamChatMessageCount')) > 0,
-            _safe_int(_get_csv_field(row, 'Private Chat Message Count', 'privateChatMessageCount')) > 0,
-            _safe_int(_get_csv_field(row, 'Call Count', 'callCount')) > 0,
-            _safe_int(_get_csv_field(row, 'Meeting Count', 'meetingCount')) > 0,
-        ])
-
-        if has_activity:
-            totals['users_with_activity'] += 1
-
-        # Aggregate message counts
-        totals['team_chat_message_count'] += _safe_int(_get_csv_field(
-            row, 'Team Chat Message Count', 'teamChatMessageCount'
-        ))
-        totals['private_chat_message_count'] += _safe_int(_get_csv_field(
-            row, 'Private Chat Message Count', 'privateChatMessageCount'
-        ))
-
-        # Aggregate calls/meetings
-        totals['call_count'] += _safe_int(_get_csv_field(row, 'Call Count', 'callCount'))
-        totals['meeting_count'] += _safe_int(_get_csv_field(row, 'Meeting Count', 'meetingCount'))
-        totals['meetings_organized_count'] += _safe_int(_get_csv_field(
-            row, 'Meetings Organized Count', 'meetingsOrganizedCount'
-        ))
-        totals['meetings_attended_count'] += _safe_int(_get_csv_field(
-            row, 'Meetings Attended Count', 'meetingsAttendedCount'
-        ))
-
-        # Duration tracking (in seconds)
-        totals['audio_duration_seconds'] += _safe_int(_get_csv_field(
-            row, 'Audio Duration In Seconds', 'audioDurationInSeconds'
-        ))
-        totals['video_duration_seconds'] += _safe_int(_get_csv_field(
-            row, 'Video Duration In Seconds', 'videoDurationInSeconds'
-        ))
-        totals['screen_share_duration_seconds'] += _safe_int(_get_csv_field(
-            row, 'Screen Share Duration In Seconds', 'screenShareDurationInSeconds'
-        ))
-
-        totals['active_users'] += 1
-
-    # Calculate estimated metered units (messages are the primary metered resource)
-    # Microsoft's metering is complex, but chat messages are primary
-    totals['estimated_metered_units_user_chats'] = totals['private_chat_message_count']
-    totals['estimated_metered_units_channel_conversations'] = totals['team_chat_message_count']
-    totals['total_estimated_metered_units'] = (
-        totals['private_chat_message_count'] + totals['team_chat_message_count']
-    )
-
-    # Project for next year (linear projection from 180-day report period)
-    days_in_period = USAGE_REPORT_PERIOD_DAYS
-    projection_factor = 365 / days_in_period
-    totals['projected_annual_metered_units'] = int(totals['total_estimated_metered_units'] * projection_factor)
-    totals['total_metered_units_with_projection'] = (
-        totals['total_estimated_metered_units'] + totals['projected_annual_metered_units']
-    )
-
-    logger.info(f"Collected Teams activity for {totals['active_users']} users: "
-                f"{totals['total_estimated_metered_units']:,} metered units")
-    return totals
-
-
-def collect_teams_usage_report(graph_client: GraphServiceClient) -> Dict[str, Dict[str, Any]]:
-    """Collect Teams team-level usage report with storage data.
-
-    Returns dict keyed by Team ID with storage and activity metrics.
-    Uses getTeamsTeamActivityDetail report which includes storage used per team.
-    """
-    logger.info("Collecting Teams team usage report...")
-
-    csv_content = _get_usage_report(graph_client, 'getTeamsTeamActivityDetail')
-    if not csv_content:
-        return {}
-
-    rows = _parse_usage_report_csv(csv_content)
-
-    # Debug: log column names from first row
-    if rows:
-        logger.debug(f"Teams team usage report columns: {list(rows[0].keys())}")
-    else:
-        logger.warning("Teams team usage report returned no data")
-        return {}
-
-    teams_usage = {}
-    skipped = 0
-
-    for row in rows:
-        # Get team ID - the key field for matching
-        team_id = _get_csv_field(row, 'Team Id', 'teamId')
-        if not team_id:
-            skipped += 1
-            continue
-
-        # Get team name
-        team_name = _get_csv_field(row, 'Team Name', 'teamName') or ''
-
-        # Storage used (in bytes)
-        storage_bytes = _safe_int(_get_csv_field(row, 'Storage Used (Byte)', 'storageUsedInBytes'))
-        storage_gb = storage_bytes / (1024**3) if storage_bytes else 0.0
-
-        # Channel counts
-        active_channels = _safe_int(_get_csv_field(row, 'Active Channels', 'activeChannels'))
-        active_shared_channels = _safe_int(_get_csv_field(row, 'Active Shared Channels', 'activeSharedChannels'))
-        total_channels = _safe_int(_get_csv_field(row, 'Total Channels', 'totalChannels'))
-
-        # User counts
-        active_users = _safe_int(_get_csv_field(row, 'Active Users', 'activeUsers'))
-        active_external_users = _safe_int(_get_csv_field(row, 'Active External Users', 'activeExternalUsers'))
-        active_guests = _safe_int(_get_csv_field(row, 'Active Guests', 'activeGuests'))
-        
-        # Activity counts  
-        channel_messages = _safe_int(_get_csv_field(row, 'Post Messages', 'postMessages'))
-        reply_messages = _safe_int(_get_csv_field(row, 'Reply Messages', 'replyMessages'))
-        urgent_messages = _safe_int(_get_csv_field(row, 'Urgent Messages', 'urgentMessages'))
-        mentions = _safe_int(_get_csv_field(row, 'Mentions', 'mentions'))
-        meetings_organized = _safe_int(_get_csv_field(row, 'Meetings Organized', 'meetingsOrganized'))
-
-        # Last activity
-        last_activity_date = _get_csv_field(row, 'Last Activity Date', 'lastActivityDate') or ''
-
-        teams_usage[team_id.lower()] = {
-            'team_id': team_id,
-            'team_name': team_name,
-            'storage_bytes': storage_bytes,
-            'storage_gb': storage_gb,
-            'active_channels': active_channels,
-            'active_shared_channels': active_shared_channels,
-            'total_channels': total_channels,
-            'active_users': active_users,
-            'active_external_users': active_external_users,
-            'active_guests': active_guests,
-            'channel_messages': channel_messages,
-            'reply_messages': reply_messages,
-            'urgent_messages': urgent_messages,
-            'mentions': mentions,
-            'meetings_organized': meetings_organized,
-            'last_activity_date': last_activity_date,
-        }
-
-    total_storage_gb = sum(t['storage_gb'] for t in teams_usage.values())
-    logger.info(f"Collected usage data for {len(teams_usage)} Teams ({total_storage_gb:.2f} GB total storage)")
-    if skipped > 0:
-        logger.debug(f"Skipped {skipped} rows without Team ID")
-
-    return teams_usage
-
-
-def generate_exchange_summary(mailbox_usage: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Generate comprehensive Exchange Online summary matching sizing spreadsheet format.
-
-    Categories:
-    - User Active Mailboxes (active, not deleted, recipient type UserMailbox)
-    - User Archive Mailboxes (has archive enabled - note: archive SIZE requires PowerShell)
-    - SoftDeleted Active Mailboxes (is_deleted=True)
-    - SoftDeleted Archive Mailboxes (is_deleted=True with archive)
-    - Group Active Mailboxes (GroupMailbox recipient type)
-    - Group Archive Mailboxes (GroupMailbox with archive)
-    - PublicFolder Active Mailboxes (PublicFolderMailbox recipient type)
-    """
-    summary = {
-        'user_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
-                        'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
-        'user_archive_enabled': {'count': 0},  # Note: Archive SIZE not available via Graph API
-        'softdeleted_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
-                               'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
-        'softdeleted_archive': {'count': 0},
-        'group_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
-                         'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
-        'group_archive': {'count': 0},
-        'publicfolder_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
-                                'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
-        'shared_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
-                          'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
-        'room_equipment_active': {'count': 0, 'item_count': 0, 'item_size_gib': 0.0,
-                                   'recoverable_item_count': 0, 'recoverable_item_size_gib': 0.0},
-    }
-
-    for _upn, mb in mailbox_usage.items():
-        recipient_type = mb.get('recipient_type', 'UserMailbox')
-        is_deleted = mb.get('is_deleted', False)
-        has_archive = mb.get('has_archive', False)
-
-        item_count = mb.get('item_count', 0)
-        item_size_gib = mb.get('storage_gb', 0.0)
-        recoverable_count = mb.get('deleted_item_count', 0)
-        recoverable_size_gib = mb.get('deleted_item_size_gb', 0.0)
-
-        # Categorize by recipient type and status
-        if recipient_type == 'GroupMailbox':
-            if is_deleted:
-                summary['softdeleted_active']['count'] += 1  # Soft-deleted groups
-            else:
-                summary['group_active']['count'] += 1
-                summary['group_active']['item_count'] += item_count
-                summary['group_active']['item_size_gib'] += item_size_gib
-                summary['group_active']['recoverable_item_count'] += recoverable_count
-                summary['group_active']['recoverable_item_size_gib'] += recoverable_size_gib
-                if has_archive:
-                    summary['group_archive']['count'] += 1
-
-        elif recipient_type == 'PublicFolderMailbox':
-            summary['publicfolder_active']['count'] += 1
-            summary['publicfolder_active']['item_count'] += item_count
-            summary['publicfolder_active']['item_size_gib'] += item_size_gib
-            summary['publicfolder_active']['recoverable_item_count'] += recoverable_count
-            summary['publicfolder_active']['recoverable_item_size_gib'] += recoverable_size_gib
-
-        elif recipient_type == 'SharedMailbox':
-            if is_deleted:
-                summary['softdeleted_active']['count'] += 1
-            else:
-                summary['shared_active']['count'] += 1
-                summary['shared_active']['item_count'] += item_count
-                summary['shared_active']['item_size_gib'] += item_size_gib
-                summary['shared_active']['recoverable_item_count'] += recoverable_count
-                summary['shared_active']['recoverable_item_size_gib'] += recoverable_size_gib
-
-        elif recipient_type in ('RoomMailbox', 'EquipmentMailbox', 'SchedulingMailbox'):
-            summary['room_equipment_active']['count'] += 1
-            summary['room_equipment_active']['item_count'] += item_count
-            summary['room_equipment_active']['item_size_gib'] += item_size_gib
-            summary['room_equipment_active']['recoverable_item_count'] += recoverable_count
-            summary['room_equipment_active']['recoverable_item_size_gib'] += recoverable_size_gib
-
-        else:  # UserMailbox or unknown
-            if is_deleted:
-                summary['softdeleted_active']['count'] += 1
-                summary['softdeleted_active']['item_count'] += item_count
-                summary['softdeleted_active']['item_size_gib'] += item_size_gib
-                summary['softdeleted_active']['recoverable_item_count'] += recoverable_count
-                summary['softdeleted_active']['recoverable_item_size_gib'] += recoverable_size_gib
-                if has_archive:
-                    summary['softdeleted_archive']['count'] += 1
-            else:
-                summary['user_active']['count'] += 1
-                summary['user_active']['item_count'] += item_count
-                summary['user_active']['item_size_gib'] += item_size_gib
-                summary['user_active']['recoverable_item_count'] += recoverable_count
-                summary['user_active']['recoverable_item_size_gib'] += recoverable_size_gib
-                if has_archive:
-                    summary['user_archive_enabled']['count'] += 1
-
-    # Calculate totals for each category
-    for category in summary.values():
-        if 'item_count' in category:
-            category['total_item_count'] = category['item_count'] + category.get('recoverable_item_count', 0)
-            category['total_item_size_gib'] = round(
-                category['item_size_gib'] + category.get('recoverable_item_size_gib', 0.0), 3
-            )
-            # Round individual values
-            category['item_size_gib'] = round(category['item_size_gib'], 3)
-            category['recoverable_item_size_gib'] = round(category.get('recoverable_item_size_gib', 0.0), 3)
-
-    # Calculate grand totals
-    summary['totals_default'] = {
-        'count': summary['user_active']['count'],
-        'item_count': summary['user_active']['item_count'],
-        'item_size_gib': summary['user_active']['item_size_gib'],
-        'recoverable_item_count': summary['user_active']['recoverable_item_count'],
-        'recoverable_item_size_gib': summary['user_active']['recoverable_item_size_gib'],
-        'total_item_count': summary['user_active']['total_item_count'],
-        'total_item_size_gib': summary['user_active']['total_item_size_gib'],
-    }
-
-    # Totals with all options (including deleted, groups, shared, etc.)
-    all_active_categories = ['user_active', 'group_active', 'publicfolder_active',
-                              'shared_active', 'room_equipment_active', 'softdeleted_active']
-    summary['totals_all'] = {
-        'count': sum(summary[cat]['count'] for cat in all_active_categories),
-        'item_count': sum(summary[cat].get('item_count', 0) for cat in all_active_categories),
-        'item_size_gib': round(sum(summary[cat].get('item_size_gib', 0.0) for cat in all_active_categories), 3),
-        'recoverable_item_count': sum(summary[cat].get('recoverable_item_count', 0) for cat in all_active_categories),
-        'recoverable_item_size_gib': round(sum(summary[cat].get('recoverable_item_size_gib', 0.0) for cat in all_active_categories), 3),
-    }
-    summary['totals_all']['total_item_count'] = (
-        summary['totals_all']['item_count'] + summary['totals_all']['recoverable_item_count']
-    )
-    summary['totals_all']['total_item_size_gib'] = round(
-        summary['totals_all']['item_size_gib'] + summary['totals_all']['recoverable_item_size_gib'], 3
-    )
-
-    return summary
-
-
-def generate_sharepoint_summary(site_usage: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Generate SharePoint Online summary with site type breakdown.
-
-    Categories:
-    - SharePoint Sites (Communication sites, Publishing sites)
-    - Team Sites (Teams-connected sites)
-    """
-    summary = {
-        'sharepoint_sites': {'count': 0, 'storage_gib': 0.0},
-        'team_sites': {'count': 0, 'storage_gib': 0.0},
-        'deleted_sites': {'count': 0, 'storage_gib': 0.0},
-        'total': {'count': 0, 'storage_gib': 0.0},
-    }
-
-    for _url, site in site_usage.items():
-        if site.get('is_deleted', False):
-            summary['deleted_sites']['count'] += 1
-            summary['deleted_sites']['storage_gib'] += site.get('storage_gb', 0.0)
-        elif site.get('is_team_site', False):
-            summary['team_sites']['count'] += 1
-            summary['team_sites']['storage_gib'] += site.get('storage_gb', 0.0)
-        else:
-            summary['sharepoint_sites']['count'] += 1
-            summary['sharepoint_sites']['storage_gib'] += site.get('storage_gb', 0.0)
-
-    # Total (excluding deleted)
-    summary['total']['count'] = summary['sharepoint_sites']['count'] + summary['team_sites']['count']
-    summary['total']['storage_gib'] = round(
-        summary['sharepoint_sites']['storage_gib'] + summary['team_sites']['storage_gib'], 3
-    )
-
-    # Round values
-    for cat in summary.values():
-        cat['storage_gib'] = round(cat['storage_gib'], 3)
-
-    return summary
-
 
 def collect_storage_history_report(graph_client: GraphServiceClient, service: str) -> List[Dict[str, Any]]:
     """Collect storage history to calculate change rate and growth.
@@ -1866,11 +467,11 @@ def collect_storage_history_report(graph_client: GraphServiceClient, service: st
 
     logger.info(f"Collecting {service} storage history...")
 
-    csv_content = _get_usage_report(graph_client, report_name)
+    csv_content = get_usage_report(report_name)
     if not csv_content:
         return []
 
-    rows = _parse_usage_report_csv(csv_content)
+    rows = parse_usage_report_csv(csv_content)
 
     history = []
     for row in rows:
@@ -1967,117 +568,6 @@ def calculate_change_rate_and_growth(history: List[Dict[str, Any]]) -> Dict[str,
 
 
 # =============================================================================
-# Entra ID Collectors
-# =============================================================================
-
-def collect_entra_users(graph_client: GraphServiceClient, tenant_id: str) -> List[CloudResource]:
-    """Collect Entra ID (Azure AD) users."""
-    resources = []
-
-    try:
-        logger.info("Collecting Entra ID users...")
-        users_response = run_sync(graph_client.users.get())
-
-        # Collect all users across all pages
-        all_users = collect_all_pages_sync(users_response)
-
-        if all_users:
-            for user in all_users:
-                try:
-                    resource = CloudResource(
-                        provider="entraid",
-                        subscription_id=tenant_id,
-                        region="global",
-                        resource_type="entraid:user",
-                        service_family="EntraID",
-                        resource_id=user.id,
-                        name=user.user_principal_name or user.display_name or "Unknown",
-                        tags={},
-                        size_gb=0.0,
-                        metadata={
-                            'user_principal_name': user.user_principal_name,
-                            'display_name': user.display_name,
-                            'mail': user.mail,
-                            'account_enabled': user.account_enabled if hasattr(user, 'account_enabled') else True,
-                            'user_type': user.user_type if hasattr(user, 'user_type') else 'Member',
-                            'job_title': user.job_title if hasattr(user, 'job_title') else None,
-                            'department': user.department if hasattr(user, 'department') else None,
-                            'created_datetime': str(user.created_date_time) if hasattr(user, 'created_date_time') and user.created_date_time else None
-                        }
-                    )
-                    resources.append(resource)
-                except Exception as e:
-                    logger.debug(f"Failed to process user {user.id}: {e}")
-                    continue
-
-        logger.info(f"Collected {len(resources)} Entra ID users")
-
-    except Exception as e:
-        check_and_raise_auth_error(e, "collect Entra ID users", "m365")
-        logger.error(f"Failed to collect Entra ID users: {e}")
-
-    return resources
-
-
-def collect_entra_groups(graph_client: GraphServiceClient, tenant_id: str) -> List[CloudResource]:
-    """Collect Entra ID (Azure AD) groups."""
-    resources = []
-
-    try:
-        logger.info("Collecting Entra ID groups...")
-        groups_response = run_sync(graph_client.groups.get())
-
-        # Collect all groups across all pages
-        all_groups = collect_all_pages_sync(groups_response)
-
-        if all_groups:
-            for group in all_groups:
-                try:
-                    member_count = 0
-                    try:
-                        members = run_sync(graph_client.groups.by_group_id(group.id).members.get())
-                        member_count = len(members.value) if members and members.value else 0
-                    except Exception as e:
-                        logger.debug(f"Could not fetch member count for group {group.id}: {e}")
-                        pass
-
-                    resource = CloudResource(
-                        provider="entraid",
-                        subscription_id=tenant_id,
-                        region="global",
-                        resource_type="entraid:group",
-                        service_family="EntraID",
-                        resource_id=group.id,
-                        name=group.display_name or "Unknown",
-                        tags={},
-                        size_gb=0.0,
-                        metadata={
-                            'display_name': group.display_name,
-                            'description': group.description,
-                            'mail': group.mail,
-                            'mail_enabled': group.mail_enabled if hasattr(group, 'mail_enabled') else False,
-                            'security_enabled': group.security_enabled if hasattr(group, 'security_enabled') else False,
-                            'group_types': list(group.group_types) if hasattr(group, 'group_types') and group.group_types else [],
-                            'member_count': member_count,
-                            'created_datetime': str(group.created_date_time) if hasattr(group, 'created_date_time') and group.created_date_time else None,
-                            'visibility': group.visibility if hasattr(group, 'visibility') else None
-                        }
-                    )
-                    resources.append(resource)
-                except Exception as e:
-                    logger.debug(f"Failed to process group {group.id}: {e}")
-                    continue
-
-        logger.info(f"Collected {len(resources)} Entra ID groups")
-
-    except Exception as e:
-        check_and_raise_auth_error(e, "collect Entra ID groups", "m365")
-        logger.error(f"Failed to collect Entra ID groups: {e}")
-
-    return resources
-
-
-# =============================================================================
 # Output Utilities (M365-specific helpers)
 # =============================================================================
 
@@ -2160,23 +650,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Option 1: Azure CLI / Managed Identity (recommended)
-    az login
-    python m365_collect.py --use-default-credential
-
-    # Option 2: Environment variables with App Registration
+    # Option 1: App Registration (RECOMMENDED for full functionality)
     export MS365_TENANT_ID="your-tenant-id"
     export MS365_CLIENT_ID="your-client-id"
     export MS365_CLIENT_SECRET="your-client-secret"
     python m365_collect.py
 
+    # Option 2: Azure CLI / Managed Identity (limited - no usage reports)
+    az login
+    python m365_collect.py --use-default-credential
+
     # Include Entra ID users and groups
     python m365_collect.py --include-entra
 
 Authentication:
-    DefaultAzureCredential (--use-default-credential) uses the Azure identity
-    chain: Managed Identity > Azure CLI > Environment variables. This is the
-    recommended approach for Azure Cloud Shell and local development.
+    App Registration with Application permissions is RECOMMENDED because
+    Reports.Read.All (required for usage reports) only works with Application
+    permissions. Without usage reports, collection falls back to slower
+    per-user iteration and some data (shared/room mailboxes) is unavailable.
+
+    DefaultAzureCredential (--use-default-credential) uses Delegated permissions
+    which cannot access usage reports. Use only for quick testing.
 
 Required Azure AD App Permissions (Application type):
     - Sites.Read.All (SharePoint sites)
@@ -2185,7 +679,7 @@ Required Azure AD App Permissions (Application type):
     - Mail.Read (Exchange mailbox metadata)
     - Group.Read.All (Groups, Teams)
     - Team.ReadBasic.All (Teams details)
-    - Reports.Read.All (Usage reports for change rate and growth metrics)
+    - Reports.Read.All (CRITICAL - enables bulk collection via usage reports)
         """
     )
 
@@ -2197,7 +691,7 @@ Required Azure AD App Permissions (Application type):
                         help='Azure AD application (client) ID (or set MS365_CLIENT_ID env var)')
     # Client secret is env-var only for security (no CLI arg to avoid shell history exposure)
     parser.add_argument('--use-default-credential', action='store_true',
-                        help='Use Azure DefaultAzureCredential (managed identity, Azure CLI, etc.)')
+                        help='Use Azure DefaultAzureCredential (limited functionality - no usage reports)')
     parser.add_argument('--output', '--output-dir', '-o',
                         dest='output',
                         default='./cca_m365_output',
@@ -2264,17 +758,18 @@ Required Azure AD App Permissions (Application type):
         if not args.tenant_id or not args.client_id or not client_secret:
             print("ERROR: Missing credentials. Please either:")
             print("")
-            print("Option 1: Use Azure CLI / Managed Identity (recommended):")
-            print("  az login")
-            print("  python m365_collect.py --use-default-credential")
-            print("")
-            print("Option 2: Use App Registration with client secret:")
+            print("Option 1: Use App Registration with client secret (RECOMMENDED):")
             print("  export MS365_TENANT_ID=\"your-tenant-id\"")
             print("  export MS365_CLIENT_ID=\"your-client-id\"")
             print("  export MS365_CLIENT_SECRET=\"your-secret\"")
             print("  python m365_collect.py")
             print("")
-            print("Note: In Azure Cloud Shell, --use-default-credential works automatically.")
+            print("Option 2: Use Azure CLI / Managed Identity (limited functionality):")
+            print("  az login")
+            print("  python m365_collect.py --use-default-credential")
+            print("")
+            print("Note: App Registration is required for Reports.Read.All API access")
+            print("which enables complete mailbox collection and usage metrics.")
             sys.exit(1)
 
     # Create output directory
@@ -2285,6 +780,20 @@ Required Azure AD App Permissions (Application type):
         if use_default_credential:
             logger.info("Initializing Microsoft Graph client with DefaultAzureCredential...")
             print("Auth: Using DefaultAzureCredential (Azure CLI / Managed Identity)")
+            print("")
+            print("⚠️  WARNING: DefaultAzureCredential uses Delegated permissions which cannot")
+            print("   access the Reports.Read.All API. Collection will fall back to slower")
+            print("   per-user iteration and some data will be unavailable:")
+            print("   - Only user mailboxes collected (not shared/room/group mailboxes)")
+            print("   - No storage metrics for Exchange mailboxes")
+            print("   - Slower collection (hours for large tenants)")
+            print("")
+            print("   For complete data collection, use App Registration with Application permissions:")
+            print('     export MS365_TENANT_ID="your-tenant-id"')
+            print('     export MS365_CLIENT_ID="your-client-id"')
+            print('     export MS365_CLIENT_SECRET="your-secret"')
+            print("     python m365_collect.py")
+            print("")
             graph_client = get_graph_client_default_credential()
             # For DefaultAzureCredential, we need to discover tenant ID
             tenant_id = args.tenant_id or "default"
@@ -2307,7 +816,7 @@ Required Azure AD App Permissions (Application type):
             print("  2. Run: az login")
             print("  3. Run: python m365_collect.py --use-default-credential")
             print("")
-            print("  Or use App Registration credentials instead:")
+            print("  For complete data collection, use App Registration instead (RECOMMENDED):")
             print('    export MS365_TENANT_ID="your-tenant-id"')
             print('    export MS365_CLIENT_ID="your-client-id"')
             print('    export MS365_CLIENT_SECRET="your-secret"')

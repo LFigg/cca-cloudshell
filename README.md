@@ -234,19 +234,53 @@ See [setup/](setup/) for Azure/GCP permission setup scripts.
 ```
 cca-cloudshell/
 ├── collect.py              # Unified collector entry point
-├── aws_collect.py          # AWS collector
-├── azure_collect.py        # Azure collector
+├── aws_collect.py          # AWS collector (orchestration only)
+├── azure_collect.py        # Azure collector (orchestration only)
+├── gcp_collect.py          # GCP collector (orchestration only)
+├── m365_collect.py         # M365 collector (orchestration only)
 ├── cost_collect.py         # Cost analyzer
-├── gcp_collect.py          # GCP collector
-├── m365_collect.py         # M365 collector
 ├── pyproject.toml          # Project config (mypy, pytest, ruff)
 ├── setup/                  # IAM/permission setup scripts
 ├── config-examples/        # YAML config file examples
-├── lib/                    # Shared models and utilities
-│   ├── constants.py        # Centralized constants
+├── lib/                    # Shared utilities and cloud-specific modules
 │   ├── models.py           # Resource data models
 │   ├── utils.py            # Common utilities
-│   └── ...
+│   ├── constants.py        # Centralized constants
+│   ├── change_rate.py      # Change rate metric helpers
+│   ├── aws/                # AWS collection modules
+│   │   ├── auth.py         # Session, role assumption, Organizations
+│   │   ├── compute.py      # EC2, EBS, Lambda
+│   │   ├── storage.py      # S3, EFS, FSx
+│   │   ├── databases.py    # RDS, DynamoDB, ElastiCache, etc.
+│   │   ├── container.py    # EKS
+│   │   ├── backup.py       # AWS Backup
+│   │   ├── monitoring.py   # CloudWatch change rates
+│   │   ├── helpers.py      # Account validation, chunking
+│   │   └── parallel.py     # Multi-account parallel collection
+│   ├── azure/              # Azure collection modules
+│   │   ├── auth.py         # Credential handling
+│   │   ├── compute.py      # VMs, disks, snapshots, functions
+│   │   ├── storage.py      # Storage accounts
+│   │   ├── databases.py    # SQL, CosmosDB, Redis
+│   │   ├── container.py    # AKS
+│   │   ├── backup.py       # Recovery Services vaults
+│   │   ├── monitoring.py   # Azure Monitor change rates
+│   │   └── helpers.py      # Subscription/tag utilities
+│   ├── gcp/                # GCP collection modules
+│   │   ├── auth.py         # Credential handling
+│   │   ├── compute.py      # Compute Engine, snapshots
+│   │   ├── storage.py      # Cloud Storage
+│   │   ├── databases.py    # Cloud SQL, Spanner, Bigtable, etc.
+│   │   ├── container.py    # GKE
+│   │   ├── backup.py       # Cloud Backup
+│   │   ├── monitoring.py   # Cloud Monitoring change rates
+│   │   └── helpers.py      # Project/label utilities
+│   └── m365/               # M365 collection modules
+│       ├── entra.py        # Entra ID / users
+│       ├── exchange.py     # Exchange Online
+│       ├── sharepoint.py   # SharePoint
+│       ├── onedrive.py     # OneDrive
+│       └── teams.py        # Teams
 ├── scripts/                # Report generators
 │   ├── generate_assessment_report.py
 │   ├── generate_protection_report.py

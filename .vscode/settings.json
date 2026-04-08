@@ -1,0 +1,14 @@
+{
+  "github-actions.workflows.pinned.refresh.enabled": false,
+  "github-actions.org-features": false,
+  "github-actions.workflows.validation.enabled": false,
+  "github-actions.workflows.secrets.validation.enabled": false,
+  "github-actions.remote-name": "origin",
+  "yaml.schemas": {},
+  "yaml.customTags": [],
+  "yaml.validate": true,
+  "[github-actions-workflow]": {
+    "editor.defaultFormatter": "redhat.yaml"
+  },
+  "github-actions.workflows.secrets.validation": false
+}

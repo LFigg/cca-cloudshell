@@ -5,6 +5,12 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.12] - 2026-04-08
+
+### Fixed
+- **S3 Bucket Sizes**: CloudWatch query now uses `AllStorageTypes` dimension first, falling back to `StandardStorage`. Previously only `StandardStorage` was queried, causing buckets using IA, Glacier, Intelligent-Tiering, or Deep Archive storage classes to report 0 bytes.
+- **RDS Tag Collection**: All four RDS collectors (instances, clusters, snapshots, cluster snapshots) now parse the `TagList` field returned by the AWS RDS APIs. Previously all RDS resources were collected with empty tags, resulting in 0% tag coverage for RDS.
+
 ## [1.0.11] - 2026-03-23
 
 ### Added
