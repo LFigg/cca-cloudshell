@@ -2340,6 +2340,66 @@ def collect_backup_region_settings(session: boto3.Session, region: str, account_
 # Redshift Collector
 # =============================================================================
 
+# Maximum storage capacity per node type (GB).
+# DC2/DS2: local SSD/HDD (hard limit).
+# RA3: maximum managed storage tier per node (elastic — actual usage is usually far less).
+_REDSHIFT_NODE_CAPACITY_GB = {
+    'dc2.large': 160,
+    'dc2.8xlarge': 2560,
+    'ds2.xlarge': 2000,
+    'ds2.8xlarge': 16000,
+    'ra3.xlplus': 32000,
+    'ra3.4xlarge': 128000,
+    'ra3.16xlarge': 128000,
+}
+
+
+def _get_redshift_used_storage_gb(
+    session: boto3.Session,
+    region: str,
+    cluster_id: str,
+    node_type: str,
+    num_nodes: int,
+) -> tuple:
+    """Return (used_gb, storage_source) for a Redshift cluster.
+
+    Queries CloudWatch PercentageDiskSpaceUsed and multiplies by node capacity
+    to get actual data stored rather than raw provisioned capacity.
+    Falls back to full capacity estimate if CloudWatch data is unavailable.
+
+    For RA3 (managed storage): PercentageDiskSpaceUsed measures utilisation of
+    the managed storage tier — applying it against the per-node max gives a
+    much tighter estimate than assuming the cluster is 100% full.
+    """
+    capacity_gb = _REDSHIFT_NODE_CAPACITY_GB.get(node_type, 0) * num_nodes
+    if capacity_gb == 0:
+        return 0.0, 'unknown_node_type'
+
+    try:
+        cw = session.client('cloudwatch', region_name=region)
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(days=3)
+
+        response = cw.get_metric_statistics(
+            Namespace='AWS/Redshift',
+            MetricName='PercentageDiskSpaceUsed',
+            Dimensions=[{'Name': 'ClusterIdentifier', 'Value': cluster_id}],
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=86400,
+            Statistics=['Average'],
+        )
+        datapoints = response.get('Datapoints', [])
+        if datapoints:
+            latest = max(datapoints, key=lambda x: x['Timestamp'])
+            pct = latest.get('Average', 0.0)
+            return round((pct / 100.0) * capacity_gb, 2), 'cloudwatch'
+    except Exception:
+        pass
+
+    return float(capacity_gb), 'capacity_estimate'
+
+
 def collect_redshift_clusters(session: boto3.Session, region: str, account_id: str) -> List[CloudResource]:
     """Collect Amazon Redshift clusters."""
     resources = []
@@ -2350,19 +2410,13 @@ def collect_redshift_clusters(session: boto3.Session, region: str, account_id: s
         for page in paginator.paginate():
             for cluster in page.get('Clusters', []):
                 cluster_id = cluster.get('ClusterIdentifier', '')
-
-                # Calculate total storage from number of nodes * node storage
                 num_nodes = cluster.get('NumberOfNodes', 1)
                 node_type = cluster.get('NodeType', '')
 
-                # Redshift node storage estimates (GB per node)
-                node_storage_map = {
-                    'dc2.large': 160, 'dc2.8xlarge': 2560,
-                    'ra3.xlplus': 32000, 'ra3.4xlarge': 128000, 'ra3.16xlarge': 128000,
-                    'ds2.xlarge': 2000, 'ds2.8xlarge': 16000,
-                }
-                storage_per_node = node_storage_map.get(node_type, 0)
-                total_storage_gb = num_nodes * storage_per_node
+                used_gb, storage_source = _get_redshift_used_storage_gb(
+                    session, region, cluster_id, node_type, num_nodes
+                )
+                capacity_gb = _REDSHIFT_NODE_CAPACITY_GB.get(node_type, 0) * num_nodes
 
                 tags = {t['Key']: t['Value'] for t in cluster.get('Tags', [])}
 
@@ -2375,14 +2429,15 @@ def collect_redshift_clusters(session: boto3.Session, region: str, account_id: s
                     resource_id=f"arn:aws:redshift:{region}:{account_id}:cluster:{cluster_id}",
                     name=cluster_id,
                     tags=tags,
-                    size_gb=float(total_storage_gb),
+                    size_gb=used_gb,
                     metadata={
                         'node_type': node_type,
                         'number_of_nodes': num_nodes,
                         'cluster_status': cluster.get('ClusterStatus'),
                         'db_name': cluster.get('DBName'),
                         'encrypted': cluster.get('Encrypted', False),
-                        'total_storage_capacity_gb': total_storage_gb,
+                        'total_storage_capacity_gb': capacity_gb,
+                        'storage_source': storage_source,
                     }
                 )
                 resources.append(resource)

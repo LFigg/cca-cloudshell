@@ -5,6 +5,11 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.13] - 2026-04-08
+
+### Fixed
+- **Redshift Storage**: Now queries CloudWatch `PercentageDiskSpaceUsed` to report actual data stored rather than provisioned capacity. The previous approach used `nodes × max_node_capacity` (e.g. 128 TB/node for RA3), which massively overstated actual usage. The `storage_source` metadata field records whether CloudWatch or the capacity estimate was used.
+
 ## [1.0.12] - 2026-04-08
 
 ### Fixed
