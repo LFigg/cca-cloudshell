@@ -64,7 +64,7 @@ case $choice in
             azure-mgmt-recoveryservices azure-mgmt-recoveryservicesbackup \
             azure-mgmt-redis azure-mgmt-costmanagement azure-mgmt-rdbms \
             azure-mgmt-synapse azure-mgmt-netapp azure-mgmt-monitor azure-storage-blob \
-            rich tenacity
+            rich tenacity six
         ;;
     3)
         echo "Installing GCP dependencies..."
