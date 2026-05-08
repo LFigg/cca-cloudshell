@@ -20,8 +20,10 @@ Usage:
     python3 cost_collect.py --all
 """
 import argparse
+import json
 import logging
 import sys
+import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -152,79 +154,100 @@ def collect_aws_costs(
                 {'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}
             ]
 
-        # Query for backup-related services
-        response = ce.get_cost_and_usage(
-            TimePeriod={
-                'Start': start_date,
-                'End': end_date
-            },
-            Granularity='MONTHLY',
-            Filter={
-                'Dimensions': {
-                    'Key': 'SERVICE',
-                    'Values': AWS_BACKUP_FILTERS['services']
-                }
-            },
-            Metrics=['UnblendedCost', 'UsageQuantity'],
-            GroupBy=group_by
-        )
+        # In org mode, USAGE_TYPE is not in the GroupBy response, so apply it as
+        # a CONTAINS filter at the API level to prevent non-backup costs slipping through.
+        ce_filter: Dict[str, Any] = {
+            'Dimensions': {
+                'Key': 'SERVICE',
+                'Values': AWS_BACKUP_FILTERS['services']
+            }
+        }
+        if group_by_account:
+            ce_filter = {
+                'And': [
+                    ce_filter,
+                    {
+                        'Dimensions': {
+                            'Key': 'USAGE_TYPE',
+                            'Values': AWS_BACKUP_FILTERS['usage_types'],
+                            'MatchOptions': ['CONTAINS']
+                        }
+                    }
+                ]
+            }
 
-        for result in response.get('ResultsByTime', []):
-            period_start = result['TimePeriod']['Start']
-            period_end = result['TimePeriod']['End']
+        # Paginate through all Cost Explorer result pages
+        next_token = None
+        while True:
+            kwargs: Dict[str, Any] = dict(
+                TimePeriod={'Start': start_date, 'End': end_date},
+                Granularity='MONTHLY',
+                Filter=ce_filter,
+                Metrics=['UnblendedCost', 'UsageQuantity'],
+                GroupBy=group_by
+            )
+            if next_token:
+                kwargs['NextPageToken'] = next_token
 
-            for group in result.get('Groups', []):
-                keys = group.get('Keys', [])
+            response = ce.get_cost_and_usage(**kwargs)
 
-                # Parse keys based on grouping mode
-                if group_by_account:
-                    if len(keys) < 2:
+            for result in response.get('ResultsByTime', []):
+                period_start = result['TimePeriod']['Start']
+                period_end = result['TimePeriod']['End']
+
+                for group in result.get('Groups', []):
+                    keys = group.get('Keys', [])
+
+                    if group_by_account:
+                        if len(keys) < 2:
+                            continue
+                        linked_account = keys[0]
+                        service = keys[1]
+                        usage_type = None  # Filtered at API level in org mode
+                    else:
+                        if len(keys) < 2:
+                            continue
+                        linked_account = account_id
+                        service = keys[0]
+                        usage_type = keys[1]
+
+                    # Secondary Python-side filter for non-org mode
+                    if usage_type:
+                        is_backup_related = any(
+                            bt.lower() in usage_type.lower()
+                            for bt in AWS_BACKUP_FILTERS['usage_types']
+                        )
+                        if not is_backup_related:
+                            continue
+
+                    metrics = group.get('Metrics', {})
+                    cost = float(metrics.get('UnblendedCost', {}).get('Amount', 0))
+                    usage_qty = float(metrics.get('UsageQuantity', {}).get('Amount', 0))
+                    usage_unit = metrics.get('UsageQuantity', {}).get('Unit', '')
+
+                    if cost == 0:
                         continue
-                    linked_account = keys[0]
-                    service = keys[1]
-                    usage_type = None  # Not available in org mode
-                else:
-                    if len(keys) < 2:
-                        continue
-                    linked_account = account_id  # Use caller's account
-                    service = keys[0]
-                    usage_type = keys[1]
 
-                # Filter to backup/snapshot related usage types (only when usage_type is available)
-                if usage_type:
-                    is_backup_related = any(
-                        bt.lower() in usage_type.lower()
-                        for bt in AWS_BACKUP_FILTERS['usage_types']
+                    category = categorize_aws_usage(service, usage_type or '')
+
+                    record = CostRecord(
+                        provider='aws',
+                        account_id=linked_account,
+                        service=service,
+                        category=category,
+                        cost=round(cost, 2),
+                        currency='USD',
+                        period_start=period_start,
+                        period_end=period_end,
+                        usage_quantity=round(usage_qty, 2) if usage_qty else None,
+                        usage_unit=usage_unit if usage_unit else None,
+                        metadata={'usage_type': usage_type} if usage_type else None
                     )
+                    records.append(record)
 
-                    if not is_backup_related:
-                        continue
-
-                metrics = group.get('Metrics', {})
-                cost = float(metrics.get('UnblendedCost', {}).get('Amount', 0))
-                usage_qty = float(metrics.get('UsageQuantity', {}).get('Amount', 0))
-                usage_unit = metrics.get('UsageQuantity', {}).get('Unit', '')
-
-                if cost == 0:
-                    continue
-
-                # Categorize
-                category = categorize_aws_usage(service, usage_type or '')
-
-                record = CostRecord(
-                    provider='aws',
-                    account_id=linked_account,
-                    service=service,
-                    category=category,
-                    cost=round(cost, 2),
-                    currency='USD',
-                    period_start=period_start,
-                    period_end=period_end,
-                    usage_quantity=round(usage_qty, 2) if usage_qty else None,
-                    usage_unit=usage_unit if usage_unit else None,
-                    metadata={'usage_type': usage_type} if usage_type else None
-                )
-                records.append(record)
+            next_token = response.get('NextPageToken')
+            if not next_token:
+                break
 
         logger.info(f"Collected {len(records)} AWS cost records")
 
@@ -339,7 +362,7 @@ def collect_azure_costs(
 
         result = client.query.usage(scope=scope, parameters=query)
 
-        # Parse results (with null checks) - handle pagination
+        # Parse results, following nextLink for paginated responses
         all_rows: List[Any] = []
         columns: List[str] = []
         while True:
@@ -348,24 +371,29 @@ def collect_azure_costs(
                     logger.warning("No cost data returned from Azure")
                 break
 
-            # Store column info from first result
             if not columns:
                 columns = [col.name or '' for col in result.columns]
 
             all_rows.extend(result.rows)
 
-            # Check for more pages
-            if hasattr(result, 'next_link') and result.next_link:
-                logger.debug("Fetching next page of Azure cost results...")
-                try:
-                    result = client.query.usage(scope=scope, parameters=query)
-                    # Note: Azure Cost Management doesn't use standard pagination
-                    # The next_link is informational; actual pagination requires different date ranges
-                    break  # Exit after first result set - SDK handles internal pagination
-                except Exception:
-                    break
-            else:
+            next_link = getattr(result, 'next_link', None)
+            if not next_link:
                 break
+
+            logger.debug("Fetching next page of Azure cost results...")
+            token = credential.get_token("https://management.azure.com/.default")
+            req = urllib.request.Request(
+                next_link,
+                headers={"Authorization": f"Bearer {token.token}"}
+            )
+            with urllib.request.urlopen(req) as resp:
+                raw = json.loads(resp.read())
+            props = raw.get('properties', {})
+            result = type('_Page', (), {
+                'columns': [type('_Col', (), {'name': c.get('name', '')})() for c in props.get('columns', [])],
+                'rows': props.get('rows', []),
+                'next_link': props.get('nextLink')
+            })()
 
         if not all_rows:
             return records
@@ -602,6 +630,15 @@ def aggregate_costs(records: List[CostRecord]) -> List[CostSummary]:
 # Main
 # =============================================================================
 
+def valid_date(s: str) -> str:
+    """argparse type validator for YYYY-MM-DD date strings."""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return s
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Not a valid date (YYYY-MM-DD): '{s}'")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='CCA CloudShell - Cost Collector for Backup & Snapshot Spending',
@@ -637,9 +674,9 @@ Examples:
     # Date range - default to last full month
     default_start, default_end = get_last_full_month()
 
-    parser.add_argument('--start-date', default=default_start,
+    parser.add_argument('--start-date', default=default_start, type=valid_date,
                         help=f'Start date YYYY-MM-DD (default: {default_start} - last full month)')
-    parser.add_argument('--end-date', default=default_end,
+    parser.add_argument('--end-date', default=default_end, type=valid_date,
                         help=f'End date YYYY-MM-DD (default: {default_end} - exclusive)')
     parser.add_argument('--last-30-days', action='store_true',
                         help='Use last 30 days instead of last full month')
@@ -673,6 +710,10 @@ Examples:
         args.end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         args.start_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
         logger.info(f"Using last 30 days: {args.start_date} to {args.end_date}")
+
+    # Validate date ordering (skip when --last-30-days overrides dates)
+    if not args.last_30_days and args.start_date >= args.end_date:
+        parser.error(f"--start-date ({args.start_date}) must be before --end-date ({args.end_date})")
 
     # Validate at least one cloud selected
     if not (args.aws or args.azure or args.gcp or args.all):
