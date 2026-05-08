@@ -69,6 +69,7 @@ from lib.utils import (
     retry_with_backoff,
     setup_logging,
     write_json,
+    is_azure_blob_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -1996,7 +1997,7 @@ def main():
     # Write outputs
     output_base = args.output.rstrip('/')
 
-    if output_base.startswith('https://') and '.blob.core.windows.net' in output_base:
+    if is_azure_blob_url(output_base):
         output_base = f"{output_base}/{run_id}"
 
     # Short timestamp for filenames (HHMMSS)

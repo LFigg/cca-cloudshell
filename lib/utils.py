@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urlparse
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1087,6 +1088,19 @@ def get_collector_metadata(args, collector_name: str, version: str) -> Dict[str,
     return metadata
 
 
+def is_azure_blob_url(path: str) -> bool:
+    """Return True only if path is a well-formed Azure Blob Storage HTTPS URL."""
+    try:
+        parsed = urlparse(path)
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname is not None
+            and parsed.hostname.endswith(".blob.core.windows.net")
+        )
+    except Exception:
+        return False
+
+
 def write_json(data: Any, filepath: str) -> None:
     """Write data to JSON file with secure permissions."""
     # Handle S3 paths
@@ -1095,7 +1109,7 @@ def write_json(data: Any, filepath: str) -> None:
         return
 
     # Handle Azure blob paths
-    if filepath.startswith("https://") and ".blob.core.windows.net" in filepath:
+    if is_azure_blob_url(filepath):
         write_to_blob(data, filepath)
         return
 
@@ -1135,7 +1149,7 @@ def write_csv(data: List[Dict], filepath: str, fieldnames: Optional[List[str]] =
         return
 
     # Handle Azure blob paths
-    if filepath.startswith("https://") and ".blob.core.windows.net" in filepath:
+    if is_azure_blob_url(filepath):
         import io
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=fieldnames)

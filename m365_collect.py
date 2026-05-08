@@ -2227,14 +2227,15 @@ Required Azure AD App Permissions (Application type):
     # Get client secret from environment only (security: not from CLI args)
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
 
-    # Check for partial environment variable configuration (common mistake)
-    ms365_vars = {
-        'MS365_TENANT_ID': os.environ.get('MS365_TENANT_ID'),
-        'MS365_CLIENT_ID': os.environ.get('MS365_CLIENT_ID'),
-        'MS365_CLIENT_SECRET': client_secret
+    # Check for partial environment variable configuration (common mistake).
+    # Store presence as booleans so credential values don't flow into print().
+    credential_presence = {
+        'MS365_TENANT_ID': bool(os.environ.get('MS365_TENANT_ID')),
+        'MS365_CLIENT_ID': bool(os.environ.get('MS365_CLIENT_ID')),
+        'MS365_CLIENT_SECRET': bool(client_secret),
     }
-    set_vars = [k for k, v in ms365_vars.items() if v]
-    missing_vars = [k for k, v in ms365_vars.items() if not v]
+    set_vars = [k for k, present in credential_presence.items() if present]
+    missing_vars = [k for k, present in credential_presence.items() if not present]
 
     if set_vars and missing_vars:
         print(f"ERROR: Partial credentials detected. You set: {', '.join(set_vars)}")
