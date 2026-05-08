@@ -5,6 +5,11 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.14] - 2026-05-08
+
+### Security
+- **Path confinement guard**: Resolved SAST finding (Semgrep A1:2017 OS Command Injection) in `collect.py`. Collector paths are now resolved with `os.path.realpath` and verified to remain within the script directory before any subprocess execution.
+
 ## [1.0.13] - 2026-04-08
 
 ### Fixed

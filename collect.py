@@ -966,7 +966,11 @@ def run_collector(cloud: str, extra_args: List[str]) -> int:
 
     # Find collector script relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    collector_path = os.path.join(script_dir, collector)
+    collector_path = os.path.realpath(os.path.join(script_dir, collector))
+
+    if not collector_path.startswith(os.path.realpath(script_dir) + os.sep):
+        print(color(f"Collector path outside expected directory: {collector_path}", Colors.RED))
+        return 1
 
     if not os.path.exists(collector_path):
         print(color(f"Collector not found: {collector_path}", Colors.RED))
@@ -997,7 +1001,11 @@ def run_cost_collector(cloud: str, extra_args: List[str]) -> int:
     Returns the exit code from the collector.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    collector_path = os.path.join(script_dir, 'cost_collect.py')
+    collector_path = os.path.realpath(os.path.join(script_dir, 'cost_collect.py'))
+
+    if not collector_path.startswith(os.path.realpath(script_dir) + os.sep):
+        print(color(f"Cost collector path outside expected directory: {collector_path}", Colors.RED))
+        return 1
 
     if not os.path.exists(collector_path):
         print(color(f"Cost collector not found: {collector_path}", Colors.RED))
@@ -1053,7 +1061,10 @@ def show_collector_help(cloud: str):
         return
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    collector_path = os.path.join(script_dir, collector)
+    collector_path = os.path.realpath(os.path.join(script_dir, collector))
+
+    if not collector_path.startswith(os.path.realpath(script_dir) + os.sep):
+        return
 
     # Run help first
     subprocess.run([sys.executable, collector_path, '--help'])
