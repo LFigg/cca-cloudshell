@@ -25,8 +25,8 @@ Usage:
     python collect.py --cloud aws -- --org-role CCARole --regions us-east-1
 """
 import argparse
+import importlib.util
 import os
-import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -947,6 +947,24 @@ def verify_permissions(cloud: str) -> bool:
 # Collection Execution
 # =============================================================================
 
+def _run_module(module_path: str, argv: List[str]) -> int:
+    """Load a collector module and call its main(), returning the exit code."""
+    spec = importlib.util.spec_from_file_location("_collector", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    saved_argv = sys.argv
+    sys.argv = argv
+    try:
+        module.main()
+        return 0
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        sys.argv = saved_argv
+
+
 def run_collector(cloud: str, extra_args: List[str]) -> int:
     """
     Run the appropriate collector script.
@@ -964,7 +982,6 @@ def run_collector(cloud: str, extra_args: List[str]) -> int:
         print(color(f"Unknown cloud: {cloud}", Colors.RED))
         return 1
 
-    # Find collector script relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     collector_path = os.path.realpath(os.path.join(script_dir, collector))
 
@@ -976,9 +993,6 @@ def run_collector(cloud: str, extra_args: List[str]) -> int:
         print(color(f"Collector not found: {collector_path}", Colors.RED))
         return 1
 
-    # Build command
-    cmd = [sys.executable, collector_path] + extra_args
-
     print(color(f"\n{'─'*60}", Colors.CYAN))
     print(color(f"  Starting {cloud.upper()} collection...", Colors.BOLD))
     print(color(f"{'─'*60}\n", Colors.CYAN))
@@ -986,13 +1000,10 @@ def run_collector(cloud: str, extra_args: List[str]) -> int:
     if extra_args:
         print(color(f"  Additional args: {' '.join(extra_args)}\n", Colors.CYAN))
 
-    # Run collector
-    try:
-        result = subprocess.run(cmd, cwd=script_dir)
-        return result.returncode
-    except KeyboardInterrupt:
+    rc = _run_module(collector_path, [collector_path] + extra_args)
+    if rc == 130:
         print(color("\n\nCollection interrupted by user.", Colors.YELLOW))
-        return 130
+    return rc
 
 
 def run_cost_collector(cloud: str, extra_args: List[str]) -> int:
@@ -1011,7 +1022,6 @@ def run_cost_collector(cloud: str, extra_args: List[str]) -> int:
         print(color(f"Cost collector not found: {collector_path}", Colors.RED))
         return 1
 
-    # Map cloud name to cost_collect flag
     cloud_flags = {
         'aws': '--aws',
         'azure': '--azure',
@@ -1023,18 +1033,14 @@ def run_cost_collector(cloud: str, extra_args: List[str]) -> int:
         print(color(f"Cost collection not supported for: {cloud}", Colors.YELLOW))
         return 1
 
-    cmd = [sys.executable, collector_path, flag] + extra_args
-
     print(color(f"\n{'─'*60}", Colors.CYAN))
     print(color(f"  Starting {cloud.upper()} cost collection...", Colors.BOLD))
     print(color(f"{'─'*60}\n", Colors.CYAN))
 
-    try:
-        result = subprocess.run(cmd, cwd=script_dir)
-        return result.returncode
-    except KeyboardInterrupt:
+    rc = _run_module(collector_path, [collector_path, flag] + extra_args)
+    if rc == 130:
         print(color("\n\nCost collection interrupted by user.", Colors.YELLOW))
-        return 130
+    return rc
 
 
 def prompt_continue() -> bool:
@@ -1066,8 +1072,7 @@ def show_collector_help(cloud: str):
     if not collector_path.startswith(os.path.realpath(script_dir) + os.sep):
         return
 
-    # Run help first
-    subprocess.run([sys.executable, collector_path, '--help'])
+    _run_module(collector_path, [collector_path, '--help'])
 
     print(color(f"\n{'─'*60}", Colors.CYAN))
     print(color("  Tip: Pass arguments with '--'", Colors.BOLD))
