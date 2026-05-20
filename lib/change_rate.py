@@ -562,55 +562,80 @@ def get_azure_sql_transaction_log_rate(monitor_client, resource_id: str, days: i
         return None
 
 
-def get_azure_storage_account_capacity(monitor_client, storage_account_id: str) -> Optional[float]:
-    """
-    Get used capacity for an Azure Storage Account from Azure Monitor.
-
-    The UsedCapacity metric returns the total used capacity in bytes.
-
-    Args:
-        monitor_client: Azure Monitor client
-        storage_account_id: Full resource ID of the storage account
-
-    Returns:
-        Used capacity in GB, or None if metric unavailable
-    """
+def _azure_metric_latest_value(
+    monitor_client,
+    resource_uri: str,
+    metric_name: str,
+    days: int = 3,
+    aggregation: str = 'Average',
+    interval: str = 'PT1H',
+) -> Optional[float]:
+    """Return the most recent non-null value for an Azure Monitor metric, or None."""
     try:
         end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(days=1)  # Just need latest value
+        start_time = end_time - timedelta(days=days)
         timespan = f"{start_time.isoformat()}/{end_time.isoformat()}"
 
         response = monitor_client.metrics.list(
-            resource_uri=storage_account_id,
+            resource_uri=resource_uri,
             timespan=timespan,
-            interval='PT1H',  # 1 hour granularity for recent data
-            metricnames='UsedCapacity',
-            aggregation='Average'
+            interval=interval,
+            metricnames=metric_name,
+            aggregation=aggregation,
         )
 
-        # Get the most recent value
-        latest_value = None
+        attr = aggregation.lower()
         for metric in response.value:
             for timeseries in metric.timeseries:
-                for data in reversed(timeseries.data):  # Start from most recent
-                    value = getattr(data, 'average', None)
+                for data in reversed(timeseries.data):
+                    value = getattr(data, attr, None)
                     if value is not None:
-                        latest_value = value
-                        break
-                if latest_value is not None:
-                    break
-            if latest_value is not None:
-                break
-
-        if latest_value is None:
-            return None
-
-        # Convert bytes to GB
-        return latest_value / (1024 ** 3)
-
-    except Exception as e:
-        logger.debug(f"Error getting Azure storage capacity for {storage_account_id}: {e}")
+                        return value
         return None
+    except Exception as e:
+        logger.debug(f"Error getting Azure metric {metric_name} for {resource_uri}: {e}")
+        return None
+
+
+def get_azure_storage_account_capacity(monitor_client, storage_account_id: str) -> Optional[float]:
+    """Get used capacity for an Azure Storage Account from Azure Monitor.
+
+    UsedCapacity is emitted once per day with up to ~24h lag, so we sample a
+    3-day window at hourly granularity and take the latest non-null value.
+
+    Returns:
+        Used capacity in GB, or None if metric unavailable.
+    """
+    value = _azure_metric_latest_value(
+        monitor_client, storage_account_id, 'UsedCapacity', days=3, aggregation='Average'
+    )
+    if value is None:
+        return None
+    return value / (1024 ** 3)
+
+
+def get_azure_blob_service_metrics(monitor_client, storage_account_id: str) -> Dict[str, Optional[float]]:
+    """Get blob-service-level metrics (capacity, blob count, container count).
+
+    These are emitted on the /blobServices/default child of the storage account
+    and are reported daily. Returns a dict with keys: capacity_gb, blob_count,
+    container_count. Values are None when the metric is unavailable.
+    """
+    blob_uri = f"{storage_account_id}/blobServices/default"
+    capacity_bytes = _azure_metric_latest_value(
+        monitor_client, blob_uri, 'BlobCapacity', days=3, aggregation='Average'
+    )
+    blob_count = _azure_metric_latest_value(
+        monitor_client, blob_uri, 'BlobCount', days=3, aggregation='Average'
+    )
+    container_count = _azure_metric_latest_value(
+        monitor_client, blob_uri, 'ContainerCount', days=3, aggregation='Average'
+    )
+    return {
+        'capacity_gb': capacity_bytes / (1024 ** 3) if capacity_bytes is not None else None,
+        'blob_count': int(blob_count) if blob_count is not None else None,
+        'container_count': int(container_count) if container_count is not None else None,
+    }
 
 
 def get_azure_sql_database_capacity(monitor_client, database_resource_id: str) -> Optional[float]:

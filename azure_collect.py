@@ -43,6 +43,7 @@ from lib.change_rate import (
     aggregate_change_rates,
     finalize_change_rate_output,
     format_change_rate_output,
+    get_azure_blob_service_metrics,
     get_azure_disk_change_rate,
     get_azure_monitor_client,
     get_azure_sql_database_capacity,
@@ -111,6 +112,17 @@ def _extract_resource_group(resource_id: str) -> str:
         return 'unknown'
 
 
+def _normalize_region(location: Optional[str]) -> str:
+    """Normalize an Azure location to its canonical short ID.
+
+    Azure SDK calls return location either as canonical ID ("eastus") or as
+    display name ("East US"). Treat them as the same region.
+    """
+    if not location:
+        return ''
+    return ''.join(str(location).lower().split())
+
+
 # =============================================================================
 # VM Collector
 # =============================================================================
@@ -145,17 +157,18 @@ def collect_vms(credential, subscription_id: str) -> List[CloudResource]:
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=vm.location,
+                region=_normalize_region(vm.location),
                 resource_type="azure:vm",
                 service_family="AzureVM",
                 resource_id=vm.id,
                 name=vm.name,
                 tags=vm.tags or {},
-                size_gb=os_disk_size,
+                size_gb=0.0,  # Disks reported as separate azure:disk resources
                 metadata={
                     'resource_group': rg,
                     'vm_size': vm.hardware_profile.vm_size if vm.hardware_profile else 'unknown',
                     'os_type': vm.storage_profile.os_disk.os_type if vm.storage_profile and vm.storage_profile.os_disk else 'unknown',
+                    'os_disk_size_gb': os_disk_size,
                     'data_disk_count': data_disk_count,
                     'attached_disks': data_disk_ids,
                     'provisioning_state': vm.provisioning_state
@@ -195,7 +208,7 @@ def collect_disks(credential, subscription_id: str) -> List[CloudResource]:
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=disk.location,
+                region=_normalize_region(disk.location),
                 resource_type="azure:disk",
                 service_family="AzureVM",
                 resource_id=disk.id,
@@ -242,7 +255,7 @@ def collect_storage_accounts(credential, subscription_id: str) -> List[CloudReso
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=account.location,
+                region=_normalize_region(account.location),
                 resource_type="azure:storage:blob",
                 service_family="AzureStorage",
                 resource_id=account.id,
@@ -331,10 +344,10 @@ def collect_sql_servers(credential, subscription_id: str) -> List[CloudResource]
                         logger.debug(f"Skipping DataWarehouse database {db_name} (collected as Synapse SQL pool)")
                         continue
 
-                    # Get size (max_size_bytes is in bytes)
+                    # Get size (max_size_bytes is in bytes; Hyperscale returns -1 for "unlimited")
                     size_gb = 0.0
                     max_size_bytes = getattr(db, 'max_size_bytes', None)
-                    if max_size_bytes:
+                    if max_size_bytes and max_size_bytes > 0:
                         size_gb = format_bytes_to_gb(max_size_bytes)
 
                     # Check if this is a replica (secondary database)
@@ -347,7 +360,7 @@ def collect_sql_servers(credential, subscription_id: str) -> List[CloudResource]
                     resource = CloudResource(
                         provider="azure",
                         subscription_id=subscription_id,
-                        region=getattr(db, 'location', ''),
+                        region=_normalize_region(getattr(db, 'location', '')),
                         resource_type="azure:sql:database",
                         service_family="AzureSQL",
                         resource_id=getattr(db, 'id', ''),
@@ -397,7 +410,7 @@ def collect_sql_managed_instances(credential, subscription_id: str) -> List[Clou
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(mi, 'location', ''),
+                region=_normalize_region(getattr(mi, 'location', '')),
                 resource_type="azure:sql:managedinstance",
                 service_family="AzureSQL",
                 resource_id=mi_id,
@@ -443,7 +456,7 @@ def collect_cosmosdb_accounts(credential, subscription_id: str) -> List[CloudRes
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=account.location,
+                region=_normalize_region(account.location),
                 resource_type="azure:cosmosdb:account",
                 service_family="CosmosDB",
                 resource_id=account.id,
@@ -494,7 +507,7 @@ def collect_aks_clusters(credential, subscription_id: str) -> List[CloudResource
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=cluster.location,
+                region=_normalize_region(cluster.location),
                 resource_type="azure:aks:cluster",
                 service_family="AKS",
                 resource_id=cluster.id,
@@ -538,7 +551,7 @@ def collect_function_apps(credential, subscription_id: str) -> List[CloudResourc
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=app.location,
+                region=_normalize_region(app.location),
                 resource_type="azure:function:app",
                 service_family="AzureFunctions",
                 resource_id=app.id,
@@ -590,7 +603,7 @@ def collect_disk_snapshots(credential, subscription_id: str) -> List[CloudResour
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(snapshot, 'location', ''),
+                region=_normalize_region(getattr(snapshot, 'location', '')),
                 resource_type="azure:snapshot",
                 service_family="AzureVM",
                 resource_id=snapshot_id,
@@ -639,7 +652,7 @@ def collect_recovery_services_vaults(credential, subscription_id: str) -> List[C
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(vault, 'location', ''),
+                region=_normalize_region(getattr(vault, 'location', '')),
                 resource_type="azure:recoveryservices:vault",
                 service_family="AzureBackup",
                 resource_id=vault_id,
@@ -702,7 +715,7 @@ def collect_backup_policies(credential, subscription_id: str) -> List[CloudResou
                     resource = CloudResource(
                         provider="azure",
                         subscription_id=subscription_id,
-                        region=getattr(vault, 'location', ''),
+                        region=_normalize_region(getattr(vault, 'location', '')),
                         resource_type="azure:backup:policy",
                         service_family="AzureBackup",
                         resource_id=policy_id or '',
@@ -748,7 +761,7 @@ def collect_backup_protected_items(credential, subscription_id: str) -> List[Clo
                 continue
 
             rg = _extract_resource_group(vault_id)
-            vault_location = getattr(vault, 'location', '')
+            vault_location = _normalize_region(getattr(vault, 'location', ''))
 
             try:
                 backup_client = RecoveryServicesBackupClient(credential, subscription_id)
@@ -798,7 +811,7 @@ def collect_backup_protected_items(credential, subscription_id: str) -> List[Clo
                     resource = CloudResource(
                         provider="azure",
                         subscription_id=subscription_id,
-                        region=vault_location,
+                        region=_normalize_region(vault_location),
                         resource_type="azure:backup:protecteditem",
                         service_family="AzureBackup",
                         resource_id=item_id or '',
@@ -853,7 +866,7 @@ def collect_backup_recovery_points(credential, subscription_id: str) -> List[Clo
             vault_resources = []
             vault_id = getattr(vault, 'id', None)
             vault_name = getattr(vault, 'name', '')
-            vault_location = getattr(vault, 'location', '')
+            vault_location = _normalize_region(getattr(vault, 'location', ''))
 
             if not vault_id or not vault_name:
                 return vault_resources
@@ -895,7 +908,7 @@ def collect_backup_recovery_points(credential, subscription_id: str) -> List[Clo
                             resource = CloudResource(
                                 provider="azure",
                                 subscription_id=subscription_id,
-                                region=vault_location,
+                                region=_normalize_region(vault_location),
                                 resource_type="azure:backup:recoverypoint",
                                 service_family="AzureBackup",
                                 resource_id=rp_id or '',
@@ -985,7 +998,7 @@ def collect_redis_caches(credential, subscription_id: str) -> List[CloudResource
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(cache, 'location', ''),
+                region=_normalize_region(getattr(cache, 'location', '')),
                 resource_type="azure:redis:cache",
                 service_family="Redis",
                 resource_id=cache_id,
@@ -1050,7 +1063,7 @@ def collect_postgresql_servers(credential, subscription_id: str) -> List[CloudRe
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(server, 'location', ''),
+                region=_normalize_region(getattr(server, 'location', '')),
                 resource_type="azure:postgresql:flexibleserver",
                 service_family="PostgreSQL",
                 resource_id=server_id,
@@ -1112,7 +1125,7 @@ def collect_mysql_servers(credential, subscription_id: str) -> List[CloudResourc
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(server, 'location', ''),
+                region=_normalize_region(getattr(server, 'location', '')),
                 resource_type="azure:mysql:flexibleserver",
                 service_family="MySQL",
                 resource_id=server_id,
@@ -1175,7 +1188,7 @@ def collect_mariadb_servers(credential, subscription_id: str) -> List[CloudResou
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(server, 'location', ''),
+                region=_normalize_region(getattr(server, 'location', '')),
                 resource_type="azure:mariadb:server",
                 service_family="MariaDB",
                 resource_id=server_id,
@@ -1229,7 +1242,7 @@ def collect_synapse_workspaces(credential, subscription_id: str) -> List[CloudRe
             resource = CloudResource(
                 provider="azure",
                 subscription_id=subscription_id,
-                region=getattr(workspace, 'location', ''),
+                region=_normalize_region(getattr(workspace, 'location', '')),
                 resource_type="azure:synapse:workspace",
                 service_family="Synapse",
                 resource_id=workspace_id,
@@ -1266,7 +1279,7 @@ def collect_synapse_workspaces(credential, subscription_id: str) -> List[CloudRe
                     pool_resource = CloudResource(
                         provider="azure",
                         subscription_id=subscription_id,
-                        region=getattr(pool, 'location', ''),
+                        region=_normalize_region(getattr(pool, 'location', '')),
                         resource_type="azure:synapse:sqlpool",
                         service_family="Synapse",
                         resource_id=pool_id,
@@ -1338,7 +1351,7 @@ def collect_netapp_files(credential, subscription_id: str) -> List[CloudResource
                             resource = CloudResource(
                                 provider="azure",
                                 subscription_id=subscription_id,
-                                region=location,
+                                region=_normalize_region(location),
                                 resource_type="azure:netapp:volume",
                                 service_family="NetAppFiles",
                                 resource_id=vol_id,
@@ -1433,7 +1446,7 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
                     resource = CloudResource(
                         provider="azure",
                         subscription_id=subscription_id,
-                        region=account_location,
+                        region=_normalize_region(account_location),
                         resource_type="azure:storage:fileshare",
                         service_family="AzureFiles",
                         resource_id=share_id or f"{account_id}/fileServices/default/shares/{share_name}",
@@ -1505,7 +1518,7 @@ def collect_sql_database_backups(credential, subscription_id: str) -> List[Cloud
                             resource = CloudResource(
                                 provider="azure",
                                 subscription_id=subscription_id,
-                                region=server_location,
+                                region=_normalize_region(server_location),
                                 resource_type="azure:sql:restorepoint",
                                 service_family="SQLDatabase",
                                 resource_id=rp_id or f"{db_id}/restorePoints/{rp_name}",
@@ -1541,7 +1554,7 @@ def collect_sql_database_backups(credential, subscription_id: str) -> List[Cloud
                             resource = CloudResource(
                                 provider="azure",
                                 subscription_id=subscription_id,
-                                region=server_location,
+                                region=_normalize_region(server_location),
                                 resource_type="azure:sql:ltrbackup",
                                 service_family="SQLDatabase",
                                 resource_id=ltr_id or '',
@@ -1718,7 +1731,7 @@ def _collect_azure_resource_change_rate(
     # Azure VMs - use VM-level disk write metrics (preferred over per-disk)
     if resource_type == 'azure:vm':
         # Calculate total disk size: OS disk + all attached data disks
-        total_disk_gb = resource.size_gb  # OS disk size
+        total_disk_gb = float(resource.metadata.get('os_disk_size_gb') or 0)
         attached_disks = resource.metadata.get('attached_disks', [])
         if disk_sizes:
             for disk_id in attached_disks:
@@ -1756,12 +1769,24 @@ def _collect_azure_resource_change_rate(
             }
 
     elif service_family == 'AzureStorage':
-        # Azure Storage Accounts - get actual used capacity from Monitor
-        capacity_gb = get_azure_storage_account_capacity(monitor_client, resource_id)
-        if capacity_gb is not None:
-            # Update resource size_gb with actual capacity
-            resource.size_gb = capacity_gb
-            logger.debug(f"Storage account {resource.name}: {capacity_gb:.2f} GB")
+        # Azure Storage Accounts - get blob-service metrics (capacity + counts)
+        blob_metrics = get_azure_blob_service_metrics(monitor_client, resource_id)
+        if blob_metrics['capacity_gb'] is not None:
+            resource.size_gb = blob_metrics['capacity_gb']
+            resource.metadata.pop('size_note', None)
+            logger.debug(f"Storage account {resource.name}: {blob_metrics['capacity_gb']:.2f} GB")
+        else:
+            # Fall back to account-level UsedCapacity (covers blob + file + queue + table)
+            capacity_gb = get_azure_storage_account_capacity(monitor_client, resource_id)
+            if capacity_gb is not None:
+                resource.size_gb = capacity_gb
+                resource.metadata.pop('size_note', None)
+                logger.debug(f"Storage account {resource.name}: {capacity_gb:.2f} GB (account-level)")
+
+        if blob_metrics['blob_count'] is not None:
+            resource.metadata['blob_count'] = blob_metrics['blob_count']
+        if blob_metrics['container_count'] is not None:
+            resource.metadata['container_count'] = blob_metrics['container_count']
 
     # Note: azure:disk resources are skipped - we use VM-level metrics instead
     # This avoids double-counting and works for all disk types
@@ -1880,9 +1905,9 @@ def main():
 
     # Filter by regions if specified
     if args.regions:
-        region_filter = {r.strip().lower() for r in args.regions.split(',')}
+        region_filter = {_normalize_region(r) for r in args.regions.split(',')}
         original_count = len(all_resources)
-        all_resources = [r for r in all_resources if r.region and r.region.lower() in region_filter]
+        all_resources = [r for r in all_resources if r.region and r.region in region_filter]
         logger.info(f"Filtered to {len(all_resources)} resources in regions: {', '.join(sorted(region_filter))} (from {original_count} total)")
 
     # Collect change rates by default (do this BEFORE aggregate_sizing so storage capacities are included)

@@ -5,6 +5,14 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.20] - 2026-05-20
+
+### Fixed
+- **Azure region normalization** (`azure_collect.py`): Azure SDK returns `location` as canonical ID (`eastus`) on some paths and display name (`East US`) on others, causing the same region to appear twice in groupings. Added `_normalize_region()` and applied it at every `region=` site plus the `--regions` filter.
+- **Azure VM size double-counting** (`azure_collect.py`): VM `size_gb` was the OS disk size, but disks were also emitted as separate `azure:disk` records, so OS disk capacity was counted twice in `total_capacity_gb`. ~40% of VMs additionally reported 0 because `disk_size_gb` returns `None` for marketplace images. VMs now report `size_gb=0` with `os_disk_size_gb` preserved in metadata; all capacity lives on `azure:disk` records (matches the AWS EC2/EBS pattern).
+- **Hyperscale SQL `-0.0` bug** (`azure_collect.py`): Hyperscale databases return `max_size_bytes = -1` ("unlimited"), which fell through to `format_bytes_to_gb(-1) = -0.0`. Guarded with `max_size_bytes > 0`; Hyperscale capacity is then populated via the Monitor `storage` metric.
+- **Azure blob capacity + object counts** (`lib/change_rate.py`): `get_azure_storage_account_capacity` used a 1-day window with hourly granularity, but `UsedCapacity` has ~24h lag, so it returned `None` for every account. Widened to a 3-day window via a shared `_azure_metric_latest_value` helper. Added `get_azure_blob_service_metrics()` querying `BlobCapacity`, `BlobCount`, `ContainerCount` on `/blobServices/default`; surfaced as `size_gb`, `metadata.blob_count`, `metadata.container_count`.
+
 ## [1.0.17] - 2026-05-08
 
 ### Fixed
