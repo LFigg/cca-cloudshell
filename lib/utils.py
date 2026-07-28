@@ -19,13 +19,13 @@ import json
 import logging
 import os
 import re
-from urllib.parse import urlparse
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from urllib.parse import urlparse
 
 from .constants import (
     AWS_AUTH_ERROR_CODES,

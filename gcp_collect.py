@@ -31,6 +31,7 @@ except ImportError:
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
+from lib.__version__ import __version__
 from lib.change_rate import (
     aggregate_change_rates,
     finalize_change_rate_output,
@@ -40,7 +41,6 @@ from lib.change_rate import (
     get_gcp_monitoring_client,
     merge_change_rates,
 )
-from lib.__version__ import __version__
 from lib.k8s import collect_gke_pvcs
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (

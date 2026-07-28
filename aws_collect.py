@@ -53,6 +53,7 @@ from botocore.exceptions import ClientError
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
+from lib.__version__ import __version__
 from lib.change_rate import (
     aggregate_change_rates,
     finalize_change_rate_output,
@@ -68,7 +69,6 @@ from lib.change_rate import (
 )
 from lib.config import generate_sample_config, load_config
 from lib.constants import BYTES_PER_GB
-from lib.__version__ import __version__
 from lib.k8s import collect_eks_pvcs
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (

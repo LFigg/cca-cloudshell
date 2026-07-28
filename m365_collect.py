@@ -113,7 +113,13 @@ def run_sync(coro_or_result):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.__version__ import __version__  # noqa: E402
 from lib.models import CloudResource  # noqa: E402
-from lib.utils import ProgressTracker, check_and_raise_auth_error, get_collector_metadata, log_arguments, setup_logging  # noqa: E402
+from lib.utils import (  # noqa: E402
+    ProgressTracker,
+    check_and_raise_auth_error,
+    get_collector_metadata,
+    log_arguments,
+    setup_logging,
+)
 from lib.utils import write_json as _write_json_to_path  # noqa: E402
 
 # Constants for usage report collection
@@ -775,7 +781,7 @@ def _collect_exchange_mailboxes_from_users(
 
 def collect_teams(graph_client: GraphServiceClient, tenant_id: str, teams_usage: Optional[Dict[str, Dict[str, Any]]] = None) -> List[CloudResource]:
     """Collect Microsoft Teams with storage from usage report.
-    
+
     Args:
         graph_client: Microsoft Graph client
         tenant_id: Azure AD tenant ID
@@ -1632,8 +1638,8 @@ def collect_teams_usage_report(graph_client: GraphServiceClient) -> Dict[str, Di
         active_users = _safe_int(_get_csv_field(row, 'Active Users', 'activeUsers'))
         active_external_users = _safe_int(_get_csv_field(row, 'Active External Users', 'activeExternalUsers'))
         active_guests = _safe_int(_get_csv_field(row, 'Active Guests', 'activeGuests'))
-        
-        # Activity counts  
+
+        # Activity counts
         channel_messages = _safe_int(_get_csv_field(row, 'Post Messages', 'postMessages'))
         reply_messages = _safe_int(_get_csv_field(row, 'Reply Messages', 'replyMessages'))
         urgent_messages = _safe_int(_get_csv_field(row, 'Urgent Messages', 'urgentMessages'))
@@ -2449,7 +2455,7 @@ Required Azure AD App Permissions (Application type):
             # Collect Teams usage report first (for storage sizes)
             tracker.update_task("Collecting Teams usage report...")
             teams_usage = collect_teams_usage_report(graph_client)
-            
+
             tracker.update_task("Collecting Teams...")
             resources = collect_teams(graph_client, tenant_id, teams_usage)
             all_resources.extend(resources)

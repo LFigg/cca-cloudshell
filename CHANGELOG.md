@@ -5,6 +5,17 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.21] - 2026-07-28
+
+### Fixed
+- **M365 report crash** (`scripts/generate_m365_report.py`): `AttributeError: 'NoneType' object has no attribute 'get'` when generating a report from inventory data with no change-rate history. `summary_data.get('change_rates', {})` only substitutes the default when the key is missing, not when its value is `None`.
+- **Dependency CVEs**: bumped `aiohttp`, `cryptography`, `idna`, `httplib2`, `pyjwt`, and `pyasn1` to clear 27 known vulnerabilities flagged by `pip-audit`.
+- **CodeQL workflow**: added the `actions: read` permission the `analyze` step needs to upload SARIF results (was failing with "Resource not accessible by integration"); replaced the failing `Autobuild` step with `build-mode: none`, which is what CodeQL actually needs for an interpreted language like Python.
+- **Lint**: resolved 50 pre-existing `ruff` findings across the collector scripts (import ordering, stray whitespace, an unused import/variable, missing exception chaining).
+
+### Changed (Breaking)
+- **Dropped Python 3.9 support** (now requires `>=3.10`): the `aiohttp` release that fixes the CVEs above requires Python 3.10+. Python 3.9 reached upstream end-of-life in October 2025.
+
 ## [1.0.20] - 2026-05-20
 
 ### Fixed

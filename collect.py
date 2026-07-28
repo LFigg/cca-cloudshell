@@ -650,11 +650,11 @@ def check_gcp_permissions() -> Tuple[bool, str, List[str]]:
 def check_m365_permissions() -> Tuple[bool, str, List[str]]:
     """
     Verify M365 credentials and basic permissions.
-    
+
     Prefers App Registration credentials if available.
     Falls back to Azure CLI / DefaultAzureCredential.
     Errors if partial App Registration credentials are set.
-    
+
     Returns: (success, message, details)
     """
     details = []
@@ -663,7 +663,7 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
     tenant_id = os.environ.get('MS365_TENANT_ID')
     client_id = os.environ.get('MS365_CLIENT_ID')
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
-    
+
     ms365_vars = {
         'MS365_TENANT_ID': tenant_id,
         'MS365_CLIENT_ID': client_id,
@@ -671,7 +671,7 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
     }
     set_vars = [k for k, v in ms365_vars.items() if v]
     missing_vars = [k for k, v in ms365_vars.items() if not v]
-    
+
     # Error on partial credentials - user started setup but didn't finish
     if set_vars and missing_vars:
         return False, "Partial App Registration credentials detected", [
@@ -702,7 +702,7 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
         details.append("Method:   App Registration (preferred)")
         details.append(f"Tenant:   {tenant_id}")
         details.append(f"Client:   {client_id[:8]}...")
-        
+
         try:
             credential = ClientSecretCredential(
                 tenant_id=tenant_id,
@@ -721,11 +721,11 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
                 "  - The App Registration has the required API permissions",
                 "  - Admin consent has been granted for the permissions"
             ]
-    
+
     # Fall back to DefaultAzureCredential (Azure CLI, Managed Identity, etc.)
     details.append("Method:   Azure CLI / DefaultAzureCredential")
     details.append("          (Set MS365_* env vars to use App Registration instead)")
-    
+
     try:
         # Skip managed identity on non-Azure machines to avoid timeout
         is_azure = os.environ.get('ACC_TERM_ID') or os.path.exists(os.path.expanduser('~/clouddrive'))
@@ -754,7 +754,7 @@ def check_m365_permissions() -> Tuple[bool, str, List[str]]:
             "",
             "See docs/collectors/m365.md for detailed setup instructions."
         ]
-    
+
     return False, "No M365 credentials found", details
 
 
@@ -851,7 +851,7 @@ def detect_gcp() -> bool:
 
 def detect_m365() -> bool:
     """Check if M365 credentials are available.
-    
+
     Detects both App Registration credentials (preferred) and Azure CLI.
     Returns True if either authentication method is available.
     """
@@ -859,24 +859,24 @@ def detect_m365() -> bool:
     tenant_id = os.environ.get('MS365_TENANT_ID')
     client_id = os.environ.get('MS365_CLIENT_ID')
     client_secret = os.environ.get('MS365_CLIENT_SECRET')
-    
+
     if all([tenant_id, client_id, client_secret]):
         return True
-    
+
     # Check for Azure CLI / DefaultAzureCredential
     # This includes: Azure CLI login, Managed Identity, env vars
     azure_config = os.path.expanduser('~/.azure/azureProfile.json')
     if os.path.exists(azure_config):
         return True
-    
+
     # Check for Azure Cloud Shell
     if os.environ.get('ACC_TERM_ID') or os.path.exists(os.path.expanduser('~/clouddrive')):
         return True
-    
+
     # Check for AZURE_ env vars (service principal)
     if os.environ.get('AZURE_CLIENT_ID') and os.environ.get('AZURE_TENANT_ID'):
         return True
-    
+
     return False
 
 

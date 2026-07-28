@@ -217,7 +217,7 @@ def write_data_row(ws, row: int, values: List[Any], borders: bool = True,
                    formats: Optional[List[Optional[str]]] = None) -> None:
     """
     Write a data row with optional borders and number formatting.
-    
+
     Args:
         ws: Worksheet
         row: Row number
@@ -418,7 +418,7 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         'SharePoint Online': {'count': 0, 'size_gb': 0, 'type': 'sharepoint'},
         'Microsoft Teams': {'count': 0, 'size_gb': 0, 'type': 'teams'},
     }
-    
+
     # Track Teams-related SharePoint separately
     teams_sp_count = 0
     teams_sp_size = 0
@@ -456,7 +456,7 @@ def generate_executive_summary(wb: Workbook, resources: List[Dict],
         services['Microsoft Teams']['size_gb'] = teams_sp_size
 
     # If SharePoint has no resources but we have change rate data, estimate size
-    change_rates = summary_data.get('change_rates', {})
+    change_rates = summary_data.get('change_rates') or {}
     sp_change = change_rates.get('SharePoint', {})
     if services['SharePoint Online']['count'] == 0 and sp_change:
         daily_change_gb = sp_change.get('daily_change_gb', 0)
@@ -1256,9 +1256,9 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
         sp_note = ""
         growth_180d_gb = ""
         growth_180d_pct = ""
-        
+
         # If no resources but we have change rate data, estimate total size
-        change_rates = summary_data.get('change_rates', {})
+        change_rates = summary_data.get('change_rates') or {}
         sp_change = change_rates.get('SharePoint', {})
         if total_sp_gb == 0 and sp_change:
             daily_change_gb = sp_change.get('daily_change_gb', 0)
@@ -1271,12 +1271,12 @@ def generate_sizing_inputs(wb: Workbook, resources: List[Dict], summary_data: Di
                 # Calculate 180-day growth from daily change
                 growth_180d_gb = round(daily_change_gb * 180, 2)
                 growth_180d_pct = round(daily_change_pct * 180, 2)
-        
+
         # Use sp_growth if available, else use calculated values
         if sp_growth:
             growth_180d_gb = round(sp_growth.get('growth_gib', 0), 2) or growth_180d_gb
             growth_180d_pct = sp_growth.get('growth_rate_percent', 0) or growth_180d_pct
-        
+
         write_data_row(ws, row, [
             "SharePoint Online", f"Total Sites{sp_note}", sp_count,
             "", "", "", "", "", round(total_sp_gb, 3),

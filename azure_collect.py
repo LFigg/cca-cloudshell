@@ -39,12 +39,12 @@ except ImportError:
 
 # Add lib to path for imports
 sys.path.insert(0, '.')
+from lib.__version__ import __version__
 from lib.change_rate import (
     aggregate_change_rates,
     finalize_change_rate_output,
     format_change_rate_output,
     get_azure_blob_service_metrics,
-    get_azure_disk_change_rate,
     get_azure_monitor_client,
     get_azure_sql_database_capacity,
     get_azure_sql_transaction_log_rate,
@@ -52,7 +52,6 @@ from lib.change_rate import (
     get_azure_vm_change_rate,
     merge_change_rates,
 )
-from lib.__version__ import __version__
 from lib.k8s import collect_aks_pvcs
 from lib.models import CloudResource, aggregate_sizing
 from lib.utils import (
@@ -63,6 +62,7 @@ from lib.utils import (
     generate_run_id,
     get_collector_metadata,
     get_timestamp,
+    is_azure_blob_url,
     log_arguments,
     parallel_collect,
     print_summary_table,
@@ -70,7 +70,6 @@ from lib.utils import (
     retry_with_backoff,
     setup_logging,
     write_json,
-    is_azure_blob_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -1670,7 +1669,7 @@ def collect_azure_change_rates(
 ) -> Dict[str, Any]:
     """
     Collect change rate metrics from Azure Monitor for the collected resources.
-    
+
     Uses VM-level metrics for disk change rate (more reliable than per-disk metrics).
 
     Args:
@@ -1721,7 +1720,7 @@ def _collect_azure_resource_change_rate(
 ) -> Optional[Dict[str, Any]]:
     """
     Collect change rate for a single Azure resource based on its type.
-    
+
     For VMs, uses VM-level Disk Write Bytes metric (works for all VMs).
     """
     service_family = resource.service_family
@@ -1736,7 +1735,7 @@ def _collect_azure_resource_change_rate(
         if disk_sizes:
             for disk_id in attached_disks:
                 total_disk_gb += disk_sizes.get(disk_id, 0)
-        
+
         data_change = get_azure_vm_change_rate(
             monitor_client, resource_id, total_disk_gb, days
         )
