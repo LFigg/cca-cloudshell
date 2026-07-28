@@ -45,6 +45,7 @@ from lib.change_rate import (
     finalize_change_rate_output,
     format_change_rate_output,
     get_azure_blob_service_metrics,
+    get_azure_fileshare_capacity,
     get_azure_monitor_client,
     get_azure_sql_database_capacity,
     get_azure_sql_transaction_log_rate,
@@ -1412,14 +1413,12 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
             account_location = getattr(account, 'location', '')
 
             try:
-                # List file shares - try with stats first, fall back to basic if it fails
-                try:
-                    shares = list(storage_client.file_shares.list(rg, account_name, expand='stats'))
-                    has_stats = True
-                except Exception as stats_err:
-                    logger.debug(f"expand='stats' failed for {account_name}, falling back to basic list: {stats_err}")
-                    shares = list(storage_client.file_shares.list(rg, account_name))
-                    has_stats = False
+                # Note: list()'s expand param only supports deleted/snapshots, not
+                # stats - the SDK doesn't expose real per-share usage this way at
+                # all. Actual usage is filled in later from Azure Monitor's
+                # FileCapacity metric (see _collect_azure_resource_change_rate);
+                # size_gb here is a quota-based placeholder until that pass runs.
+                shares = list(storage_client.file_shares.list(rg, account_name))
 
                 for share in shares:
                     share_id = getattr(share, 'id', None)
@@ -1427,14 +1426,6 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
 
                     # Get share quota (provisioned max size in GB)
                     share_quota = getattr(share, 'share_quota', 0) or 0
-
-                    # Get actual usage in bytes (only available with expand='stats')
-                    if has_stats:
-                        share_usage_bytes = getattr(share, 'share_usage_bytes', 0) or 0
-                        share_usage_gb = share_usage_bytes / (1024 * 1024 * 1024) if share_usage_bytes else 0
-                    else:
-                        share_usage_bytes = 0
-                        share_usage_gb = float(share_quota)  # Fall back to quota if no stats
 
                     # Get access tier
                     access_tier = getattr(share, 'access_tier', 'TransactionOptimized')
@@ -1451,14 +1442,14 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
                         resource_id=share_id or f"{account_id}/fileServices/default/shares/{share_name}",
                         name=share_name,
                         tags={},
-                        size_gb=float(share_usage_gb),  # Actual usage if available, else quota
+                        size_gb=float(share_quota),  # Placeholder - refined via Azure Monitor below
                         parent_resource_id=account_id,
                         metadata={
                             'resource_group': rg,
                             'storage_account': account_name,
                             'share_quota_gb': share_quota,
-                            'share_usage_gb': round(share_usage_gb, 2) if has_stats else None,
-                            'size_source': 'usage' if has_stats else 'quota',
+                            'share_usage_gb': None,
+                            'size_source': 'quota',
                             'access_tier': str(access_tier) if access_tier else None,
                             'enabled_protocols': str(enabled_protocols) if enabled_protocols else 'SMB',
                             'last_modified_time': str(getattr(share, 'last_modified_time', '')) if getattr(share, 'last_modified_time', None) else None,
@@ -1786,6 +1777,20 @@ def _collect_azure_resource_change_rate(
             resource.metadata['blob_count'] = blob_metrics['blob_count']
         if blob_metrics['container_count'] is not None:
             resource.metadata['container_count'] = blob_metrics['container_count']
+
+    elif resource_type == 'azure:storage:fileshare':
+        # File Shares - the Storage RP's list()/get() APIs don't reliably expose
+        # real usage, so replace the quota-based estimate with actual usage from
+        # Azure Monitor's per-share FileCapacity metric.
+        if resource.parent_resource_id and resource.name:
+            usage_gb = get_azure_fileshare_capacity(
+                monitor_client, resource.parent_resource_id, resource.name
+            )
+            if usage_gb is not None:
+                resource.size_gb = usage_gb
+                resource.metadata['share_usage_gb'] = round(usage_gb, 2)
+                resource.metadata['size_source'] = 'usage'
+                logger.debug(f"File share {resource.name}: {usage_gb:.2f} GB (actual usage)")
 
     # Note: azure:disk resources are skipped - we use VM-level metrics instead
     # This avoids double-counting and works for all disk types

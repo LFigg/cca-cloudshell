@@ -5,6 +5,11 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.22] - 2026-07-28
+
+### Fixed
+- **Azure File Share sizing** (`azure_collect.py`, `lib/change_rate.py`): `file_shares.list()`'s `expand` parameter only supports `deleted`/`snapshots`, not `stats` — the collector's `expand='stats'` call always failed, and every file share silently reported its provisioned quota (usually the 100 TiB default max) as its size instead of actual usage, wildly inflating File Storage totals. Now pulls real usage from Azure Monitor's `FileCapacity` metric on `/fileServices/default`, filtered per-share via the `FileShare` dimension — the same approach already used for Blob capacity.
+
 ## [1.0.21] - 2026-07-28
 
 ### Fixed

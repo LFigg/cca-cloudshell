@@ -569,8 +569,13 @@ def _azure_metric_latest_value(
     days: int = 3,
     aggregation: str = 'Average',
     interval: str = 'PT1H',
+    metric_filter: Optional[str] = None,
 ) -> Optional[float]:
-    """Return the most recent non-null value for an Azure Monitor metric, or None."""
+    """Return the most recent non-null value for an Azure Monitor metric, or None.
+
+    metric_filter is an OData filter string (e.g. "FileShare eq 'myshare'") used
+    to scope the metric to one dimension value, such as a single file share.
+    """
     try:
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=days)
@@ -582,6 +587,7 @@ def _azure_metric_latest_value(
             interval=interval,
             metricnames=metric_name,
             aggregation=aggregation,
+            filter=metric_filter,
         )
 
         attr = aggregation.lower()
@@ -636,6 +642,28 @@ def get_azure_blob_service_metrics(monitor_client, storage_account_id: str) -> D
         'blob_count': int(blob_count) if blob_count is not None else None,
         'container_count': int(container_count) if container_count is not None else None,
     }
+
+
+def get_azure_fileshare_capacity(monitor_client, storage_account_id: str, share_name: str) -> Optional[float]:
+    """Get actual used capacity for a single Azure File Share from Azure Monitor.
+
+    The Storage Resource Provider's file_shares.list()/get() APIs don't reliably
+    expose real usage (list()'s expand only supports deleted/snapshots, not stats,
+    and the current SDK model has no share_usage_bytes field at all). FileCapacity
+    on the /fileServices/default child supports a FileShare dimension, so we filter
+    to the specific share to get its actual used bytes.
+
+    Returns:
+        Used capacity in GB, or None if the metric is unavailable for this share.
+    """
+    file_uri = f"{storage_account_id}/fileServices/default"
+    capacity_bytes = _azure_metric_latest_value(
+        monitor_client, file_uri, 'FileCapacity', days=3, aggregation='Average',
+        metric_filter=f"FileShare eq '{share_name}'",
+    )
+    if capacity_bytes is None:
+        return None
+    return capacity_bytes / (1024 ** 3)
 
 
 def get_azure_sql_database_capacity(monitor_client, database_resource_id: str) -> Optional[float]:
