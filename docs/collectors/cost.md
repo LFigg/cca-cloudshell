@@ -1,63 +1,52 @@
-# Cost Collector
+# Cost Collection
 
-The cost collector (`cost_collect.py`) gathers backup and snapshot spending data from cloud billing APIs.
+Data protection cost collection is **integrated into each cloud collector** — it runs automatically alongside inventory collection with no extra steps.
 
-> **Important:** Cost collection is separate from inventory collection. Run `aws_collect.py` 
-> to gather resource data, and `cost_collect.py` to gather spending data. They have different
-> permission requirements and should be run independently.
+> **v2 change:** The standalone `cost_collect.py` script has been removed. Cost collection now happens inside `collect.py --cloud <cloud>` and can be skipped with `--no-costs`.
 
-## Interactive Collection
+## How It Works
 
-When using `python3 collect.py` in interactive mode, you'll be prompted to include cost collection after selecting a cloud platform:
+Each cloud collector queries its billing API at the end of the collection run and writes a separate cost output file:
 
-```
-Data protection cost collection analyzes AWS Backup, EBS snapshot,
-and other backup-related costs from AWS Cost Explorer.
+| Cloud | Billing Source | Output File |
+|-------|---------------|-------------|
+| AWS | Cost Explorer API | `cca_aws_costs_<time>.json` |
+| Azure | Cost Management API | `cca_azure_costs_<time>.json` |
+| GCP | BigQuery billing export | `cca_gcp_costs_<time>.json` |
+| M365 | Not supported | — |
 
-Also collect data protection costs? [Y/n]:
-```
+## Opting Out
 
-Cost collection is enabled by default - just press Enter to confirm, or type `n` to skip.
-
-## Basic Usage
+Cost collection is on by default for AWS and Azure. To skip:
 
 ```bash
-# AWS costs (last full month - default)
-python3 cost_collect.py --aws
-
-# AWS costs with per-account breakdown (Organizations)
-python3 cost_collect.py --aws --org-costs
-
-# Azure costs
-python3 cost_collect.py --azure --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-
-# GCP costs (requires BigQuery billing export)
-python3 cost_collect.py --gcp --project my-project --billing-table project.dataset.table
-
-# All clouds
-python3 cost_collect.py --all --subscription-id xxx --billing-table xxx
+python3 collect.py --cloud aws --no-costs
+python3 collect.py --cloud azure --no-costs
 ```
 
-## Command Line Options
+When using the interactive wizard, you'll be prompted:
+```
+Data protection cost collection is enabled by default.
 
-| Option | Description |
-|--------|-------------|
-| `--aws` | Collect AWS costs |
-| `--azure` | Collect Azure costs |
-| `--gcp` | Collect GCP costs |
-| `--all` | Collect from all configured clouds |
-| `--start-date DATE` | Start date YYYY-MM-DD (default: first of last full month) |
-| `--end-date DATE` | End date YYYY-MM-DD (default: first of current month, exclusive) |
-| `--last-30-days` | Use rolling last 30 days instead of last full month |
-| `--profile PROFILE` | AWS CLI profile name |
-| `--role-arn ARN` | AWS role ARN to assume |
-| `--org-costs` | Break down AWS costs by linked account (Organizations) |
-| `--subscription-id ID` | Azure subscription ID |
-| `--project PROJECT` | GCP project ID |
-| `--billing-table TABLE` | GCP BigQuery billing table |
-| `-o, --output PATH` | Output directory |
+Skip cost collection? [y/N]:
+```
 
-## What It Collects
+## GCP Cost Collection
+
+GCP requires a BigQuery billing export table — cost collection is skipped if `--billing-table` is not provided:
+
+```bash
+# With cost collection
+python3 collect.py --cloud gcp \
+    --billing-table my-project.billing.gcp_billing_export_v1_XXXXXX
+
+# Without (no --billing-table = costs skipped)
+python3 collect.py --cloud gcp
+```
+
+See the [GCP Collector](gcp.md#cost-collection) doc for BigQuery setup instructions.
+
+## What Is Collected
 
 The collector filters for backup and snapshot related costs:
 
@@ -88,26 +77,21 @@ Records are categorized into:
 | `snapshot` | Snapshot storage costs (EBS, Disk, Compute) |
 | `storage` | Related storage costs (backup tiers, vault storage) |
 
-## Output Files
+## Output File Format
 
-| File | Description |
-|------|-------------|
-| `cca_cost_inv_<time>.json` | Detailed cost records |
-| `cca_cost_sum_<time>.json` | Aggregated summaries |
-
-## Example Output
-
-**Summary JSON:**
+**`cca_<cloud>_costs_<time>.json`:**
 ```json
 {
     "run_id": "20260211-143052-abc123",
     "timestamp": "2026-02-11T14:30:52.123456Z",
-    "providers": ["aws", "azure"],
+    "provider": "aws",
+    "account_id": "123456789012",
     "period": {
         "start": "2026-01-01",
         "end": "2026-02-01"
     },
-    "total_cost": 1250.50,
+    "total_cost": 770.50,
+    "records": [...],
     "summaries": [
         {
             "provider": "aws",
@@ -132,66 +116,31 @@ Records are categorized into:
 }
 ```
 
-**Console Output:**
-```
-============================================================
-Backup & Snapshot Cost Analysis
-============================================================
-Period:    2026-01-01 to 2026-02-01
-Providers: aws, azure
-Records:   45
-
-Category        Provider        Cost
---------------- ---------- ------------
-backup          aws        $    450.00
-snapshot        aws        $    320.50
-backup          azure      $    280.00
-snapshot        azure      $    200.00
---------------- ---------- ------------
-TOTAL                      $  1,250.50
-
-Output: ./
-```
-
 ## Required Permissions
 
 ### AWS
 
-> **Critical:** AWS Cost Explorer API is only accessible from the **management account**
-> (payer account) in AWS Organizations. Running from a member account will return empty results.
-
-**Requirements:**
-1. Run from the management account (not member accounts)
-2. Use `--org-costs` to get per-account breakdown
-3. Ensure Cost Explorer is enabled (AWS Console → Billing → Cost Explorer)
+> **Critical:** AWS Cost Explorer API is only accessible from the **management account** (payer account) in AWS Organizations. Running from a member account will return empty results.
 
 Add to your IAM policy:
 ```json
 {
     "Sid": "CostExplorerAccess",
     "Effect": "Allow",
-    "Action": [
-        "ce:GetCostAndUsage",
-        "ce:GetCostForecast"
-    ],
+    "Action": ["ce:GetCostAndUsage"],
     "Resource": "*"
 }
 ```
 
-**AWS Organizations with Multiple Orgs:**
-
-If you have multiple independent AWS Organizations (common after acquisitions),
-you must run cost collection from each management account separately:
-
+**Multiple AWS Organizations:** If you have multiple independent orgs, run collection from each management account separately:
 ```bash
-# From each org's management account
-python3 cost_collect.py --aws --org-costs --profile org1-mgmt -o ./org1/
-python3 cost_collect.py --aws --org-costs --profile org2-mgmt -o ./org2/
+python3 collect.py --cloud aws --profile org1-mgmt -o ./org1/
+python3 collect.py --cloud aws --profile org2-mgmt -o ./org2/
 ```
 
 ### Azure
 
-Assign role or add to custom role:
+Assign the built-in **Cost Management Reader** role, or add:
 ```json
 {
     "Actions": [
@@ -201,69 +150,21 @@ Assign role or add to custom role:
 }
 ```
 
-Or assign the built-in **Cost Management Reader** role.
-
 ### GCP
 
-1. **Enable BigQuery billing export** in your billing account:
-   - Go to Billing → Billing export → BigQuery export
-   - Enable detailed usage cost export
-   - Note the dataset and table name
+- `bigquery.jobs.create` on the project running the query
+- `bigquery.tables.getData` on the billing export table
 
-2. **Grant BigQuery permissions:**
-   - `bigquery.jobs.create` on the project
-   - `bigquery.tables.getData` on the billing table
+## Using Cost Data in Reports
 
-## GCP BigQuery Setup
-
-GCP requires billing data to be exported to BigQuery (not available via direct API):
-
-1. Go to **Cloud Console** → **Billing** → **Billing export**
-2. Select **BigQuery export** → **Edit settings**
-3. Choose a project and create/select a dataset
-4. Enable **Detailed usage cost** export
-5. Note the full table path: `project_id.dataset_name.gcp_billing_export_v1_XXXXXX`
-
-Use this table path with `--billing-table`:
-```bash
-python3 cost_collect.py --gcp --project my-project \
-    --billing-table my-project.billing_dataset.gcp_billing_export_v1_012345
-```
-
-**Note:** It can take 24-48 hours for billing data to appear in BigQuery after enabling export.
-
-## Combining with Resource Collection
-
-Resource collection and cost collection are **independent operations** with different requirements:
-
-| Aspect | Inventory Collector | Cost Collector |
-|--------|-------------------|----------------|
-| Script | `aws_collect.py` | `cost_collect.py` |
-| Can run from | Any account (member or management) | Management account only |
-| Collects | Resources, snapshots, backup configs | Billing/spending data |
-| Multi-account | Via role assumption (--org-role) | Via Cost Explorer API (--org-costs) |
-
-**Recommended workflow:**
+After collection, include cost data in the assessment report:
 
 ```bash
-# 1. Collect resources (can run from any account with role assumption)
-python3 aws_collect.py --org-role CCARole -o ./assessment/
+# Generate comprehensive assessment report with cost data
+python scripts/generate_assessment_report.py cca_aws_inv_*.json \
+    --cost cca_aws_costs_*.json -o assessment.xlsx
 
-# 2. Collect costs (must run from management account)
-python3 cost_collect.py --aws --org-costs -o ./assessment/
-
-# 3. Generate reports
-python3 scripts/generate_protection_report.py ./assessment/cca_aws_inv_*.json ./assessment/protection_report.xlsx
-
-# 4. Generate comprehensive assessment report (includes TCO inputs if cost data present)
-python3 scripts/generate_assessment_report.py ./assessment/cca_aws_inv_*.json \
-    --cost ./assessment/cca_cost_*.json -o ./assessment/assessment_report.xlsx
-
-# 5. Or generate a cost-specific report
-python3 scripts/generate_cost_report.py -i ./assessment/cca_cost_inv_*.json \
-    -s ./assessment/cca_cost_sum_*.json -o ./assessment/cost_report.xlsx
+# Generate cost-only report
+python scripts/generate_cost_report.py \
+    -i cca_aws_costs_*.json -o cost_report.xlsx
 ```
-
-**Note:** If running inventory collection via SSO to member accounts, you'll need separate
-management account credentials to collect cost data. These are typically different authentication
-flows and should be run as separate steps.

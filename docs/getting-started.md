@@ -32,12 +32,21 @@ cd cca-cloudshell
 # Install Python dependencies
 pip install -r requirements.txt
 
-# For specific clouds only:
-pip install boto3                    # AWS
-pip install azure-identity azure-mgmt-compute azure-mgmt-storage  # Azure (partial)
-pip install google-cloud-compute google-cloud-storage  # GCP (partial)
-pip install msgraph-sdk azure-identity  # M365
+# Or for one cloud only, install everything that cloud's collector can use
+# (see ./setup.sh's per-cloud options, or the Azure/GCP/AWS/M365 sections of
+# requirements.in for the full package list).
 ```
+
+Azure and GCP each split services across many separate packages
+(`azure-mgmt-*`, `google-cloud-*`). Installing only a couple of them (e.g.
+just `azure-mgmt-compute`) is **not supported** — the collector runs a
+mandatory preflight before any collection starts and refuses to proceed if
+any package it can use is missing, specifically because a partial install
+used to fail silently instead: entire resource types (Synapse, Redis,
+NetApp, PostgreSQL/MySQL) or real-usage lookups (blob capacity, file share
+usage, change rates) would just be skipped with an easy-to-miss log warning,
+producing a collection that looked complete but wasn't. Use `./setup.sh` or
+`pip install -r requirements.txt` so nothing is missing.
 
 ## Quick Start
 
@@ -60,57 +69,70 @@ python3 collect.py --cloud m365
 The unified collector will:
 1. Auto-detect which cloud credentials are configured
 2. Verify your credentials and permissions
-3. Run the appropriate collector(s) with sensible defaults (cost and change rate collection enabled)
+3. Run inventory **and** cost collection together (change rate metrics also enabled by default)
 4. Prompt only for optional configuration
 
-### Interactive Cost Collection
+### Cost Collection
 
-When using the interactive menu, you'll be prompted to include data protection cost collection after selecting a cloud platform:
+Cost collection is **on by default** — no extra steps needed for AWS and Azure. Each run writes a `cca_<cloud>_costs_<time>.json` file alongside the inventory. To skip:
 
-```
-Data protection cost collection analyzes AWS Backup, EBS snapshot,
-and other backup-related costs from AWS Cost Explorer.
-
-Also collect data protection costs? [Y/n]:
+```bash
+python3 collect.py --cloud aws --no-costs
 ```
 
-Cost collection is enabled by default - just press Enter to confirm, or type `n` to skip.
+When using the interactive wizard, you'll see:
+```
+Data protection cost collection is enabled by default.
+
+Skip cost collection? [y/N]:
+```
+
+Press Enter (or type `n`) to collect costs, or type `y` to skip.
+
+**GCP cost collection** requires a BigQuery billing export table:
+```bash
+python3 collect.py --cloud gcp --billing-table my-project.billing.gcp_billing_export_v1_XXXXXX
+```
+Leave `--billing-table` unset to skip GCP cost collection.
 
 ## Quick Start by Cloud
 
-You can also run collectors directly:
+All clouds are accessed through `collect.py`:
 
 ### AWS
 
 ```bash
 # In AWS CloudShell (credentials automatic)
-python3 aws_collect.py
+python3 collect.py --cloud aws
 
 # Local with AWS CLI configured
 aws configure  # if not already done
-python3 aws_collect.py
+python3 collect.py --cloud aws
+
+# Multi-account via Organizations
+python3 collect.py --cloud aws --org-role CCARole
 ```
 
 ### Azure
 
 ```bash
 # In Azure Cloud Shell (credentials automatic)
-python3 azure_collect.py
+python3 collect.py --cloud azure
 
 # Local with Azure CLI
 az login
-python3 azure_collect.py
+python3 collect.py --cloud azure
 ```
 
 ### GCP
 
 ```bash
 # In Google Cloud Shell (credentials automatic)
-python3 gcp_collect.py
+python3 collect.py --cloud gcp
 
 # Local with gcloud CLI
 gcloud auth application-default login
-python3 gcp_collect.py --project my-project-id
+python3 collect.py --cloud gcp --project my-project-id
 ```
 
 ### Microsoft 365
@@ -121,7 +143,7 @@ export MS365_TENANT_ID="your-tenant-id"
 export MS365_CLIENT_ID="your-client-id"
 export MS365_CLIENT_SECRET="your-client-secret"
 
-python3 m365_collect.py
+python3 collect.py --cloud m365
 ```
 
 ## Using Config Files
@@ -189,7 +211,7 @@ When output is piped (non-TTY), plain text progress messages are shown instead.
 - [Azure Collector](collectors/azure.md) - Subscriptions, resource types
 - [GCP Collector](collectors/gcp.md) - Projects, regions, resources
 - [M365 Collector](collectors/m365.md) - App registration, permissions
-- [Cost Collector](collectors/cost.md) - Backup/snapshot spending
+- [Cost Collection](collectors/cost.md) - Backup/snapshot spending (integrated by default)
 - [Output Formats](output-formats.md) - JSON schema, CSV fields
 - [Required Permissions](PERMISSIONS.md) - IAM policies for each cloud
 - [Setup Scripts](../setup/README.md) - Automated permission configuration
@@ -215,10 +237,10 @@ By default, resource IDs are redacted in output files for privacy. Use these fla
 
 ```bash
 # Include full resource IDs/ARNs in output
-python3 aws_collect.py --include-resource-ids
-python3 azure_collect.py --include-resource-ids
-python3 gcp_collect.py --include-resource-ids
+python3 collect.py --cloud aws --include-resource-ids
+python3 collect.py --cloud azure --include-resource-ids
+python3 collect.py --cloud gcp --include-resource-ids
 
 # Azure - include individual recovery points (verbose, can be slow)
-python3 azure_collect.py --include-recovery-points
+python3 collect.py --cloud azure --include-recovery-points
 ```

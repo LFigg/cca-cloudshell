@@ -4,22 +4,22 @@
 #
 #    pip-compile --output-file=requirements.txt requirements.in
 #
-aiohappyeyeballs==2.6.1
+aiohappyeyeballs==2.7.1
     # via aiohttp
 aiohttp==3.14.3
-    # via microsoft-kiota-authentication-azure
+    # via
+    #   kubernetes
+    #   microsoft-kiota-authentication-azure
 aiosignal==1.4.0
     # via aiohttp
-anyio==4.12.1
+anyio==4.14.2
     # via httpx
 attrs==26.1.0
     # via aiohttp
 azure-common==1.1.28
     # via
-    #   azure-mgmt-costmanagement
     #   azure-mgmt-monitor
     #   azure-mgmt-redis
-    #   azure-mgmt-sql
     #   azure-mgmt-subscription
     #   azure-mgmt-synapse
 azure-core==1.41.0
@@ -33,9 +33,9 @@ azure-identity==1.25.3
     # via
     #   -r requirements.in
     #   msgraph-sdk
-azure-mgmt-compute==38.0.0
+azure-mgmt-compute==38.2.0
     # via -r requirements.in
-azure-mgmt-containerservice==41.1.0
+azure-mgmt-containerservice==41.5.0
     # via -r requirements.in
 azure-mgmt-core==1.6.0
     # via
@@ -55,55 +55,56 @@ azure-mgmt-core==1.6.0
     #   azure-mgmt-subscription
     #   azure-mgmt-synapse
     #   azure-mgmt-web
-azure-mgmt-cosmosdb==9.9.0
+azure-mgmt-cosmosdb==10.0.0
     # via -r requirements.in
-azure-mgmt-costmanagement==4.0.1
+azure-mgmt-costmanagement==5.0.0
     # via -r requirements.in
 azure-mgmt-monitor==7.0.0
     # via -r requirements.in
-azure-mgmt-netapp==16.0.0
+azure-mgmt-netapp==17.1.0
     # via -r requirements.in
 azure-mgmt-rdbms==10.1.1
     # via -r requirements.in
-azure-mgmt-recoveryservices==4.0.0
+azure-mgmt-recoveryservices==4.1.0
     # via -r requirements.in
 azure-mgmt-recoveryservicesbackup==10.0.0
     # via -r requirements.in
 azure-mgmt-redis==14.5.0
     # via -r requirements.in
-azure-mgmt-resource==25.0.0
+azure-mgmt-resource==26.0.0
     # via -r requirements.in
-azure-mgmt-sql==3.0.1
+azure-mgmt-sql==4.0.0
     # via -r requirements.in
-azure-mgmt-storage==24.0.1
+azure-mgmt-storage==25.1.0
     # via -r requirements.in
 azure-mgmt-subscription==3.1.1
     # via -r requirements.in
 azure-mgmt-synapse==2.0.0
     # via -r requirements.in
-azure-mgmt-web==11.0.0
+azure-mgmt-web==11.0.1
     # via -r requirements.in
-azure-storage-blob==12.28.0
+azure-storage-blob==12.30.0
     # via -r requirements.in
-boto3==1.43.6
+boto3==1.43.68
     # via -r requirements.in
-botocore==1.43.6
+botocore==1.43.68
     # via
     #   boto3
     #   s3transfer
-certifi==2026.4.22
+certifi==2026.7.22
     # via
     #   httpcore
     #   httpx
     #   kubernetes
     #   msrest
     #   requests
-cffi==2.0.0
+cffi==2.1.1
     # via cryptography
-charset-normalizer==3.4.7
+charset-normalizer==3.4.9
     # via requests
-cryptography==48.0.1
+cryptography==50.0.0
     # via
+    #   -r requirements.in
     #   azure-identity
     #   azure-storage-blob
     #   google-auth
@@ -113,13 +114,11 @@ durationpy==0.10
     # via kubernetes
 et-xmlfile==2.0.0
     # via openpyxl
-exceptiongroup==1.3.1 ; python_version < "3.11"
-    # via anyio
 frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
-google-api-core[grpc]==2.30.3
+google-api-core[grpc]==2.34.0
     # via
     #   google-api-python-client
     #   google-cloud-alloydb
@@ -137,9 +136,9 @@ google-api-core[grpc]==2.30.3
     #   google-cloud-resource-manager
     #   google-cloud-spanner
     #   google-cloud-storage
-google-api-python-client==2.196.0
+google-api-python-client==2.198.0
     # via -r requirements.in
-google-auth==2.52.0
+google-auth[pyopenssl]==2.56.3
     # via
     #   google-api-core
     #   google-api-python-client
@@ -157,60 +156,61 @@ google-auth==2.52.0
     #   google-cloud-monitoring
     #   google-cloud-redis
     #   google-cloud-resource-manager
+    #   google-cloud-spanner
     #   google-cloud-storage
-google-auth-httplib2==0.4.0
+google-auth-httplib2==0.4.1
     # via google-api-python-client
-google-cloud-alloydb==0.9.0
+google-cloud-alloydb==0.11.0
     # via -r requirements.in
-google-cloud-backupdr==0.9.0
+google-cloud-backupdr==0.10.1
     # via -r requirements.in
-google-cloud-bigquery==3.41.0
+google-cloud-bigquery==3.43.0
     # via -r requirements.in
-google-cloud-bigtable==2.38.0
+google-cloud-bigtable==2.41.0
     # via -r requirements.in
-google-cloud-common==1.9.0
+google-cloud-common==1.10.0
     # via google-cloud-filestore
-google-cloud-compute==1.47.0
+google-cloud-compute==1.50.0
     # via -r requirements.in
-google-cloud-container==2.64.0
+google-cloud-container==2.65.0
     # via -r requirements.in
-google-cloud-core==2.6.0
+google-cloud-core==2.6.1
     # via
     #   google-cloud-bigquery
     #   google-cloud-bigtable
     #   google-cloud-spanner
     #   google-cloud-storage
-google-cloud-filestore==1.16.0
+google-cloud-filestore==1.17.1
     # via -r requirements.in
-google-cloud-functions==1.23.0
+google-cloud-functions==1.24.0
     # via -r requirements.in
-google-cloud-monitoring==2.30.0
+google-cloud-monitoring==2.31.0
     # via
     #   -r requirements.in
     #   google-cloud-spanner
-google-cloud-redis==2.21.0
+google-cloud-redis==2.22.0
     # via -r requirements.in
-google-cloud-resource-manager==1.17.0
+google-cloud-resource-manager==1.18.0
     # via -r requirements.in
-google-cloud-spanner==3.66.0
+google-cloud-spanner==3.69.1
     # via -r requirements.in
-google-cloud-storage==3.10.1
+google-cloud-storage==3.13.1
     # via -r requirements.in
 google-crc32c==1.8.0
     # via
     #   google-cloud-bigtable
     #   google-cloud-storage
     #   google-resumable-media
-google-resumable-media==2.9.0
+google-resumable-media==2.10.1
     # via
     #   google-cloud-bigquery
     #   google-cloud-storage
-googleapis-common-protos[grpc]==1.75.0
+googleapis-common-protos[grpc]==1.75.1
     # via
     #   google-api-core
     #   grpc-google-iam-v1
     #   grpcio-status
-grpc-google-iam-v1==0.14.4
+grpc-google-iam-v1==0.14.5
     # via
     #   google-cloud-alloydb
     #   google-cloud-backupdr
@@ -220,7 +220,7 @@ grpc-google-iam-v1==0.14.4
     #   google-cloud-spanner
 grpc-interceptor==0.15.4
     # via google-cloud-spanner
-grpcio==1.80.0
+grpcio==1.83.0
     # via
     #   google-api-core
     #   google-cloud-alloydb
@@ -234,17 +234,18 @@ grpcio==1.80.0
     #   google-cloud-monitoring
     #   google-cloud-redis
     #   google-cloud-resource-manager
+    #   google-cloud-spanner
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpc-interceptor
     #   grpcio-status
-grpcio-status==1.80.0
+grpcio-status==1.83.0
     # via google-api-core
 h11==0.16.0
     # via httpcore
-h2==4.3.0
+h2==4.4.1
     # via httpx
-hpack==4.1.0
+hpack==4.2.0
     # via h2
 httpcore==1.0.9
     # via httpx
@@ -265,18 +266,18 @@ idna==3.18
     #   httpx
     #   requests
     #   yarl
-importlib-metadata==8.7.1
-    # via opentelemetry-api
 isodate==0.7.2
     # via
     #   azure-mgmt-compute
     #   azure-mgmt-containerservice
+    #   azure-mgmt-cosmosdb
     #   azure-mgmt-costmanagement
     #   azure-mgmt-monitor
     #   azure-mgmt-netapp
     #   azure-mgmt-recoveryservices
     #   azure-mgmt-redis
     #   azure-mgmt-resource
+    #   azure-mgmt-sql
     #   azure-mgmt-storage
     #   azure-mgmt-web
     #   azure-storage-blob
@@ -285,13 +286,13 @@ jmespath==1.1.0
     # via
     #   boto3
     #   botocore
-kubernetes==35.0.0
+kubernetes==36.0.3
     # via -r requirements.in
 markdown-it-py==4.2.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-microsoft-kiota-abstractions==1.10.1
+microsoft-kiota-abstractions==1.11.8
     # via
     #   microsoft-kiota-authentication-azure
     #   microsoft-kiota-http
@@ -300,38 +301,37 @@ microsoft-kiota-abstractions==1.10.1
     #   microsoft-kiota-serialization-multipart
     #   microsoft-kiota-serialization-text
     #   msgraph-core
-microsoft-kiota-authentication-azure==1.10.1
+microsoft-kiota-authentication-azure==1.11.8
     # via msgraph-core
-microsoft-kiota-http==1.10.1
+microsoft-kiota-http==1.11.8
     # via msgraph-core
-microsoft-kiota-serialization-form==1.10.1
+microsoft-kiota-serialization-form==1.11.8
     # via msgraph-sdk
-microsoft-kiota-serialization-json==1.10.1
+microsoft-kiota-serialization-json==1.11.8
     # via msgraph-sdk
-microsoft-kiota-serialization-multipart==1.10.1
+microsoft-kiota-serialization-multipart==1.11.8
     # via msgraph-sdk
-microsoft-kiota-serialization-text==1.10.1
+microsoft-kiota-serialization-text==1.11.8
     # via msgraph-sdk
 mmh3==5.2.1
     # via google-cloud-spanner
-msal==1.36.0
+msal==1.37.0
     # via
+    #   -r requirements.in
     #   azure-identity
     #   msal-extensions
 msal-extensions==1.3.1
     # via azure-identity
-msgraph-core==1.3.8
+msgraph-core==1.5.1
     # via
     #   -r requirements.in
     #   msgraph-sdk
-msgraph-sdk==1.57.0
+msgraph-sdk==1.61.0
     # via -r requirements.in
 msrest==0.7.1
     # via
-    #   azure-mgmt-cosmosdb
     #   azure-mgmt-rdbms
     #   azure-mgmt-recoveryservicesbackup
-    #   azure-mgmt-sql
     #   azure-mgmt-subscription
     #   azure-mgmt-synapse
 multidict==6.7.1
@@ -342,7 +342,7 @@ oauthlib==3.3.1
     # via requests-oauthlib
 openpyxl==3.1.5
     # via -r requirements.in
-opentelemetry-api==1.41.1
+opentelemetry-api==1.44.0
     # via
     #   google-cloud-spanner
     #   microsoft-kiota-abstractions
@@ -351,26 +351,26 @@ opentelemetry-api==1.41.1
     #   opentelemetry-resourcedetector-gcp
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-resourcedetector-gcp==1.12.0a0
+opentelemetry-resourcedetector-gcp==1.14.0
     # via google-cloud-spanner
-opentelemetry-sdk==1.41.1
+opentelemetry-sdk==1.44.0
     # via
     #   google-cloud-spanner
     #   microsoft-kiota-abstractions
     #   microsoft-kiota-authentication-azure
     #   microsoft-kiota-http
     #   opentelemetry-resourcedetector-gcp
-opentelemetry-semantic-conventions==0.62b1
+opentelemetry-semantic-conventions==0.65b0
     # via
     #   google-cloud-spanner
     #   opentelemetry-sdk
-packaging==26.2
+packaging==26.3
     # via google-cloud-bigquery
-propcache==0.4.1
+propcache==0.5.2
     # via
     #   aiohttp
     #   yarl
-proto-plus==1.28.0
+proto-plus==1.28.3
     # via
     #   google-api-core
     #   google-cloud-alloydb
@@ -385,7 +385,7 @@ proto-plus==1.28.0
     #   google-cloud-redis
     #   google-cloud-resource-manager
     #   google-cloud-spanner
-protobuf==6.33.6
+protobuf==7.35.1
     # via
     #   google-api-core
     #   google-cloud-alloydb
@@ -427,7 +427,7 @@ pyyaml==6.0.3
     # via
     #   -r requirements.in
     #   kubernetes
-requests==2.33.1
+requests==2.34.2
     # via
     #   azure-core
     #   google-api-core
@@ -444,7 +444,7 @@ requests-oauthlib==2.0.0
     #   msrest
 rich==15.0.0
     # via -r requirements.in
-s3transfer==0.17.0
+s3transfer==0.19.2
     # via boto3
 six==1.17.0
     # via
@@ -453,17 +453,18 @@ six==1.17.0
     #   python-dateutil
 sqlparse==0.5.5
     # via google-cloud-spanner
-std-uritemplate==2.0.8
+std-uritemplate==2.0.12
     # via microsoft-kiota-abstractions
 tenacity==9.1.4
     # via -r requirements.in
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   azure-core
     #   azure-identity
     #   azure-mgmt-compute
     #   azure-mgmt-containerservice
     #   azure-mgmt-cosmosdb
+    #   azure-mgmt-costmanagement
     #   azure-mgmt-monitor
     #   azure-mgmt-netapp
     #   azure-mgmt-rdbms
@@ -471,12 +472,12 @@ typing-extensions==4.15.0
     #   azure-mgmt-recoveryservicesbackup
     #   azure-mgmt-redis
     #   azure-mgmt-resource
+    #   azure-mgmt-sql
     #   azure-mgmt-storage
     #   azure-mgmt-web
     #   azure-storage-blob
     #   grpcio
     #   opentelemetry-api
-    #   opentelemetry-resourcedetector-gcp
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
 uritemplate==4.2.0
@@ -488,7 +489,5 @@ urllib3==2.7.0
     #   requests
 websocket-client==1.9.0
     # via kubernetes
-yarl==1.23.0
+yarl==1.24.5
     # via aiohttp
-zipp==3.23.1
-    # via importlib-metadata

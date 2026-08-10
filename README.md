@@ -24,21 +24,15 @@ cd cca-cloudshell-main && ./setup.sh
 python3 collect.py              # Auto-detects cloud credentials and runs
 python3 collect.py --setup      # Interactive setup wizard for first-time users
 python3 collect.py --cloud aws  # Specify cloud explicitly
-
-# Or run individual collectors directly
-python3 aws_collect.py      # AWS
-python3 azure_collect.py    # Azure
-python3 gcp_collect.py      # GCP
-python3 m365_collect.py     # Microsoft 365
-python3 cost_collect.py --aws  # Backup/snapshot costs (run from management account)
 ```
 
 ## Unified Collector
 
-The `collect.py` entry point provides:
-- **Auto-Detection**: Finds configured cloud credentials automatically
-- **Permission Verification**: Validates credentials before collection
-- **Setup Wizard**: Interactive setup for first-time users (`--setup`)
+`collect.py` is the single entry point for all cloud collection. It:
+- **Auto-detects** configured cloud credentials
+- **Verifies permissions** before collection
+- **Collects costs by default** — data protection cost data (AWS Backup, Azure Backup, GCP snapshot costs) is collected alongside inventory with no extra steps
+- **Interactive wizard** for first-time users (`--setup`)
 
 ```bash
 # Auto-detect and run (single cloud detected = runs automatically)
@@ -47,14 +41,20 @@ python3 collect.py
 # Setup wizard - configure credentials and test permissions
 python3 collect.py --setup
 
-# Specify cloud explicitly
+# Specify cloud and options directly
 python3 collect.py --cloud aws
-python3 collect.py --cloud azure --skip-check  # Skip permission verification
+python3 collect.py --cloud aws --org-role CCARole --regions us-east-1
+python3 collect.py --cloud azure --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+python3 collect.py --cloud gcp --all-projects --billing-table proj.dataset.table
+python3 collect.py --cloud m365
 
-# Pass arguments to underlying collector
-python3 collect.py --cloud aws -- --org-role CCARole --regions us-east-1
+# Skip permission verification
+python3 collect.py --cloud aws --skip-check
 
-# Show collector-specific help
+# Skip cost collection (costs are ON by default)
+python3 collect.py --cloud aws --no-costs
+
+# Show cloud-specific options
 python3 collect.py --cloud aws --help-collector
 ```
 
@@ -82,7 +82,7 @@ Each collector generates:
 | [Azure Collector](docs/collectors/azure.md) | Subscriptions, resources |
 | [GCP Collector](docs/collectors/gcp.md) | Projects, regions, resources |
 | [M365 Collector](docs/collectors/m365.md) | App registration, Graph API |
-| [Cost Collector](docs/collectors/cost.md) | Backup/snapshot spending |
+| [Cost Collection](docs/collectors/cost.md) | Integrated backup/snapshot cost collection |
 | [Required Permissions](docs/PERMISSIONS.md) | IAM policies for each cloud |
 | [AWS CloudFormation & StackSets](docs/aws-cloudformation.md) | IAM role deployment for 100+ accounts |
 | [Permission Setup Scripts](setup/README.md) | Setup scripts for Azure/GCP |
@@ -94,46 +94,54 @@ Each collector generates:
 
 ```bash
 # AWS - multi-account via Organizations
-python3 aws_collect.py --org-role CCARole
+python3 collect.py --cloud aws --org-role CCARole
 
 # AWS - specific regions
-python3 aws_collect.py --regions us-east-1,us-west-2
+python3 collect.py --cloud aws --regions us-east-1,us-west-2
 
 # Azure - specific subscription
-python3 azure_collect.py --subscription-id xxx
+python3 collect.py --cloud azure --subscription-id xxx
 
 # GCP - all projects
-python3 gcp_collect.py --all-projects
+python3 collect.py --cloud gcp --all-projects
+
+# GCP - with cost collection (requires BigQuery billing export)
+python3 collect.py --cloud gcp --billing-table my-project.billing.gcp_billing_export_v1_XXXXXX
 
 # Custom output directory
-python3 aws_collect.py -o ./my_output/
+python3 collect.py --cloud aws -o ./my_output/
 
 # Include full resource IDs/ARNs in output (default: redact for privacy)
-python3 aws_collect.py --include-resource-ids
+python3 collect.py --cloud aws --include-resource-ids
 
 # Azure - include individual recovery points (slow for large environments)
-python3 azure_collect.py --include-recovery-points
+python3 collect.py --cloud azure --include-recovery-points
 
 # Skip change rate metrics (faster collection)
-python3 aws_collect.py --skip-change-rate
+python3 collect.py --cloud aws --skip-change-rate
 
-# Analyze backup/snapshot costs (requires management account for AWS Organizations)
-python3 cost_collect.py --aws --org-costs  # Break down by linked account
-python3 cost_collect.py --aws --start-date 2026-01-01
+# Skip cost collection (costs are collected by default for AWS and Azure)
+python3 collect.py --cloud aws --no-costs
 ```
 
-### Cost Collection via Interactive Menu
+### Cost Collection
 
-When using `python3 collect.py` in interactive mode, you'll be prompted for cost collection options after selecting a cloud platform. This enables collecting both inventory and backup/snapshot costs in a single workflow.
+Cost collection (backup/snapshot spending) is **enabled by default** for AWS and Azure — no extra steps needed. Each collection run produces a `cca_<cloud>_costs_<time>.json` file alongside the inventory.
+
+- **AWS**: queries Cost Explorer (requires management account for org-level breakdowns)
+- **Azure**: queries Cost Management API
+- **GCP**: requires `--billing-table` pointing to a BigQuery billing export
+
+To skip cost collection, use `--no-costs`. When using the interactive wizard, you'll be asked "Skip cost collection? [y/N]".
 
 ### Change Rate Collection
 
 Change rate metrics are collected by default from CloudWatch/Monitor. Use `--skip-change-rate` or `--change-rate-days` to customize:
 
 ```bash
-python3 aws_collect.py --change-rate-days 14     # Use 14-day sample instead of 7
-python3 azure_collect.py --skip-change-rate       # Skip for faster collection
-python3 gcp_collect.py --skip-change-rate
+python3 collect.py --cloud aws --change-rate-days 14     # Use 14-day sample instead of 7
+python3 collect.py --cloud azure --skip-change-rate       # Skip for faster collection
+python3 collect.py --cloud gcp --skip-change-rate
 ```
 
 This outputs a separate `cca_*_change_rates_*.json` file with estimated daily change rates by service family. Use these values to override default DCR assumptions in sizing tools.
@@ -145,9 +153,9 @@ This outputs a separate `cca_*_change_rates_*.json` file with estimated daily ch
 PersistentVolumeClaims (PVCs) are automatically collected when managed Kubernetes clusters are discovered. Use `--skip-pvc` to disable this:
 
 ```bash
-python3 aws_collect.py --skip-pvc      # Skip PVC collection from EKS clusters
-python3 azure_collect.py --skip-pvc    # Skip PVC collection from AKS clusters
-python3 gcp_collect.py --skip-pvc      # Skip PVC collection from GKE clusters
+python3 collect.py --cloud aws --skip-pvc      # Skip PVC collection from EKS clusters
+python3 collect.py --cloud azure --skip-pvc    # Skip PVC collection from AKS clusters
+python3 collect.py --cloud gcp --skip-pvc      # Skip PVC collection from GKE clusters
 ```
 
 This collects:
@@ -233,41 +241,66 @@ See [setup/](setup/) for Azure/GCP permission setup scripts.
 
 ```
 cca-cloudshell/
-├── collect.py              # Unified collector entry point
-├── aws_collect.py          # AWS collector
-├── azure_collect.py        # Azure collector
-├── cost_collect.py         # Cost analyzer
-├── gcp_collect.py          # GCP collector
-├── m365_collect.py         # M365 collector
+├── collect.py              # Unified entry point — all clouds, all options
 ├── pyproject.toml          # Project config (mypy, pytest, ruff)
 ├── setup/                  # IAM/permission setup scripts
 ├── config-examples/        # YAML config file examples
-├── lib/                    # Shared models and utilities
-│   ├── constants.py        # Centralized constants
-│   ├── models.py           # Resource data models
+├── lib/                    # All collection and reporting logic
+│   ├── models.py           # Resource data models (CloudResource, CostRecord, etc.)
 │   ├── utils.py            # Common utilities
-│   └── ...
-├── scripts/                # Report generators
+│   ├── constants.py        # Centralized constants
+│   ├── change_rate.py      # Change rate metric helpers
+│   ├── aws/                # AWS collection modules
+│   │   ├── collector.py    # Orchestration: run_collection(), build_parser()
+│   │   ├── cost.py         # Cost Explorer integration
+│   │   ├── auth.py         # Session, role assumption, Organizations
+│   │   ├── compute.py      # EC2, EBS, Lambda
+│   │   ├── storage.py      # S3, EFS, FSx
+│   │   ├── databases.py    # RDS, DynamoDB, ElastiCache, etc.
+│   │   ├── container.py    # EKS
+│   │   ├── backup.py       # AWS Backup
+│   │   ├── monitoring.py   # CloudWatch change rates
+│   │   ├── helpers.py      # Account validation, chunking
+│   │   └── parallel.py     # Multi-account parallel collection
+│   ├── azure/              # Azure collection modules
+│   │   ├── collector.py    # Orchestration: run_collection(), build_parser()
+│   │   ├── cost.py         # Cost Management integration
+│   │   ├── auth.py         # Credential handling
+│   │   ├── compute.py      # VMs, disks, snapshots, functions
+│   │   ├── storage.py      # Storage accounts
+│   │   ├── databases.py    # SQL, CosmosDB, Redis
+│   │   ├── container.py    # AKS
+│   │   ├── backup.py       # Recovery Services vaults
+│   │   └── monitoring.py   # Azure Monitor change rates
+│   ├── gcp/                # GCP collection modules
+│   │   ├── collector.py    # Orchestration: run_collection(), build_parser()
+│   │   ├── cost.py         # BigQuery billing export integration
+│   │   ├── auth.py         # Credential handling
+│   │   ├── compute.py      # Compute Engine, snapshots
+│   │   ├── storage.py      # Cloud Storage
+│   │   ├── databases.py    # Cloud SQL, Spanner, Bigtable, etc.
+│   │   ├── container.py    # GKE
+│   │   ├── backup.py       # Cloud Backup
+│   │   └── monitoring.py   # Cloud Monitoring change rates
+│   ├── m365/               # M365 collection modules
+│   │   ├── collector.py    # Orchestration: run_collection(), build_parser()
+│   │   ├── __init__.py     # Graph client, all collection functions
+│   │   ├── exchange.py     # Exchange Online
+│   │   ├── sharepoint.py   # SharePoint
+│   │   ├── onedrive.py     # OneDrive
+│   │   └── teams.py        # Teams
+│   └── reports/            # Report generation
+│       ├── assessment.py   # Multi-tab Excel assessment report
+│       ├── protection.py   # Protection status report
+│       ├── m365.py         # M365-specific Excel report
+│       └── cost.py         # Cost analysis report
+├── scripts/                # Thin CLI wrappers for report generators
 │   ├── generate_assessment_report.py
 │   ├── generate_protection_report.py
+│   ├── generate_m365_report.py
 │   ├── generate_cost_report.py
 │   └── merge_batch_outputs.py
 ├── docs/                   # Documentation
 ```
 
-## Development
 
-```bash
-# Run tests
-pytest tests/
-
-# Type checking
-mypy aws_collect.py azure_collect.py gcp_collect.py
-
-# Linting
-ruff check .
-```
-
-## License
-
-MIT License

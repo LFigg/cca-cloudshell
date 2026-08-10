@@ -12,4 +12,18 @@ scripts/generate_sizer_input.py
 # Test fixtures - sizer outputs
 tests/sample_output/sizer_*.json
 
+# Demonstration output from test_aws_integration.py / test_large_scale_*.py -
+# these tests write real files with a live-timestamp filename purely to show
+# what collector output looks like; nothing reads them back, so a committed
+# copy just churns (deleted + re-added under a new name) every time the tests
+# run, with no fixture value. Regenerate locally by running those tests.
+tests/sample_output/
+tests/large_scale_output/
+tests/large_scale_output_azure/
+tests/large_scale_output_gcp/
+tests/large_scale_output_m365/
+
+# Internal-only reference docs (never commit/push — local machine only)
+docs/internal-reference/
+
 

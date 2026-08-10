@@ -5,7 +5,7 @@ Description: |
   This template creates an IAM role with read-only permissions needed to run
   the CCA AWS collector. Deploy this in each account you want to collect from.
   
-  For single-account use: Deploy once, use with aws_collect.py
+  For single-account use: Deploy once, use with collect.py --cloud aws
   For multi-account use: Deploy to each member account, then use --org-role or --role-arns
 
 Metadata:
@@ -105,6 +105,7 @@ Resources:
               
               # CloudWatch (for Aurora storage metrics)
               - cloudwatch:GetMetricStatistics
+              - cloudwatch:GetMetricData
               
               # S3
               - s3:ListAllMyBuckets
@@ -168,6 +169,9 @@ Resources:
                 - organizations:ListAccounts
                 - organizations:DescribeOrganization
                 - organizations:DescribeAccount
+                - organizations:ListParents
+                - organizations:DescribeOrganizationalUnit
+                - organizations:ListRoots
               Resource: '*'
             - !Ref AWS::NoValue
 
@@ -255,6 +259,6 @@ Outputs:
   UsageInstructions:
     Description: How to use this role with the CCA collector
     Value: !Sub |
-      Single account: python3 aws_collect.py
-      Cross-account:  python3 aws_collect.py --role-arn ${CCACollectorRole.Arn}
-      With external ID: python3 aws_collect.py --role-arn ${CCACollectorRole.Arn} --external-id YOUR_EXTERNAL_ID
+      Single account: python3 collect.py --cloud aws
+      Cross-account:  python3 collect.py --cloud aws -- --role-arn ${CCACollectorRole.Arn}
+      With external ID: python3 collect.py --cloud aws -- --role-arn ${CCACollectorRole.Arn} --external-id YOUR_EXTERNAL_ID

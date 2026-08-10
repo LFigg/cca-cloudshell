@@ -241,10 +241,7 @@ source ~/.cca-m365-credentials
 ### Running the Collector
 
 ```bash
-# Run M365 collector
-python m365_collect.py
-
-# Or use unified collector
+# Run M365 collector via unified entry point
 python collect.py --cloud m365
 ```
 

@@ -163,17 +163,13 @@ def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
         if not output:
             output = "./output"
 
-        # Cost collection
+        # Cost collection (default ON — opt out)
         print()
-        print("Data protection cost collection analyzes AWS Backup, EBS snapshot,")
-        print("and other backup-related costs from AWS Cost Explorer.")
+        print("Data protection cost collection is enabled by default.")
+        print("It analyzes AWS Backup, EBS snapshot, and Cost Explorer data.")
         print()
-        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input != 'n'
-
-        cost_opts = {}
-        if collect_costs:
-            cost_opts['org_costs'] = True
+        cost_input = input(color("Skip cost collection? [y/N]: ", Colors.CYAN)).strip().lower()
+        no_costs = cost_input in ('y', 'yes')
 
         return {
             'org_role': org_role,
@@ -185,8 +181,7 @@ def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
             'include_change_rate': include_change_rate,
             'include_resource_ids': include_resource_ids,
             'output': output,
-            'collect_costs': collect_costs,
-            'cost_opts': cost_opts
+            'no_costs': no_costs,
         }
     except (KeyboardInterrupt, EOFError):
         print()
@@ -194,7 +189,7 @@ def prompt_aws_org_options() -> Optional[Dict[str, Any]]:
 
 
 def prompt_aws_options() -> Optional[Dict[str, Any]]:
-    """Prompt for AWS collection options including cost collection."""
+    """Prompt for AWS collection options."""
     print(color("\n=== AWS Collection Options ===\n", Colors.BOLD))
 
     try:
@@ -226,28 +221,19 @@ def prompt_aws_options() -> Optional[Dict[str, Any]]:
         if not output:
             output = "./output"
 
-        # Cost collection
+        # Cost collection (default ON — opt out)
         print()
-        print("Data protection cost collection analyzes AWS Backup, EBS snapshot,")
-        print("and other backup-related costs from AWS Cost Explorer.")
+        print("Data protection cost collection is enabled by default.")
         print()
-        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input != 'n'
-
-        cost_opts = {}
-        if collect_costs:
-            print()
-            print("For AWS Organizations, costs can be broken down by member account.")
-            org_input = input(color("Break down costs by linked account (org)? [y/N]: ", Colors.CYAN)).strip().lower()
-            cost_opts['org_costs'] = org_input in ('y', 'yes')
+        cost_input = input(color("Skip cost collection? [y/N]: ", Colors.CYAN)).strip().lower()
+        no_costs = cost_input in ('y', 'yes')
 
         return {
             'regions': regions if regions else None,
             'include_change_rate': include_change_rate,
             'include_resource_ids': include_resource_ids,
             'output': output,
-            'collect_costs': collect_costs,
-            'cost_opts': cost_opts
+            'no_costs': no_costs,
         }
     except (KeyboardInterrupt, EOFError):
         print()
@@ -255,7 +241,7 @@ def prompt_aws_options() -> Optional[Dict[str, Any]]:
 
 
 def prompt_azure_options() -> Optional[Dict[str, Any]]:
-    """Prompt for Azure collection options including cost collection."""
+    """Prompt for Azure collection options."""
     print(color("\n=== Azure Collection Options ===\n", Colors.BOLD))
 
     try:
@@ -294,18 +280,12 @@ def prompt_azure_options() -> Optional[Dict[str, Any]]:
         if not output:
             output = "./output"
 
-        # Cost collection
+        # Cost collection (default ON — opt out)
         print()
-        print("Data protection cost collection analyzes Azure Backup vault costs,")
-        print("managed disk snapshots, and recovery services from Cost Management.")
+        print("Data protection cost collection is enabled by default.")
         print()
-        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input != 'n'
-
-        cost_opts = {}
-        if collect_costs:
-            # Use same subscription if specified, otherwise auto-detect
-            cost_opts['subscription_id'] = subscription_id if subscription_id else None
+        cost_input = input(color("Skip cost collection? [y/N]: ", Colors.CYAN)).strip().lower()
+        no_costs = cost_input in ('y', 'yes')
 
         return {
             'subscription_id': subscription_id if subscription_id else None,
@@ -313,8 +293,7 @@ def prompt_azure_options() -> Optional[Dict[str, Any]]:
             'include_change_rate': include_change_rate,
             'include_resource_ids': include_resource_ids,
             'output': output,
-            'collect_costs': collect_costs,
-            'cost_opts': cost_opts
+            'no_costs': no_costs,
         }
     except (KeyboardInterrupt, EOFError):
         print()
@@ -322,7 +301,7 @@ def prompt_azure_options() -> Optional[Dict[str, Any]]:
 
 
 def prompt_gcp_options() -> Optional[Dict[str, Any]]:
-    """Prompt for GCP collection options including cost collection."""
+    """Prompt for GCP collection options."""
     print(color("\n=== GCP Collection Options ===\n", Colors.BOLD))
 
     try:
@@ -363,30 +342,12 @@ def prompt_gcp_options() -> Optional[Dict[str, Any]]:
         if not output:
             output = "./output"
 
-        # Cost collection
+        # Cost collection (GCP requires BigQuery billing export table)
         print()
-        print("Data protection cost collection requires BigQuery billing export.")
-        print("See: https://cloud.google.com/billing/docs/how-to/export-data-bigquery")
+        print("GCP cost collection requires a BigQuery billing export table.")
+        print("Leave blank to skip cost collection.")
         print()
-        cost_input = input(color("Also collect data protection costs? [Y/n]: ", Colors.CYAN)).strip().lower()
-        collect_costs = cost_input != 'n'
-
-        cost_opts = {}
-        if collect_costs:
-            print()
-            cost_project = input(color("GCP project ID with billing export: ", Colors.CYAN)).strip()
-            if not cost_project:
-                print(color("Project ID is required for cost collection.", Colors.YELLOW))
-                collect_costs = False
-            else:
-                cost_opts['project'] = cost_project
-
-                billing_table = input(color("BigQuery billing table (project.dataset.table): ", Colors.CYAN)).strip()
-                if not billing_table:
-                    print(color("Billing table is required for cost collection.", Colors.YELLOW))
-                    collect_costs = False
-                else:
-                    cost_opts['billing_table'] = billing_table
+        billing_table = input(color("BigQuery billing table (project.dataset.table, or Enter to skip): ", Colors.CYAN)).strip()
 
         return {
             'project': project,
@@ -395,8 +356,7 @@ def prompt_gcp_options() -> Optional[Dict[str, Any]]:
             'include_change_rate': include_change_rate,
             'include_resource_ids': include_resource_ids,
             'output': output,
-            'collect_costs': collect_costs,
-            'cost_opts': cost_opts
+            'billing_table': billing_table if billing_table else None,
         }
     except (KeyboardInterrupt, EOFError):
         print()
@@ -947,100 +907,53 @@ def verify_permissions(cloud: str) -> bool:
 # Collection Execution
 # =============================================================================
 
-def _run_module(module_path: str, argv: List[str]) -> int:
-    """Load a collector module and call its main(), returning the exit code."""
-    spec = importlib.util.spec_from_file_location("_collector", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    saved_argv = sys.argv
-    sys.argv = argv
-    try:
-        module.main()
-        return 0
-    except SystemExit as e:
-        return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
-    except KeyboardInterrupt:
-        return 130
-    finally:
-        sys.argv = saved_argv
+_COLLECTOR_MODULES = {
+    'aws': 'lib.aws.collector',
+    'azure': 'lib.azure.collector',
+    'gcp': 'lib.gcp.collector',
+    'm365': 'lib.m365.collector',
+}
 
 
-def run_collector(cloud: str, extra_args: List[str]) -> int:
+def run_collector(cloud: str, extra_args: List[str], no_costs: bool = False) -> int:
+    """Run the appropriate collector via direct import.
+
+    Returns 0 on success, non-zero on failure.
     """
-    Run the appropriate collector script.
-    Returns the exit code from the collector.
-    """
-    collectors = {
-        'aws': 'aws_collect.py',
-        'azure': 'azure_collect.py',
-        'gcp': 'gcp_collect.py',
-        'm365': 'm365_collect.py',
-    }
-
-    collector = collectors.get(cloud)
-    if not collector:
+    module_name = _COLLECTOR_MODULES.get(cloud)
+    if not module_name:
         print(color(f"Unknown cloud: {cloud}", Colors.RED))
         return 1
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    collector_path = os.path.realpath(os.path.join(script_dir, collector))
-
-    if not collector_path.startswith(os.path.realpath(script_dir) + os.sep):
-        print(color(f"Collector path outside expected directory: {collector_path}", Colors.RED))
-        return 1
-
-    if not os.path.exists(collector_path):
-        print(color(f"Collector not found: {collector_path}", Colors.RED))
-        return 1
+    # Ensure repo root is on sys.path
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
 
     print(color(f"\n{'─'*60}", Colors.CYAN))
     print(color(f"  Starting {cloud.upper()} collection...", Colors.BOLD))
     print(color(f"{'─'*60}\n", Colors.CYAN))
 
     if extra_args:
-        print(color(f"  Additional args: {' '.join(extra_args)}\n", Colors.CYAN))
+        display = [a for a in extra_args if 'secret' not in a.lower()]
+        print(color(f"  Options: {' '.join(display)}\n", Colors.CYAN))
 
-    rc = _run_module(collector_path, [collector_path] + extra_args)
-    if rc == 130:
+    try:
+        mod = importlib.import_module(module_name)
+        parser = mod.build_parser()
+        args = parser.parse_args(extra_args)
+        if no_costs:
+            args.no_costs = True
+        mod.run_collection(args)
+        return 0
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else 1
+    except KeyboardInterrupt:
         print(color("\n\nCollection interrupted by user.", Colors.YELLOW))
-    return rc
-
-
-def run_cost_collector(cloud: str, extra_args: List[str]) -> int:
-    """
-    Run cost_collect.py for the specified cloud.
-    Returns the exit code from the collector.
-    """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    collector_path = os.path.realpath(os.path.join(script_dir, 'cost_collect.py'))
-
-    if not collector_path.startswith(os.path.realpath(script_dir) + os.sep):
-        print(color(f"Cost collector path outside expected directory: {collector_path}", Colors.RED))
+        return 130
+    except Exception as e:
+        print(color(f"\n✗ Collection failed: {e}", Colors.RED))
         return 1
-
-    if not os.path.exists(collector_path):
-        print(color(f"Cost collector not found: {collector_path}", Colors.RED))
-        return 1
-
-    cloud_flags = {
-        'aws': '--aws',
-        'azure': '--azure',
-        'gcp': '--gcp',
-    }
-
-    flag = cloud_flags.get(cloud)
-    if not flag:
-        print(color(f"Cost collection not supported for: {cloud}", Colors.YELLOW))
-        return 1
-
-    print(color(f"\n{'─'*60}", Colors.CYAN))
-    print(color(f"  Starting {cloud.upper()} cost collection...", Colors.BOLD))
-    print(color(f"{'─'*60}\n", Colors.CYAN))
-
-    rc = _run_module(collector_path, [collector_path, flag] + extra_args)
-    if rc == 130:
-        print(color("\n\nCost collection interrupted by user.", Colors.YELLOW))
-    return rc
 
 
 def prompt_continue() -> bool:
@@ -1055,29 +968,24 @@ def prompt_continue() -> bool:
 
 def show_collector_help(cloud: str):
     """Show help for the specific collector."""
-    collectors = {
-        'aws': 'aws_collect.py',
-        'azure': 'azure_collect.py',
-        'gcp': 'gcp_collect.py',
-        'm365': 'm365_collect.py',
-    }
-
-    collector = collectors.get(cloud)
-    if not collector:
+    module_name = _COLLECTOR_MODULES.get(cloud)
+    if not module_name:
         return
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    collector_path = os.path.realpath(os.path.join(script_dir, collector))
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
 
-    if not collector_path.startswith(os.path.realpath(script_dir) + os.sep):
-        return
-
-    _run_module(collector_path, [collector_path, '--help'])
+    try:
+        mod = importlib.import_module(module_name)
+        mod.build_parser().print_help()
+    except Exception as e:
+        print(color(f"Could not load help: {e}", Colors.RED))
 
     print(color(f"\n{'─'*60}", Colors.CYAN))
-    print(color("  Tip: Pass arguments with '--'", Colors.BOLD))
+    print(color("  Tip: Pass options directly after --cloud", Colors.BOLD))
     print(color(f"{'─'*60}\n", Colors.CYAN))
-    print(color(f"  python collect.py --cloud {cloud} -- [options]\n", Colors.CYAN))
+    print(color(f"  python collect.py --cloud {cloud} [options]\n", Colors.CYAN))
 
 
 # =============================================================================
@@ -1272,6 +1180,11 @@ Examples:
         action='store_true',
         help='Show help for the specific cloud collector'
     )
+    parser.add_argument(
+        '--no-costs',
+        action='store_true',
+        help='Skip data protection cost collection (costs are collected by default)'
+    )
 
     # Parse known args, rest goes to collector
     args, extra_args = parser.parse_known_args()
@@ -1358,25 +1271,14 @@ Examples:
                         print(color(f"\n{cr_err}", Colors.RED))
                         sys.exit(1)
 
+                no_costs = aws_org_opts.get('no_costs', False) or args.no_costs
                 print(color("\nStarting AWS Organization collection...\n", Colors.CYAN))
-                exit_code = run_collector('aws', extra_args)
+                exit_code = run_collector('aws', extra_args, no_costs=no_costs)
 
                 if exit_code == 0:
                     print(color("\n✓ AWS Organization collection completed successfully!\n", Colors.GREEN))
                 else:
                     print(color(f"\n✗ Collection exited with code {exit_code}\n", Colors.RED))
-
-                # Run cost collection if requested
-                if aws_org_opts.get('collect_costs') and exit_code == 0:
-                    cost_extra_args = ['--org-costs', '-o', aws_org_opts['output']]
-                    cost_exit_code = run_cost_collector('aws', cost_extra_args)
-
-                    if cost_exit_code == 0:
-                        print(color("\n✓ AWS cost collection completed successfully!\n", Colors.GREEN))
-                    else:
-                        print(color(f"\n✗ Cost collection exited with code {cost_exit_code}\n", Colors.RED))
-                        if exit_code == 0:
-                            exit_code = cost_exit_code
 
                 sys.exit(exit_code)
 
@@ -1408,21 +1310,8 @@ Examples:
                 sys.exit(0)
 
             if choice == 'a':
-                # Ask about cost collection for multi-cloud run
-                print()
-                print("Data protection cost collection can analyze backup-related spending")
-                print("from Cost Explorer (AWS), Cost Management (Azure), or BigQuery (GCP).")
-                print()
-                try:
-                    cost_input = input(color("Also collect data protection costs? [y/N]: ", Colors.CYAN)).strip().lower()
-                    collect_all_costs = cost_input in ('y', 'yes')
-                except (KeyboardInterrupt, EOFError):
-                    print()
-                    collect_all_costs = False
-
-                # Run all detected clouds
+                # Run all detected clouds (costs enabled by default, off via --no-costs)
                 all_exit_codes = []
-                cost_exit_codes = []
                 for c in detected:
                     if not args.skip_check:
                         if not verify_permissions(c):
@@ -1434,13 +1323,8 @@ Examples:
                         if not cr_ok:
                             print(color(f"\nSkipping {c.upper()}: {cr_err}", Colors.YELLOW))
                             continue
-                    exit_code = run_collector(c, extra_args)
+                    exit_code = run_collector(c, extra_args, no_costs=args.no_costs)
                     all_exit_codes.append((c, exit_code))
-
-                    # Run cost collection if requested and main collection succeeded
-                    if collect_all_costs and exit_code == 0 and c in ('aws', 'azure', 'gcp'):
-                        cost_exit = run_cost_collector(c, extra_args)
-                        cost_exit_codes.append((c, cost_exit))
 
                 # Summary
                 print(color("\n" + "="*60, Colors.CYAN))
@@ -1449,12 +1333,6 @@ Examples:
                 for c, code in all_exit_codes:
                     status = color("✓", Colors.GREEN) if code == 0 else color("✗", Colors.RED)
                     print(f"  {status} {c.upper()}: exit code {code}")
-
-                if cost_exit_codes:
-                    print(color("\n  Cost Collection:", Colors.BOLD))
-                    for c, code in cost_exit_codes:
-                        status = color("✓", Colors.GREEN) if code == 0 else color("✗", Colors.RED)
-                        print(f"  {status} {c.upper()}: exit code {code}")
 
                 sys.exit(0 if all(c == 0 for _, c in all_exit_codes) else 1)
 
@@ -1473,8 +1351,7 @@ Examples:
                     sys.exit(1)
 
     # Interactive prompts for cloud-specific options (only when not using --cloud flag)
-    collect_costs = False
-    cost_opts = {}
+    no_costs = args.no_costs
 
     if not args.cloud and cloud in ('aws', 'azure', 'gcp', 'm365'):
         # Prompt for collection options
@@ -1501,9 +1378,7 @@ Examples:
             extra_args = ['--include-resource-ids'] + extra_args
 
         # Cloud-specific options
-        if cloud == 'aws':
-            pass  # All handled by common options
-        elif cloud == 'azure':
+        if cloud == 'azure':
             if opts.get('subscription_id'):
                 extra_args = ['--subscription-id', opts['subscription_id']] + extra_args
         elif cloud == 'gcp':
@@ -1511,6 +1386,8 @@ Examples:
                 extra_args = ['--all-projects'] + extra_args
             elif opts.get('project'):
                 extra_args = ['--project', opts['project']] + extra_args
+            if opts.get('billing_table'):
+                extra_args = ['--billing-table', opts['billing_table']] + extra_args
         elif cloud == 'm365':
             if opts.get('skip_sharepoint'):
                 extra_args = ['--skip-sharepoint'] + extra_args
@@ -1523,8 +1400,9 @@ Examples:
             if opts.get('include_entra'):
                 extra_args = ['--include-entra'] + extra_args
 
-        collect_costs = opts.get('collect_costs', False)
-        cost_opts = opts.get('cost_opts', {})
+        # no_costs from wizard overrides --no-costs flag
+        if opts.get('no_costs'):
+            no_costs = True
 
     # Permission check
     if not args.skip_check:
@@ -1540,44 +1418,13 @@ Examples:
             print(color(f"\n{cr_err}", Colors.RED))
             sys.exit(1)
 
-    # Run main collection
-    exit_code = run_collector(cloud, extra_args)
+    # Run collection (costs included by default; pass no_costs=True to skip)
+    exit_code = run_collector(cloud, extra_args, no_costs=no_costs)
 
     if exit_code == 0:
         print(color(f"\n✓ {cloud.upper()} collection completed successfully!\n", Colors.GREEN))
     else:
         print(color(f"\n✗ Collection exited with code {exit_code}\n", Colors.RED))
-
-    # Run cost collection if requested
-    if collect_costs and exit_code == 0:
-        cost_extra_args = []
-
-        # Add cloud-specific cost options
-        if cloud == 'aws' and cost_opts.get('org_costs'):
-            cost_extra_args.append('--org-costs')
-        elif cloud == 'azure' and cost_opts.get('subscription_id'):
-            cost_extra_args.extend(['--subscription-id', cost_opts['subscription_id']])
-        elif cloud == 'gcp':
-            if cost_opts.get('project'):
-                cost_extra_args.extend(['--project', cost_opts['project']])
-            if cost_opts.get('billing_table'):
-                cost_extra_args.extend(['--billing-table', cost_opts['billing_table']])
-
-        # Use same output directory
-        if '-o' in extra_args:
-            idx = extra_args.index('-o')
-            if idx + 1 < len(extra_args):
-                cost_extra_args.extend(['-o', extra_args[idx + 1]])
-
-        cost_exit_code = run_cost_collector(cloud, cost_extra_args)
-
-        if cost_exit_code == 0:
-            print(color(f"\n✓ {cloud.upper()} cost collection completed successfully!\n", Colors.GREEN))
-        else:
-            print(color(f"\n✗ Cost collection exited with code {cost_exit_code}\n", Colors.RED))
-            # Don't fail overall if cost collection fails, but note it
-            if exit_code == 0:
-                exit_code = cost_exit_code
 
     sys.exit(exit_code)
 

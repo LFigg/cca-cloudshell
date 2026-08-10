@@ -116,12 +116,14 @@ def load_config_file(config_path: str) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    # Security check: warn if config file has loose permissions
+    # Security check: warn (or refuse) if config file has loose permissions
     import stat
     file_mode = path.stat().st_mode
     if file_mode & (stat.S_IRWXG | stat.S_IRWXO):  # Group or world access
-        logger.warning(f"Config file {config_path} has loose permissions. "
-                      f"Consider: chmod 600 {config_path}")
+        msg = f"Config file {config_path} has loose permissions (chmod 600 recommended)"
+        if os.environ.get('CCA_STRICT_CONFIG'):
+            raise PermissionError(msg)
+        logger.warning(msg)
 
     logger.info(f"Loading config from {path}")
 

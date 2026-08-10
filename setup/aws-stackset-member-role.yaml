@@ -98,6 +98,7 @@ Resources:
               
               # CloudWatch (for change rate metrics)
               - cloudwatch:GetMetricStatistics
+              - cloudwatch:GetMetricData
               
               # S3
               - s3:ListAllMyBuckets

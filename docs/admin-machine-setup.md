@@ -71,7 +71,7 @@ aws configure
 
 # Or use a named profile
 aws configure --profile myprofile
-python3 aws_collect.py --profile myprofile
+python3 collect.py --cloud aws --profile myprofile
 ```
 
 #### Option B: Environment Variables
@@ -81,7 +81,7 @@ export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
 export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 export AWS_DEFAULT_REGION="us-east-1"
 
-python3 aws_collect.py
+python3 collect.py --cloud aws
 ```
 
 #### Option C: IAM Role (EC2/ECS)
@@ -92,43 +92,43 @@ If running on an EC2 instance or ECS task with an IAM role attached, credentials
 
 ```bash
 # Basic collection (all regions)
-python3 aws_collect.py
+python3 collect.py --cloud aws
 
 # Specific regions only
-python3 aws_collect.py --regions us-east-1,us-west-2,eu-west-1
+python3 collect.py --cloud aws --regions us-east-1,us-west-2,eu-west-1
 
 # Using a specific profile
-python3 aws_collect.py --profile production
+python3 collect.py --cloud aws --profile production
 
 # Output to custom directory
-python3 aws_collect.py -o ./output/
+python3 collect.py --cloud aws -o ./output/
 
 # Output directly to S3
-python3 aws_collect.py --output s3://my-bucket/cca-assessments/
+python3 collect.py --cloud aws --output s3://my-bucket/cca-assessments/
 
 # Include full resource IDs/ARNs (default: redact for privacy)
-python3 aws_collect.py --include-resource-ids
+python3 collect.py --cloud aws --include-resource-ids
 ```
 
 ### Multi-Account Collection
 
 ```bash
 # Single target account via role assumption
-python3 aws_collect.py --role-arn arn:aws:iam::123456789012:role/CCACollectorRole
+python3 collect.py --cloud aws --role-arn arn:aws:iam::123456789012:role/CCACollectorRole
 
 # Multiple accounts explicitly
-python3 aws_collect.py --role-arns \
+python3 collect.py --cloud aws --role-arns \
     arn:aws:iam::111111111111:role/CCACollectorRole,\
     arn:aws:iam::222222222222:role/CCACollectorRole
 
 # Auto-discover via AWS Organizations (requires management account access)
-python3 aws_collect.py --org-role CCACollectorRole
+python3 collect.py --cloud aws --org-role CCACollectorRole
 
 # With external ID for added security
-python3 aws_collect.py --org-role CCACollectorRole --external-id MySecretId
+python3 collect.py --cloud aws --org-role CCACollectorRole --external-id MySecretId
 
 # Skip specific accounts
-python3 aws_collect.py --org-role CCACollectorRole --skip-accounts 999999999999
+python3 collect.py --cloud aws --org-role CCACollectorRole --skip-accounts 999999999999
 ```
 
 ### IAM Setup via CloudFormation
@@ -168,7 +168,7 @@ az login --tenant <tenant-id>
 # Verify login
 az account show
 
-python3 azure_collect.py
+python3 collect.py --cloud azure
 ```
 
 #### Option B: Service Principal
@@ -178,7 +178,7 @@ export AZURE_TENANT_ID="your-tenant-id"
 export AZURE_CLIENT_ID="your-client-id"
 export AZURE_CLIENT_SECRET="your-client-secret"
 
-python3 azure_collect.py
+python3 collect.py --cloud azure
 ```
 
 #### Option C: Managed Identity (Azure VM)
@@ -189,19 +189,19 @@ If running on an Azure VM with a managed identity, credentials are automatic.
 
 ```bash
 # All accessible subscriptions
-python3 azure_collect.py
+python3 collect.py --cloud azure
 
 # Specific subscription
-python3 azure_collect.py --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+python3 collect.py --cloud azure --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 # Custom output directory
-python3 azure_collect.py -o ./output/
+python3 collect.py --cloud azure -o ./output/
 
 # Include full resource IDs (default: redact for privacy)
-python3 azure_collect.py --include-resource-ids
+python3 collect.py --cloud azure --include-resource-ids
 
 # Include individual recovery points (can be slow for large backup environments)
-python3 azure_collect.py --include-recovery-points
+python3 collect.py --cloud azure --include-recovery-points
 ```
 
 ### Required Permissions
@@ -234,7 +234,7 @@ gcloud auth application-default login
 # Set default project (optional)
 gcloud config set project my-project-id
 
-python3 gcp_collect.py
+python3 collect.py --cloud gcp
 ```
 
 #### Option B: Service Account Key
@@ -242,29 +242,29 @@ python3 gcp_collect.py
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 
-python3 gcp_collect.py
+python3 collect.py --cloud gcp
 ```
 
 ### Running the Collector
 
 ```bash
 # Default project only
-python3 gcp_collect.py
+python3 collect.py --cloud gcp
 
 # Specific project
-python3 gcp_collect.py --project my-project-id
+python3 collect.py --cloud gcp --project my-project-id
 
 # All accessible projects
-python3 gcp_collect.py --all-projects
+python3 collect.py --cloud gcp --all-projects
 
 # Custom output directory
-python3 gcp_collect.py --output ./output/
+python3 collect.py --cloud gcp --output ./output/
 
 # Output to GCS
-python3 gcp_collect.py --output gs://my-bucket/assessments/
+python3 collect.py --cloud gcp --output gs://my-bucket/assessments/
 
 # Include full resource IDs (default: redact for privacy)
-python3 gcp_collect.py --include-resource-ids
+python3 collect.py --cloud gcp --include-resource-ids
 ```
 
 ### Required Permissions
@@ -286,11 +286,16 @@ gcloud projects add-iam-policy-binding PROJECT_ID \
 
 1. **Azure AD App Registration** with the following API permissions (Application type):
    - `Sites.Read.All` (SharePoint)
-   - `User.Read.All` (Users, OneDrive, Exchange)
-   - `Group.Read.All` (Groups, Teams)
-   - `TeamSettings.Read.All` (Teams details)
+   - `Files.Read.All` (OneDrive)
+   - `User.Read.All` (Users, Exchange)
+   - `Mail.Read` (Mailbox metadata)
+   - `Group.Read.All` (Groups)
+   - `Team.ReadBasic.All` (Teams)
+   - `Reports.Read.All` (**Critical** — enables fast bulk collection via usage reports API)
+   - `Organization.Read.All` (Tenant licensing info)
+   - `Directory.Read.All` (Entra ID — optional, for `--include-entra`)
 
-2. **Admin consent** granted for the permissions
+2. **Admin consent** granted for all permissions (requires Global Administrator)
 
 ### Authentication
 
@@ -301,40 +306,42 @@ export MS365_TENANT_ID="your-tenant-id"
 export MS365_CLIENT_ID="your-app-client-id"
 export MS365_CLIENT_SECRET="your-client-secret"
 
-python3 m365_collect.py
+python3 collect.py --cloud m365
 ```
 
 ### Running the Collector
 
 ```bash
 # Basic collection
-python3 m365_collect.py
+python3 collect.py --cloud m365
 
 # Override tenant/client IDs (secret must be env var)
-python3 m365_collect.py --tenant-id xxx --client-id xxx
+python3 collect.py --cloud m365 --tenant-id xxx --client-id xxx
 
 # Include Entra ID (Azure AD) collection
-python3 m365_collect.py --include-entra
+python3 collect.py --cloud m365 --include-entra
 
 # Custom output directory
-python3 m365_collect.py -o ./output/
+python3 collect.py --cloud m365 -o ./output/
 ```
 
 ---
 
 ## Cost Analysis
 
+Cost collection is **integrated** into each cloud collector and runs by default. A `cca_<cloud>_costs_<time>.json` file is written alongside the inventory.
+
 ### AWS Costs
 
 ```bash
-# Analyze backup/snapshot costs (last 30 days)
-python3 cost_collect.py --aws
+# Costs are collected automatically (requires management account for org-level data)
+python3 collect.py --cloud aws
 
-# Custom date range
-python3 cost_collect.py --aws --start-date 2026-01-01 --end-date 2026-01-31
+# Skip costs if not needed
+python3 collect.py --cloud aws --no-costs
 
-# Using a profile
-python3 cost_collect.py --aws --profile production
+# With a specific profile
+python3 collect.py --cloud aws --profile production
 ```
 
 Requires `ce:GetCostAndUsage` permission. Enable with CloudFormation:
@@ -357,6 +364,7 @@ Each collector generates three files:
 |------|-------------|
 | `cca_<cloud>_inv_<HHMMSS>.json` | Full resource inventory |
 | `cca_<cloud>_sum_<HHMMSS>.json` | Aggregated summary |
+| `cca_log_<HHMMSS>.log` | Collection log for troubleshooting |
 
 ### Generate Reports
 
@@ -382,116 +390,109 @@ python3 scripts/generate_assessment_report.py \
 
 ## Large Environments & Batched Collection
 
-For environments with many accounts (100+), you may need to batch collection to avoid credential timeout issues (AWS SSO tokens expire after 1 hour).
-
-### Automatic Batching (Recommended)
-
-The collector supports automatic batching with checkpoint/resume capability:
+For environments with many accounts (100+), the AWS collector has built-in batching, checkpointing, and parallel collection. These options are passed after `--` to the underlying AWS collector:
 
 ```bash
-# Auto-batch 100+ accounts into groups of 25
-python3 aws_collect.py --org-role CCARole --batch-size 25 -o ./collection/
+python3 collect.py --cloud aws -- --org-role CCARole --batch-size 25
+```
+
+### Automatic Parallel Collection
+
+For large account sets, the collector auto-enables parallel workers (outside CloudShell):
+
+| Account Count | Auto Workers |
+|---------------|-------------|
+| 100+ | 8 |
+| 50–99 | 4 |
+| < 50 | 1 (sequential) |
+
+Override with `--parallel-accounts N` or disable with `--no-auto-parallel`.
+
+### Batching with Checkpoints
+
+Use `--batch-size` to split collection into checkpoint-aware batches:
+
+```bash
+# Collect 100 accounts in batches of 25 (4 batches)
+python3 collect.py --cloud aws -- --org-role CCARole --batch-size 25 -o ./collection/
 
 # Output structure:
 # ./collection/
-#   ├── batch01/
-#   │   ├── cca_aws_inv_143052.json
-#   │   └── cca_aws_sum_143052.json
-#   ├── batch02/
-#   │   └── ...
+#   ├── batch01/  (accounts 1-25)
+#   ├── batch02/  (accounts 26-50)
+#   ├── batch03/  (accounts 51-75)
+#   ├── batch04/  (accounts 76-100)
 #   └── checkpoint.json
 ```
 
-#### Resume After Failure/Timeout
+#### Auto-Merge Behavior
 
-If collection is interrupted (credential expiry, network issue, etc.), resume from where you left off:
+When multiple batches are used, the collector can auto-merge at the end based on collection success rate:
+
+- Default: auto-merge runs when at least **90%** of target accounts succeed.
+- Tune with `--auto-merge-threshold <percent>`.
+- Failed account IDs are printed in console output and included in summary JSON under `collection_progress.failed_account_ids`.
+
+```bash
+# Merge only if 95%+ of accounts succeed
+python3 collect.py --cloud aws -- --org-role CCARole --batch-size 25 --auto-merge-threshold 95
+```
+
+#### Resume After Interruption
+
+If collection is interrupted (credential expiry, network issue, etc.):
 
 ```bash
 # Re-authenticate if needed
 aws sso login --profile my-org
 
-# Resume using the checkpoint file
-python3 aws_collect.py --org-role CCARole --resume ./collection/checkpoint.json
+# Resume from checkpoint — already-completed accounts are skipped
+python3 collect.py --cloud aws -- --org-role CCARole --resume ./collection/checkpoint.json
 ```
 
-The checkpoint tracks:
-- Completed accounts (skipped on resume)
-- Failed accounts (with suggested retry command)
-- In-progress account (automatically retried)
+### SSO Credential Refresh
 
-#### Retry Failed Accounts Only
+For AWS SSO environments where tokens expire during long runs:
 
 ```bash
-# The checkpoint output shows which accounts failed
-# Re-run just those accounts:
-python3 aws_collect.py --org-role CCARole \
-    --accounts 111111111111,222222222222,333333333333 \
-    -o ./collection/retry/
+# Auto-refresh SSO between batches
+python3 collect.py --cloud aws -- --org-role CCARole --batch-size 20 --sso-refresh -o ./collection/
+
+# Pause N seconds between batches (manual refresh window)
+python3 collect.py --cloud aws -- --org-role CCARole --batch-size 20 --pause-between-batches 60 -o ./collection/
+
+# Prompt interactively between batches
+python3 collect.py --cloud aws -- --org-role CCARole --batch-size 20 --interactive -o ./collection/
 ```
 
-#### Pause Between Batches (for SSO)
-
-For AWS SSO environments, pause between batches to allow manual credential refresh:
+### Account Filtering
 
 ```bash
-# Pause 60 seconds between batches
-python3 aws_collect.py --org-role CCARole \
-    --batch-size 20 \
-    --pause-between-batches 60 \
-    -o ./collection/
+# Collect only specific accounts
+python3 collect.py --cloud aws -- --org-role CCARole --accounts 111111111111,222222222222
+
+# Load account list from file (one ID per line, # comments supported)
+python3 collect.py --cloud aws -- --org-role CCARole --account-file accounts.txt -o ./output/
+
+# Skip specific accounts
+python3 collect.py --cloud aws -- --org-role CCARole --skip-accounts 999999999999
 ```
 
-### Account List from File
+### Batch by Region (Alternative)
 
-For complex environments, maintain an account list file:
-
-```bash
-# accounts.txt - one account ID per line, supports comments
-# Production accounts
-111111111111
-222222222222
-
-# Development accounts
-333333333333
-444444444444
-
-# Run collection
-python3 aws_collect.py --org-role CCARole --account-file accounts.txt -o ./output/
-```
-
-### Manual Batching (Alternative)
-
-For more control, manually specify account groups:
-
-```bash
-# Batch 1: First 50 accounts
-python3 aws_collect.py --role-arns \
-    arn:aws:iam::111111111111:role/CCARole,\
-    arn:aws:iam::222222222222:role/CCARole \
-    -o ./org1/batch1/
-
-# Batch 2: Next 50 accounts  
-python3 aws_collect.py --role-arns \
-    arn:aws:iam::333333333333:role/CCARole,\
-    arn:aws:iam::444444444444:role/CCARole \
-    -o ./org1/batch2/
-```
-
-### Strategy: Batch by Region
-
-For very large accounts, split by region instead of account:
+For very large single accounts, split by region and run in parallel:
 
 ```bash
 # US regions
-python3 aws_collect.py --org-role CCARole --regions us-east-1,us-west-2 -o ./batch-us/
+python3 collect.py --cloud aws --org-role CCARole -- --regions us-east-1,us-west-2 -o ./batch-us/
 
 # EU regions
-python3 aws_collect.py --org-role CCARole --regions eu-west-1,eu-central-1 -o ./batch-eu/
+python3 collect.py --cloud aws --org-role CCARole -- --regions eu-west-1,eu-central-1 -o ./batch-eu/
 ```
 
 ### Merging Batched Outputs
 
-After running batched collections, use the merge script to consolidate:
+After batched collections, use the merge script to consolidate:
 
 ```bash
 # Merge all batches in an org folder (looks in subfolders)
@@ -511,25 +512,6 @@ The merge script:
 - Deduplicates resources by `account_id:resource_id`
 - Re-aggregates summary totals correctly
 - Merges cost data if present
-
-### Recommended Workflow for 100+ Accounts
-
-1. **Initial run with auto-batching:**
-   ```bash
-   python3 aws_collect.py --org-role CCARole --batch-size 25 -o ./myorg/
-   ```
-
-2. **If interrupted, resume:**
-   ```bash
-   aws sso login --profile my-org  # Refresh credentials
-   python3 aws_collect.py --org-role CCARole --resume ./myorg/checkpoint.json
-   ```
-
-3. **Retry any failed accounts:**
-   ```bash
-   python3 aws_collect.py --org-role CCARole --accounts <failed-ids> -o ./myorg/retry/
-   ```
-
 4. **Merge all batches:**
    ```bash
    python3 scripts/merge_batch_outputs.py ./myorg/
@@ -597,9 +579,9 @@ gcloud config get-value project  # Check default project
 ### Debug Mode
 
 ```bash
-python3 aws_collect.py --log-level DEBUG
-python3 azure_collect.py --log-level DEBUG
-python3 gcp_collect.py --log-level DEBUG
+python3 collect.py --cloud aws --log-level DEBUG
+python3 collect.py --cloud azure --log-level DEBUG
+python3 collect.py --cloud gcp --log-level DEBUG
 ```
 
 ---

@@ -366,12 +366,22 @@ M365_AUTH_ERROR_CODES = {'Authorization_RequestDenied', 'InvalidAuthenticationTo
 # Sizer Input Constants
 # =============================================================================
 
-# Default daily change rates by workload type (percentage)
+# Default daily change rates by workload type (percentage), used only when no
+# real, measured change-rate data was collected for a workload (see
+# lib/reports/sizer.py's create_sizer_workloads()).
+#
+# Per the Cohesity Sizer Encyclopedia's Terminology/Recommendations sections: "A
+# minimum of 10% DCR for database workloads is recommended if the numbers are
+# unavailable. The WST offers a default of 5%" - i.e. the Encyclopedia itself
+# calls WST's own 5% UI default too low. sql/oracle/other_db are all
+# database-shaped workloads that guidance applies to, so all three floor at
+# 10.0 - previously 5.0/4.0/3.0, each below the Encyclopedia's own stated
+# minimum for the exact "no real data collected" case these defaults exist for.
 DEFAULT_CHANGE_RATES = {
     "vm": 2.5,
-    "sql": 5.0,
-    "oracle": 4.0,
-    "other_db": 3.0,
+    "sql": 10.0,
+    "oracle": 10.0,
+    "other_db": 10.0,
     "unstructured": 1.5,  # File/NAS data
     "object_storage": 0.5,
     "container": 2.0,
@@ -390,10 +400,52 @@ DEFAULT_REDUCTION_RATIOS = {
     "container": {"incr": 3.0, "full": 4.0},
     "serverless": {"incr": 5.0, "full": 6.0},
     "cache": {"incr": 1.2, "full": 1.5},
+    "archive_transactionlog": {"incr": 1.2, "full": 1.3},  # logs are largely append-only/non-dedupable
 }
+
+# Transaction-log-to-DCR multiplier by database engine, per the Sizer Encyclopedia's
+# "Transaction Logs = factor x DCR" guidance:
+#   MSSQL:  Transaction Logs = 1 x DCR
+#   Oracle: Transaction Logs = 3 x DCR
+# The log workload's *own* daily change rate is always 100% (nearly all log data is
+# new); this factor instead scales how much of the base workload's size the log
+# workload represents. Only AWS RDS currently exposes per-instance `engine` metadata
+# precise enough to detect Oracle (see lib/reports/sizer.py's aggregate_by_workload_type);
+# Azure SQL and GCP Cloud SQL have no Oracle offering, so their "sql" workloads always
+# use the MSSQL factor.
+TRANSACTION_LOG_DCR_FACTOR = {
+    "sql": 1.0,
+    "oracle": 3.0,
+}
+
+# Sizer Encyclopedia's Transaction Logs section recommends retaining logs for 1-3 days
+# to control storage/licensing cost (frequent, fine-grained RPO but short retention).
+TRANSACTION_LOG_RETENTION_DAYS = 3
+
+# wl_subtypes that need the Sizer Encyclopedia's Peak Day / periodic-full disclosure
+# (Database Sizing > Periodic Full Simulation). Deliberately broader than
+# TRANSACTION_LOG_DCR_FACTOR.keys() above - "other_db" (Redshift, DocumentDB,
+# CosmosDB, Spanner, BigQuery, Bigtable, Neptune, OpenSearch, Timestream, Synapse
+# SQL pools) has no transaction-log concept and so no DCR factor, but the
+# Encyclopedia's own "Other DBs" section still says periodic-full/Peak Day
+# applies "regardless of engine" - these two sets happening to be equal was a
+# bug (it silently excluded every other_db workload from the Peak Day warning),
+# not an intentional simplification.
+PEAK_DAY_DB_WL_SUBTYPES = set(TRANSACTION_LOG_DCR_FACTOR.keys()) | {"other_db"}
 
 # Mapping from CCA resource types to sizer workload types
 # Format: (wl_type, wl_subtype, is_cohesity_native)
+#
+# IMPORTANT: these keys must be kept in sync with the literal `resource_type=`
+# strings each collector actually emits (lib/aws, lib/azure, lib/gcp, lib/m365,
+# lib/k8s.py). A key here that doesn't exactly match what's collected doesn't
+# error - aggregate_by_workload_type() in lib/reports/sizer.py silently
+# `continue`s past the unmatched resource at DEBUG level, so a stale key here
+# quietly drops real, already-measured capacity from the sizer output with no
+# warning anywhere. Several keys below were previously stale for exactly this
+# reason (verified against a full grep of every `resource_type=` literal in
+# the collectors) - re-verify against the collectors, not this comment, if a
+# resource type is ever renamed.
 SIZER_WORKLOAD_MAPPING = {
     # AWS - Cohesity Native
     "aws:ec2:instance": ("iba", "vm", True),
@@ -411,17 +463,18 @@ SIZER_WORKLOAD_MAPPING = {
     "aws:lambda:function": ("app_dump", "serverless", False),
     "aws:elasticache:cluster": ("iba", "cache", False),
     "aws:redshift:cluster": ("iba", "other_db", False),
-    "aws:documentdb:cluster": ("iba", "other_db", False),
+    "aws:docdb:cluster": ("iba", "other_db", False),  # was "aws:documentdb:cluster" - never matched, real type is "docdb"
     "aws:opensearch:domain": ("iba", "other_db", False),
     "aws:memorydb:cluster": ("iba", "cache", False),
-    "aws:timestream:database": ("iba", "other_db", False),
+    "aws:timestream:table": ("iba", "other_db", False),  # was "aws:timestream:database" - never matched, real type is per-"table"
+    "aws:neptune:cluster": ("iba", "other_db", False),  # was missing entirely
 
     # Azure - Cohesity Native
     "azure:vm": ("iba", "vm", True),
     "azure:disk": ("iba", "vm", True),
     "azure:sql:database": ("iba", "sql", True),
     "azure:sql:managedinstance": ("iba", "sql", True),
-    "azure:storage:account": ("iba", "object_storage", True),
+    "azure:storage:blob": ("iba", "object_storage", True),  # was "azure:storage:account" - never matched, real type is "blob"
     "azure:storage:fileshare": ("iba", "unstructured", True),
     "azure:netapp:volume": ("iba", "unstructured", True),
 
@@ -431,9 +484,19 @@ SIZER_WORKLOAD_MAPPING = {
     "azure:aks:pvc": ("iba", "container", False),
     "azure:function:app": ("app_dump", "serverless", False),
     "azure:redis:cache": ("iba", "cache", False),
-    "azure:postgresql:server": ("iba", "sql", True),
-    "azure:mysql:server": ("iba", "sql", True),
-    "azure:synapse:workspace": ("iba", "other_db", False),
+    "azure:postgresql:flexibleserver": ("iba", "sql", True),  # was "azure:postgresql:server" - never matched
+    "azure:mysql:flexibleserver": ("iba", "sql", True),  # was "azure:mysql:server" - never matched
+    # Was missing entirely - always 0.0/'unavailable' today (no real-usage
+    # source exists for MariaDB), so currently harmless, but a real
+    # SIZER_WORKLOAD_MAPPING gap of the same shape the other stale/missing
+    # keys in this table already burned us on once real usage lands here.
+    "azure:mariadb:server": ("iba", "sql", True),
+    # NOTE: "azure:synapse:workspace" is deliberately NOT mapped here - it's the
+    # workspace container, which is structurally sizeless (size_source='not_applicable').
+    # "azure:synapse:sqlpool" is the resource that actually holds SQL pool storage
+    # (currently always 0/'unavailable' since no Monitor metric exists for it - see
+    # docs/v2-refactor-plan.md - but mapped so it starts flowing the moment that changes).
+    "azure:synapse:sqlpool": ("iba", "other_db", False),
 
     # GCP - Cohesity Native
     "gcp:compute:instance": ("iba", "vm", True),
@@ -451,15 +514,25 @@ SIZER_WORKLOAD_MAPPING = {
     "gcp:bigquery:dataset": ("iba", "other_db", False),
     "gcp:bigtable:instance": ("iba", "other_db", False),
     "gcp:alloydb:cluster": ("iba", "sql", True),
+    "gcp:alloydb:instance": ("iba", "sql", True),  # was missing - storage architecture (cluster- vs instance-level) is
+    # unverified per docs/v2-refactor-plan.md, so both are mapped rather than guessing which one holds real bytes.
 
     # M365 - Extended (Cohesity SaaS backup)
     "m365:sharepoint:site": ("iba", "unstructured", True),
-    "m365:onedrive:drive": ("iba", "unstructured", True),
+    "m365:sharepoint:teamsite": ("iba", "unstructured", True),  # was missing - every Team/Group-connected site,
+    # typically the bulk of a tenant's SharePoint storage, was silently dropped without this.
+    "m365:onedrive:account": ("iba", "unstructured", True),  # was "m365:onedrive:drive" - never matched
     "m365:exchange:mailbox": ("iba", "other_db", True),
     "m365:teams:team": ("iba", "unstructured", True),
 }
 
-# Resource types to skip in sizer input (metadata/backup resources, not primary workloads)
+# Resource types to skip in sizer input (metadata/backup resources, not primary workloads).
+# These are deliberately excluded rather than just absent from SIZER_WORKLOAD_MAPPING above:
+# an explicit skip survives a future mapping-table edit, whereas relying on omission alone
+# is exactly the kind of silent gap this list exists to prevent (see the GCP Backup & DR
+# vault/plan/backup entries below, which used to leave "datasource" as the only sibling type
+# NOT explicitly skipped - harmless only by accident, since it also happened to be absent from
+# the mapping table above).
 SIZER_SKIP_RESOURCE_TYPES = {
     "aws:ec2:snapshot",
     "aws:rds:snapshot",
@@ -469,15 +542,20 @@ SIZER_SKIP_RESOURCE_TYPES = {
     "aws:backup:selection",
     "aws:backup:recovery-point",
     "aws:backup:protected-resource",
+    "aws:backup:region-settings",
+    "aws:dlm:lifecycle-policy",
     "azure:snapshot",
-    "azure:recovery:vault",
+    "azure:recoveryservices:vault",  # was "azure:recovery:vault" - never matched
     "azure:backup:policy",
     "azure:backup:protecteditem",
     "azure:backup:recoverypoint",
+    "azure:sql:ltrbackup",
+    "azure:sql:restorepoint",
     "gcp:compute:snapshot",
     "gcp:backupdr:vault",
     "gcp:backupdr:plan",
     "gcp:backupdr:backup",
+    "gcp:backupdr:datasource",
 }
 
 # Service family mapping from CCA to workload subtype (for change rate lookup)

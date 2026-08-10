@@ -118,6 +118,12 @@ az account list --output table
 2. Verify permissions for specific resource types
 3. Some resources may not be supported yet - check collector version
 
+**Note:** Azure and GCP now refuse to start a collection at all if any package they can use is
+missing (`pip install -r requirements.txt` or `./setup.sh` fixes this) - see
+[Automatic Dependency Verification](PERMISSIONS.md#automatic-dependency-verification). If you're on
+an older collector build without that check, a missing package used to fail silently per resource
+type instead, which is the more likely explanation for resources missing without any error.
+
 ### Pip Install Fails in Azure Cloud Shell
 
 **Error:** `ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied`
@@ -224,7 +230,7 @@ gcloud projects list
 
 ```bash
 # Test one service at a time
-python3 m365_collect.py --skip-onedrive --skip-exchange --skip-teams
+python3 collect.py --cloud m365 --skip-onedrive --skip-exchange --skip-teams
 ```
 
 ### Rate Limiting (429)

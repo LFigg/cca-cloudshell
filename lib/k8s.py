@@ -8,6 +8,7 @@ This module provides functions to:
 """
 import base64
 import logging
+import os
 import tempfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -16,6 +17,72 @@ if TYPE_CHECKING:
     from lib.models import CloudResource
 
 logger = logging.getLogger(__name__)
+
+
+# CSI drivers (and their deprecated in-tree plugin predecessors) that provision a
+# dedicated cloud-native block-storage disk per volume - i.e. a disk that the
+# corresponding cloud's own disk collector (collect_ebs_volumes/collect_disks/
+# collect_persistent_disks) ALSO separately enumerates for the exact same bytes.
+# Keyed by provider so a cross-provider driver-name collision can't misfire.
+# Deliberately scoped to block storage only (not EFS/Azure Files/Filestore CSI
+# drivers, which back a PVC with a slice of shared/elastic file storage rather
+# than a distinct, separately-billed block device - a different, less clear-cut
+# double-count question that isn't what this mapping is for).
+_BLOCK_STORAGE_CSI_DRIVERS = {
+    "aws": {"ebs.csi.aws.com", "kubernetes.io/aws-ebs"},
+    "azure": {"disk.csi.azure.com", "kubernetes.io/azure-disk"},
+    "gcp": {"pd.csi.storage.gke.io", "kubernetes.io/gce-pd"},
+}
+
+# The resource_type each provider's block-storage disk collector emits, for the
+# `storage_tracked_as` pointer - mirrors the pattern already established for
+# M365 Teams (a Team's storage is tracked as its m365:sharepoint:teamsite, not
+# double-counted as its own resource).
+_BLOCK_STORAGE_RESOURCE_TYPE = {
+    "aws": "aws:ec2:volume",
+    "azure": "azure:disk",
+    "gcp": "gcp:compute:disk",
+}
+
+
+def _extract_pv_backing_volume(pv) -> Tuple[Optional[str], Optional[str]]:
+    """Return (driver_or_plugin, volume_handle) for a PersistentVolume's backing
+    cloud disk, or (None, None) if it isn't CSI/in-tree block-storage-provisioned
+    (e.g. hostPath, NFS, or a file-storage CSI driver like EFS/Azure Files/Filestore).
+    """
+    spec = getattr(pv, 'spec', None)
+    if spec is None:
+        return None, None
+
+    csi = getattr(spec, 'csi', None)
+    if csi is not None and getattr(csi, 'driver', None) and getattr(csi, 'volume_handle', None):
+        return csi.driver, csi.volume_handle
+
+    # Deprecated in-tree volume plugins - still seen on older clusters/PVs that
+    # predate CSI migration.
+    aws_ebs = getattr(spec, 'aws_elastic_block_store', None)
+    if aws_ebs is not None and getattr(aws_ebs, 'volume_id', None):
+        return "kubernetes.io/aws-ebs", aws_ebs.volume_id
+
+    azure_disk = getattr(spec, 'azure_disk', None)
+    if azure_disk is not None:
+        handle = getattr(azure_disk, 'disk_uri', None) or getattr(azure_disk, 'disk_name', None)
+        if handle:
+            return "kubernetes.io/azure-disk", handle
+
+    gce_pd = getattr(spec, 'gce_persistent_disk', None)
+    if gce_pd is not None and getattr(gce_pd, 'pd_name', None):
+        return "kubernetes.io/gce-pd", gce_pd.pd_name
+
+    return None, None
+
+
+def is_block_storage_backed(provider: str, csi_driver: Optional[str]) -> bool:
+    """True if `csi_driver` provisions a dedicated cloud-native disk for `provider`
+    that gets separately collected elsewhere (see _BLOCK_STORAGE_CSI_DRIVERS)."""
+    if not csi_driver:
+        return False
+    return csi_driver in _BLOCK_STORAGE_CSI_DRIVERS.get(provider, set())
 
 
 @dataclass
@@ -34,6 +101,8 @@ class PVCInfo:
     pods_using: List[str]
     labels: Dict[str, str] = field(default_factory=dict)
     creation_time: Optional[str] = None
+    backing_volume_id: Optional[str] = None  # CSI volumeHandle / in-tree volume ID of the bound PV's disk
+    csi_driver: Optional[str] = None  # CSI driver name (or in-tree plugin name) that provisioned it
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -50,7 +119,9 @@ class PVCInfo:
             'volume_mode': self.volume_mode,
             'pods_using': self.pods_using,
             'labels': self.labels,
-            'creation_time': self.creation_time
+            'creation_time': self.creation_time,
+            'backing_volume_id': self.backing_volume_id,
+            'csi_driver': self.csi_driver,
         }
 
 
@@ -131,11 +202,14 @@ def get_k8s_client(
         if skip_tls_verify:
             config.verify_ssl = False
         elif ca_data:
-            # Write CA cert to temp file
+            # Write CA cert to temp file; register cleanup so it's removed on exit
             ca_bytes = base64.b64decode(ca_data)
             with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as f:
                 f.write(ca_bytes)
-                config.ssl_ca_cert = f.name
+                cert_path = f.name
+            import atexit
+            atexit.register(lambda p=cert_path: os.unlink(p) if os.path.exists(p) else None)
+            config.ssl_ca_cert = cert_path
 
         api_client = k8s_client.ApiClient(config)
         return k8s_client.CoreV1Api(api_client)
@@ -177,13 +251,18 @@ def collect_pvcs_from_cluster(
     }
 
     try:
-        # Get all PVs for size lookup (actual allocated size)
+        # Get all PVs for size lookup (actual allocated size) and their backing
+        # cloud disk (if any), so callers can tell whether this PVC's capacity
+        # is already counted elsewhere as its own aws:ec2:volume/azure:disk/
+        # gcp:compute:disk resource - see _extract_pv_backing_volume().
         pv_sizes = {}
+        pv_backing_volumes: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
         try:
             pvs = core_api.list_persistent_volume()
             for pv in pvs.items:
                 capacity = pv.spec.capacity.get('storage', '0') if pv.spec.capacity else '0'
                 pv_sizes[pv.metadata.name] = parse_k8s_storage_size(capacity)
+                pv_backing_volumes[pv.metadata.name] = _extract_pv_backing_volume(pv)
         except Exception as e:
             logger.warning(f"[{cluster_name}] Could not list PVs: {e}")
 
@@ -229,6 +308,7 @@ def collect_pvcs_from_cluster(
             # Get actual size from bound PV
             bound_pv = pvc.spec.volume_name or ''
             actual_size = pv_sizes.get(bound_pv, requested_size)
+            csi_driver, backing_volume_id = pv_backing_volumes.get(bound_pv, (None, None))
 
             # Get storage class
             storage_class = pvc.spec.storage_class_name or 'default'
@@ -274,7 +354,9 @@ def collect_pvcs_from_cluster(
                 volume_mode=volume_mode,
                 pods_using=pods_using,
                 labels=dict(pvc.metadata.labels) if pvc.metadata.labels else {},
-                creation_time=creation_time
+                creation_time=creation_time,
+                backing_volume_id=backing_volume_id,
+                csi_driver=csi_driver,
             )
             pvcs.append(pvc_info)
 
@@ -288,6 +370,39 @@ def collect_pvcs_from_cluster(
         logger.error(f"[{cluster_name}] Failed to collect PVCs: {e}")
 
     return pvcs, stats
+
+
+def _pvc_size_and_metadata(provider: str, pvc: PVCInfo) -> Tuple[float, Dict[str, Any]]:
+    """Decide this PVC resource's size_gb/size_source, avoiding a double-count
+    against the cloud-native disk resource that separately collects the exact
+    same bytes when the PVC is backed by block-storage CSI (or its deprecated
+    in-tree predecessor).
+
+    Returns (size_gb, extra_metadata_fields) - extra_metadata_fields is merged
+    into the resource's metadata dict by the caller.
+    """
+    if is_block_storage_backed(provider, pvc.csi_driver):
+        # This capacity is already counted once as its own aws:ec2:volume /
+        # azure:disk / gcp:compute:disk resource - report this PVC as sizeless
+        # rather than double-counting the same disk under two resource types.
+        # Same pattern already used for M365 Teams (storage tracked at the
+        # underlying SharePoint site, not re-counted at the Team level).
+        return 0.0, {
+            'size_source': 'not_applicable',
+            'storage_tracked_as': _BLOCK_STORAGE_RESOURCE_TYPE[provider],
+            'backing_volume_id': pvc.backing_volume_id,
+            'csi_driver': pvc.csi_driver,
+        }
+
+    # Not a recognized block-storage CSI/in-tree driver (e.g. a file-storage
+    # CSI driver, an unrecognized/future driver, or no bound PV info at all) -
+    # this PVC is the only place this capacity is represented, so it's real,
+    # measured usage in its own right.
+    return pvc.actual_size_gb, {
+        'size_source': 'usage',
+        'backing_volume_id': pvc.backing_volume_id,
+        'csi_driver': pvc.csi_driver,
+    }
 
 
 # =============================================================================
@@ -405,6 +520,7 @@ def collect_eks_pvcs(session, cluster_name: str, region: str, account_id: str) -
 
     # Convert to CloudResource format
     for pvc in pvcs:
+        size_gb, size_metadata = _pvc_size_and_metadata("aws", pvc)
         resource = CloudResource(
             provider="aws",
             account_id=account_id,
@@ -414,7 +530,7 @@ def collect_eks_pvcs(session, cluster_name: str, region: str, account_id: str) -
             resource_id=f"arn:aws:eks:{region}:{account_id}:cluster/{cluster_name}/pvc/{pvc.namespace}/{pvc.name}",
             name=f"{pvc.namespace}/{pvc.name}",
             tags=pvc.labels,
-            size_gb=pvc.actual_size_gb,
+            size_gb=size_gb,
             parent_resource_id=f"arn:aws:eks:{region}:{account_id}:cluster/{cluster_name}",
             metadata={
                 'cluster_name': cluster_name,
@@ -423,11 +539,13 @@ def collect_eks_pvcs(session, cluster_name: str, region: str, account_id: str) -
                 'storage_class': pvc.storage_class,
                 'access_modes': pvc.access_modes,
                 'requested_size_gb': pvc.requested_size_gb,
+                'actual_size_gb': pvc.actual_size_gb,
                 'status': pvc.status,
                 'bound_pv': pvc.bound_pv,
                 'volume_mode': pvc.volume_mode,
                 'pods_using': pvc.pods_using,
-                'creation_time': pvc.creation_time
+                'creation_time': pvc.creation_time,
+                **size_metadata,
             }
         )
         resources.append(resource)
@@ -524,6 +642,7 @@ def collect_aks_pvcs(credential, subscription_id: str, resource_group: str, clus
 
     # Convert to CloudResource format
     for pvc in pvcs:
+        size_gb, size_metadata = _pvc_size_and_metadata("azure", pvc)
         resource = CloudResource(
             provider="azure",
             subscription_id=subscription_id,
@@ -533,7 +652,7 @@ def collect_aks_pvcs(credential, subscription_id: str, resource_group: str, clus
             resource_id=f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.ContainerService/managedClusters/{cluster_name}/pvc/{pvc.namespace}/{pvc.name}",
             name=f"{pvc.namespace}/{pvc.name}",
             tags=pvc.labels,
-            size_gb=pvc.actual_size_gb,
+            size_gb=size_gb,
             parent_resource_id=f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.ContainerService/managedClusters/{cluster_name}",
             metadata={
                 'cluster_name': cluster_name,
@@ -543,11 +662,13 @@ def collect_aks_pvcs(credential, subscription_id: str, resource_group: str, clus
                 'storage_class': pvc.storage_class,
                 'access_modes': pvc.access_modes,
                 'requested_size_gb': pvc.requested_size_gb,
+                'actual_size_gb': pvc.actual_size_gb,
                 'status': pvc.status,
                 'bound_pv': pvc.bound_pv,
                 'volume_mode': pvc.volume_mode,
                 'pods_using': pvc.pods_using,
-                'creation_time': pvc.creation_time
+                'creation_time': pvc.creation_time,
+                **size_metadata,
             }
         )
         resources.append(resource)
@@ -621,6 +742,7 @@ def collect_gke_pvcs(project_id: str, location: str, cluster_name: str) -> "List
 
     # Convert to CloudResource format
     for pvc in pvcs:
+        size_gb, size_metadata = _pvc_size_and_metadata("gcp", pvc)
         resource = CloudResource(
             provider="gcp",
             account_id=project_id,
@@ -630,7 +752,7 @@ def collect_gke_pvcs(project_id: str, location: str, cluster_name: str) -> "List
             resource_id=f"projects/{project_id}/locations/{location}/clusters/{cluster_name}/pvc/{pvc.namespace}/{pvc.name}",
             name=f"{pvc.namespace}/{pvc.name}",
             tags=pvc.labels,
-            size_gb=pvc.actual_size_gb,
+            size_gb=size_gb,
             parent_resource_id=f"projects/{project_id}/locations/{location}/clusters/{cluster_name}",
             metadata={
                 'cluster_name': cluster_name,
@@ -639,11 +761,13 @@ def collect_gke_pvcs(project_id: str, location: str, cluster_name: str) -> "List
                 'storage_class': pvc.storage_class,
                 'access_modes': pvc.access_modes,
                 'requested_size_gb': pvc.requested_size_gb,
+                'actual_size_gb': pvc.actual_size_gb,
                 'status': pvc.status,
                 'bound_pv': pvc.bound_pv,
                 'volume_mode': pvc.volume_mode,
                 'pods_using': pvc.pods_using,
-                'creation_time': pvc.creation_time
+                'creation_time': pvc.creation_time,
+                **size_metadata,
             }
         )
         resources.append(resource)

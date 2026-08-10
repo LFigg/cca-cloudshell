@@ -7,9 +7,14 @@
 #   1. Create an App Registration in Azure AD
 #   2. Add API permissions (Application type):
 #      - Sites.Read.All (SharePoint sites)
+#      - Files.Read.All (OneDrive storage)
 #      - User.Read.All (Users, OneDrive, Exchange mailboxes)
+#      - Mail.Read (Exchange mailbox metadata)
 #      - Group.Read.All (Groups, Teams membership)
-#      - TeamSettings.Read.All (Teams settings)
+#      - Team.ReadBasic.All (Teams details)
+#      - Reports.Read.All (CRITICAL - enables fast bulk collection)
+#      - Organization.Read.All (Tenant licensing info)
+#      - Directory.Read.All (Optional - for --include-entra)
 #   3. Grant admin consent for the permissions
 #   4. Create a client secret and set environment variables:
 #

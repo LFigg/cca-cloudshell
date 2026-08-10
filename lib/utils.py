@@ -14,6 +14,7 @@ Logging Level Standards:
 - DEBUG: Per-item failures that don't affect overall collection
          "Failed to process item {id}: {e}"
 """
+import argparse
 import csv
 import json
 import logging
@@ -23,7 +24,7 @@ import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, TypeVar
 from urllib.parse import urlparse
 
@@ -38,6 +39,8 @@ from .constants import (
 if TYPE_CHECKING:
     from rich.console import Console
     from rich.progress import Progress, TaskID
+
+    from .models import CostRecord
 
 # Retry decorator for API calls
 try:
@@ -115,7 +118,7 @@ def retry_with_backoff(
         # Fallback implementation without tenacity
         def decorator(func: F) -> F:
             @wraps(func)
-            def wrapper(*args, **kwargs):
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
                 last_exception: BaseException = Exception("No attempts made")
                 wait_time = min_wait
 
@@ -241,7 +244,7 @@ class ProgressTracker:
             self._print_summary_plain()
         return False
 
-    def start_region(self, region: str):
+    def start_region(self, region: str) -> None:
         """Mark the start of processing a region."""
         self.current_region = region
         if self._use_rich:
@@ -254,7 +257,7 @@ class ProgressTracker:
         else:
             print(f"  [{region}] Starting collection...")
 
-    def start_account(self, account_id: str, account_name: str = ""):
+    def start_account(self, account_id: str, account_name: str = "") -> None:
         """Mark the start of processing an account."""
         self.current_account = account_id
         display = f"{account_id} ({account_name})" if account_name else account_id
@@ -268,7 +271,7 @@ class ProgressTracker:
         else:
             print(f"\nAccount: {display}")
 
-    def update_task(self, task_description: str):
+    def update_task(self, task_description: str) -> None:
         """Update the current task being performed."""
         self.current_task = task_description
         if self._use_rich:
@@ -280,12 +283,12 @@ class ProgressTracker:
                 description=f"{self.provider} {region_info}{task_description}"
             )
 
-    def add_resources(self, count: int, capacity_gb: float = 0.0):
+    def add_resources(self, count: int, capacity_gb: float = 0.0) -> None:
         """Add discovered resources to the running total."""
         self.total_resources += count
         self.total_capacity_gb += capacity_gb
 
-    def complete_region(self):
+    def complete_region(self) -> None:
         """Mark a region as complete."""
         self.completed_regions += 1
         if self._use_rich:
@@ -296,7 +299,7 @@ class ProgressTracker:
             capacity_tb = self.total_capacity_gb / 1024
             print(f"  [{self.current_region}] Complete - Running total: {self.total_resources:,} resources, {capacity_tb:.2f} TB")
 
-    def complete_account(self):
+    def complete_account(self) -> None:
         """Mark an account as complete."""
         self.completed_accounts += 1
         if self._use_rich:
@@ -304,13 +307,13 @@ class ProgressTracker:
             assert self._main_task is not None
             self._progress.update(self._main_task, advance=1)
 
-    def log_resource_count(self, resource_type: str, count: int, capacity_gb: float = 0.0):
+    def log_resource_count(self, resource_type: str, count: int, capacity_gb: float = 0.0) -> None:
         """Log a resource count (for detailed tracking)."""
         self.add_resources(count, capacity_gb)
         # Don't print individual counts in progress mode - too noisy
         # The logger.info calls in collectors still work for verbose mode
 
-    def _print_summary_rich(self):
+    def _print_summary_rich(self) -> None:
         """Print a formatted summary using rich."""
         from rich.panel import Panel
         from rich.table import Table
@@ -331,7 +334,7 @@ class ProgressTracker:
         assert self._console is not None
         self._console.print(Panel(table))
 
-    def _print_summary_plain(self):
+    def _print_summary_plain(self) -> None:
         """Print a plain text summary."""
         capacity_tb = self.total_capacity_gb / 1024
 
@@ -357,14 +360,14 @@ def get_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
-def format_bytes_to_gb(bytes_value: int) -> float:
+def format_bytes_to_gb(bytes_value: Optional[int]) -> float:
     """Convert bytes to GB."""
     if not bytes_value:
         return 0.0
     return round(bytes_value / (1024**3), 2)
 
 
-def format_gb_to_tb(gb_value: float) -> float:
+def format_gb_to_tb(gb_value: Optional[float]) -> float:
     """Convert GB to TB."""
     if not gb_value:
         return 0.0
@@ -431,12 +434,18 @@ def is_auth_error(exc: Exception) -> bool:
     if exc_type_name in GCP_AUTH_EXCEPTION_NAMES:
         return True
 
-    # M365 - ODataError
+    # M365 - ODataError (msgraph-sdk typed calls, e.g. graph_client.users.get())
     if exc_type_name == 'ODataError':
         error = getattr(exc, 'error', None)
         if error:
             error_code = getattr(error, 'code', '')
             return error_code in M365_AUTH_ERROR_CODES
+
+    # M365 - httpx.HTTPStatusError (raw REST calls, e.g. usage report downloads
+    # and other endpoints hit directly via httpx rather than the msgraph SDK)
+    if exc_type_name == 'HTTPStatusError':
+        status_code = getattr(getattr(exc, 'response', None), 'status_code', None)
+        return status_code in (401, 403)
 
     return False
 
@@ -595,7 +604,7 @@ def parallel_collect(
     return all_results
 
 
-def hash_sensitive_id(value: str, prefix: str = "") -> str:
+def hash_sensitive_id(value: Optional[str], prefix: str = "") -> Optional[str]:
     """
     Hash a sensitive ID using consistent hashing.
 
@@ -666,10 +675,19 @@ def _redact_value(value: str) -> tuple:
         # Normalize to lowercase for consistent hashing (Azure is case-insensitive)
         hashed_sub = hash_sensitive_id(sub_id.lower(), '')[:8]
         hashed_rg = hash_sensitive_id(rg_name.lower(), '')[:8]
-        # Also redact the resource name at the end (also case-insensitive)
-        rest_parts = rest.rsplit('/', 1)
-        if len(rest_parts) == 2:
-            rest = f"{rest_parts[0]}/{hash_sensitive_id(rest_parts[1].lower(), '')[:8]}"
+
+        # rest is "/providers/{Namespace}/{type}/{name}(/{childType}/{childName})*".
+        # Nested/child resources (file shares, blob containers, subnets, ...) put
+        # their identifying name in an EARLIER type/name pair, not just the final
+        # segment - hashing only the last segment (the old behavior) redacted a
+        # VM or storage account's own name but left a file share's parent storage
+        # account name in cleartext. Hash every name segment (index 4, 6, 8, ...:
+        # after the leading '', 'providers', namespace) instead of only the tail.
+        rest_segments = rest.split('/')
+        for i in range(4, len(rest_segments), 2):
+            rest_segments[i] = hash_sensitive_id(rest_segments[i].lower(), '')[:8]
+        rest = '/'.join(rest_segments)
+
         return (True, f"{pre_sub}{hashed_sub}{pre_rg}{hashed_rg}{rest}")
 
     # Azure subscription ID alone
@@ -834,15 +852,11 @@ def get_name_from_tags(tags: Dict[str, str], resource_id: str = "") -> str:
     return tags.get("Name", tags.get("name", resource_id))
 
 
-# Patterns for redacting sensitive data in log messages (compiled for performance)
-_LOG_REDACT_PATTERNS = None
-
-def _get_log_redact_patterns():
-    """Get compiled regex patterns for log redaction (lazy initialization)."""
-    global _LOG_REDACT_PATTERNS
-    if _LOG_REDACT_PATTERNS is None:
-        import re
-        _LOG_REDACT_PATTERNS = [
+@lru_cache(maxsize=1)
+def _get_log_redact_patterns() -> List[Any]:
+    """Get compiled regex patterns for log redaction (memoized - built once per process)."""
+    import re
+    return [
             # AWS ARNs - preserve structure (partition:service:region:account:resource)
             # Must come before account ID pattern to match full ARN first
             (re.compile(r'(arn:aws[-a-z]*):([a-z0-9-]+):([a-z0-9-]*):(\d{12}):([^\s,\]}"\']+)'),
@@ -877,7 +891,6 @@ def _get_log_redact_patterns():
             (re.compile(r'([a-z0-9-]+)(\.database\.windows\.net)'),
              lambda m: f"redacted-{hash_sensitive_id(m.group(1), '')[:8]}{m.group(2)}"),
         ]
-    return _LOG_REDACT_PATTERNS
 
 
 def redact_log_message(message: str) -> str:
@@ -968,7 +981,7 @@ def setup_logging(level: str = "INFO", output_dir: Optional[str] = None) -> logg
     return logging.getLogger(__name__)
 
 
-def log_arguments(args, collector_name: str = "collector") -> None:
+def log_arguments(args: argparse.Namespace, collector_name: str = "collector") -> None:
     """
     Log the command-line arguments used to run a collector.
 
@@ -996,7 +1009,7 @@ def log_arguments(args, collector_name: str = "collector") -> None:
     logger.info(f"{collector_name} started with arguments: {arg_str}")
 
 
-def get_collector_metadata(args, collector_name: str, version: str) -> Dict[str, Any]:
+def get_collector_metadata(args: argparse.Namespace, collector_name: str, version: str) -> Dict[str, Any]:
     """
     Generate metadata about the collector run for troubleshooting/debugging.
 
@@ -1169,7 +1182,8 @@ def write_csv(data: List[Dict], filepath: str, fieldnames: Optional[List[str]] =
         return
 
     # Local file
-    with open(filepath, 'w', newline='') as f:
+    fd = os.open(filepath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(data)
@@ -1264,159 +1278,6 @@ def write_to_gcs(data: Any, gcs_path: str, content_type: str = "application/json
         raise
 
 
-# =============================================================================
-# Permission Pre-Check Functions
-# =============================================================================
-
-def check_aws_permissions(session) -> Dict[str, Any]:
-    """
-    Check AWS permissions before starting collection.
-
-    Returns dict with 'success' bool and 'errors' list.
-    """
-    results = {'success': True, 'errors': [], 'warnings': []}
-
-    try:
-        # Test STS (required for account ID)
-        sts = session.client('sts')
-        sts.get_caller_identity()
-    except Exception as e:
-        results['success'] = False
-        results['errors'].append(f"STS access denied: {e}")
-        return results  # Fatal - can't proceed without this
-
-    # Test EC2 (describe regions - basic permission)
-    try:
-        ec2 = session.client('ec2', region_name='us-east-1')
-        ec2.describe_regions(MaxResults=1)
-    except Exception as e:
-        results['warnings'].append(f"EC2 describe_regions failed (may limit region discovery): {e}")
-
-    # Test S3 list buckets
-    try:
-        s3 = session.client('s3')
-        s3.list_buckets()
-    except Exception as e:
-        results['warnings'].append(f"S3 list_buckets failed: {e}")
-
-    return results
-
-
-def check_azure_permissions(credential, subscription_id: str) -> Dict[str, Any]:
-    """
-    Check Azure permissions before starting collection.
-
-    Returns dict with 'success' bool and 'errors' list.
-    """
-    results = {'success': True, 'errors': [], 'warnings': []}
-
-    try:
-        from azure.mgmt.compute import ComputeManagementClient
-
-        # Test Compute access
-        compute_client = ComputeManagementClient(credential, subscription_id)
-        # Just create the iterator, don't actually list
-        list(compute_client.virtual_machines.list_all())[:1]
-    except ImportError:
-        results['errors'].append("azure-mgmt-compute not installed")
-        results['success'] = False
-    except Exception as e:
-        error_msg = str(e)
-        if 'AuthorizationFailed' in error_msg or 'AuthenticationFailed' in error_msg:
-            results['errors'].append(f"Compute access denied: {e}")
-            results['success'] = False
-        else:
-            results['warnings'].append(f"Compute check failed (may be transient): {e}")
-
-    return results
-
-
-def check_gcp_permissions(project_id: str) -> Dict[str, Any]:
-    """
-    Check GCP permissions before starting collection.
-
-    Returns dict with 'success' bool and 'errors' list.
-    """
-    results = {'success': True, 'errors': [], 'warnings': []}
-
-    try:
-        from google.cloud import compute_v1
-
-        # Test Compute access with a simple zones list
-        client = compute_v1.ZonesClient()
-        list(client.list(project=project_id))[:1]
-    except ImportError:
-        results['errors'].append("google-cloud-compute not installed")
-        results['success'] = False
-    except Exception as e:
-        error_msg = str(e)
-        if '403' in error_msg or 'Permission' in error_msg:
-            results['errors'].append(f"Compute access denied: {e}")
-            results['success'] = False
-        else:
-            results['warnings'].append(f"Compute check failed (may be transient): {e}")
-
-    return results
-
-
-def check_m365_permissions(graph_client, tenant_id: str) -> Dict[str, Any]:
-    """
-    Check M365 Graph API permissions before starting collection.
-
-    Returns dict with 'success' bool and 'errors' list.
-    """
-    results = {'success': True, 'errors': [], 'warnings': []}
-
-    # Test Users.Read.All
-    try:
-        response = graph_client.users.get()
-        if not response:
-            results['warnings'].append("Users API returned empty response")
-    except Exception as e:
-        error_msg = str(e)
-        if 'Authorization' in error_msg or '403' in error_msg:
-            results['errors'].append(f"Users.Read.All permission missing or denied: {e}")
-            results['success'] = False
-        else:
-            results['warnings'].append(f"Users check failed: {e}")
-
-    # Test Sites.Read.All
-    try:
-        response = graph_client.sites.get()
-        if not response:
-            results['warnings'].append("Sites API returned empty response")
-    except Exception as e:
-        error_msg = str(e)
-        if 'Authorization' in error_msg or '403' in error_msg:
-            results['warnings'].append(f"Sites.Read.All may be missing: {e}")
-        # Not fatal - SharePoint might just be empty
-
-    return results
-
-
-def print_permission_check_results(results: Dict[str, Any], cloud: str) -> bool:
-    """Print permission check results and return True if collection should proceed."""
-    if results['errors']:
-        print(f"\n{'='*60}")
-        print(f"{cloud.upper()} PERMISSION CHECK FAILED")
-        print('='*60)
-        for error in results['errors']:
-            print(f"  ERROR: {error}")
-        print()
-        return False
-
-    if results['warnings']:
-        print(f"\n{'='*60}")
-        print(f"{cloud.upper()} PERMISSION WARNINGS")
-        print('='*60)
-        for warning in results['warnings']:
-            print(f"  WARNING: {warning}")
-        print("  Collection will continue but some resources may be missed.")
-        print()
-
-    return True
-
-
 def print_summary_table(summaries: List[Dict]) -> None:
     """Print a summary table to console."""
     if not summaries:
@@ -1458,3 +1319,53 @@ def print_summary_table(summaries: List[Dict]) -> None:
     print(separator)
     print(f"{'TOTAL'.ljust(widths[0])} | {' '.ljust(widths[1])} | {str(total_count).ljust(widths[2])} | {f'{total_gb:,.1f}'.ljust(widths[3])} |")
     print()
+
+
+# =============================================================================
+# Cost Utilities
+# =============================================================================
+
+def get_last_full_month() -> tuple:
+    """Return (start_date, end_date) strings for the last complete calendar month.
+
+    Example: if today is 2026-04-09, returns ('2026-03-01', '2026-04-01').
+    end_date is exclusive (first day of current month).
+    """
+    from datetime import timedelta
+    today = datetime.now(timezone.utc)
+    first_of_this_month = today.replace(day=1)
+    last_of_prev_month = first_of_this_month - timedelta(days=1)
+    first_of_prev_month = last_of_prev_month.replace(day=1)
+    return (
+        first_of_prev_month.strftime('%Y-%m-%d'),
+        first_of_this_month.strftime('%Y-%m-%d'),
+    )
+
+
+def aggregate_costs(records: List["CostRecord"]) -> list:
+    """Aggregate CostRecord objects into CostSummary objects by provider and category."""
+    from .models import CostSummary
+    summaries: dict = {}
+    for record in records:
+        key = (record.provider, record.category, record.currency)
+        if key not in summaries:
+            summaries[key] = {
+                'provider': record.provider,
+                'category': record.category,
+                'total_cost': 0.0,
+                'currency': record.currency,
+                'service_breakdown': {},
+            }
+        summaries[key]['total_cost'] += record.cost
+        svc = record.service
+        summaries[key]['service_breakdown'][svc] = (
+            summaries[key]['service_breakdown'].get(svc, 0.0) + record.cost
+        )
+
+    result = []
+    for data in summaries.values():
+        data['total_cost'] = round(data['total_cost'], 2)
+        data['service_breakdown'] = {k: round(v, 2) for k, v in data['service_breakdown'].items()}
+        result.append(CostSummary(**data))
+
+    return sorted(result, key=lambda x: (x.provider, x.category))

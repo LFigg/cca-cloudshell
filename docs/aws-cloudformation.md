@@ -27,7 +27,7 @@ aws cloudformation create-stack \
 Then run the collector:
 
 ```bash
-python3 aws_collect.py
+python3 collect.py --cloud aws
 ```
 
 ### Multi-Account Collection
@@ -67,10 +67,10 @@ aws cloudformation create-stack \
 
 ```bash
 # Auto-discover accounts via Organizations
-python3 aws_collect.py --org-role CCACollectorRole --external-id your-secret-external-id
+python3 collect.py --cloud aws --org-role CCACollectorRole --external-id your-secret-external-id
 
 # Or specify explicit role ARNs
-python3 aws_collect.py --role-arns \
+python3 collect.py --cloud aws --role-arns \
   arn:aws:iam::111111111111:role/CCACollectorRole,\
   arn:aws:iam::222222222222:role/CCACollectorRole
 ```
@@ -86,7 +86,7 @@ python3 aws_collect.py --role-arns \
 | `TrustedAccountId` | *(empty)* | AWS account ID allowed to assume this role |
 | `TrustedRoleArn` | *(empty)* | Specific role ARN allowed to assume (more restrictive) |
 | `EnableOrganizationsAccess` | `false` | Enable Organizations API access |
-| `EnableCostExplorerAccess` | `true` | Enable Cost Explorer API for cost_collect.py |
+| `EnableCostExplorerAccess` | `true` | Enable Cost Explorer API for integrated cost collection |
 
 ---
 
@@ -157,13 +157,7 @@ aws cloudformation list-stack-instances \
 ### Step 4: Run the Collection
 
 ```bash
-# Using the unified collector (recommended)
-python3 collect.py --cloud aws -- \
-  --org-role CCACollectorRole \
-  --external-id $EXTERNAL_ID
-
-# Or directly with aws_collect.py  
-python3 aws_collect.py \
+python3 collect.py --cloud aws \
   --org-role CCACollectorRole \
   --external-id $EXTERNAL_ID
 ```

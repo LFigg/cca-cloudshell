@@ -12,6 +12,7 @@
 #   ./setup-aws-permissions.sh                    # Single account setup
 #   ./setup-aws-permissions.sh --external-id XXX  # With external ID for security
 #   ./setup-aws-permissions.sh --stackset         # Deploy to all org accounts
+#   ./setup-aws-permissions.sh --no-cost          # Opt out of Cost Explorer permissions
 #   ./setup-aws-permissions.sh --check            # Check existing permissions
 
 set -e
@@ -30,7 +31,7 @@ EXTERNAL_ID=""
 USE_STACKSET=false
 CHECK_ONLY=false
 ENABLE_ORG=false
-ENABLE_COST=false
+ENABLE_COST=true
 TEMPLATE_FILE="setup/aws-iam-role.yaml"
 
 # Parse arguments
@@ -60,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             ENABLE_COST=true
             shift
             ;;
+        --no-cost)
+            ENABLE_COST=false
+            shift
+            ;;
         --check)
             CHECK_ONLY=true
             shift
@@ -73,7 +78,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --stack-name NAME   CloudFormation stack name (default: cca-collector)"
             echo "  --stackset          Deploy to all Organization accounts via StackSet"
             echo "  --enable-org        Enable Organizations API access (for --org-role)"
-            echo "  --enable-cost       Enable Cost Explorer API access (for cost_collect.py)"
+            echo "  --enable-cost       Enable Cost Explorer API access (default)"
+            echo "  --no-cost           Disable Cost Explorer API access (opt-out)"
             echo "  --check             Check existing permissions without deploying"
             echo "  --help              Show this help message"
             exit 0
@@ -195,6 +201,8 @@ fi
 
 if [ "$ENABLE_COST" = true ]; then
     PARAMS="$PARAMS ParameterKey=EnableCostExplorerAccess,ParameterValue=true"
+else
+    PARAMS="$PARAMS ParameterKey=EnableCostExplorerAccess,ParameterValue=false"
 fi
 
 # StackSet deployment for multi-account

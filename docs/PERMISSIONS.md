@@ -3,13 +3,48 @@
 This document details the minimum permissions required to run each cloud collector.
 
 ## Table of Contents
+- [Automatic Permission Verification](#automatic-permission-verification)
+- [Automatic Dependency Verification](#automatic-dependency-verification)
 - [AWS Permissions](#aws-permissions)
 - [Azure Permissions](#azure-permissions)
 - [GCP Permissions](#gcp-permissions)
 - [Microsoft 365 Permissions](#microsoft-365-permissions)
 - [Change Rate Collection Permissions](#change-rate-collection-permissions)
 - [Kubernetes PVC Collection Permissions](#kubernetes-pvc-collection-permissions-optional)
-- [Cost Collector Permissions](#cost-collector-permissions)
+- [Cost Collection Permissions](#cost-collection-permissions)
+
+## Automatic Permission Verification
+
+Every cloud collector (`lib/{aws,azure,gcp,m365}/collector.py`) runs a **mandatory permission preflight**
+before collecting anything, once the CLI flags for that run have been parsed. For each resource type (or
+report) the parsed flags say this run will actually touch, it makes one minimal, real, read-only API call -
+the same call the real collection step will make - rather than a static role/policy lookup. A role or app
+registration can look correct on paper and still fail a real call (a missing resource provider registration,
+an API not enabled on a project, a Graph permission granted without admin consent), which is exactly the
+class of gap this catches that a permissions-list diff would miss.
+
+If anything is missing, the run **stops before collecting any resources** and prints a full report of every
+missing permission, grouped by account/subscription/project (or, for M365, by tenant - M365 collection is
+always single-tenant). There is **no flag to skip this** for any of the four clouds - if a run needs a
+permission, it needs to be granted once, not rediscovered by watching a multi-hour collection fail partway
+through, or worse, silently produce incomplete or degraded data with no clear signal anything was wrong.
+
+The exact set of checks for each cloud - and which CLI flag gates each one - lives in that cloud's
+`lib/{cloud}/permissions.py` module (`_CHECKS`, near the bottom of the file). The permission sections below
+document what to grant; the preflight is what tells you, specifically and up front, if you haven't.
+
+## Automatic Dependency Verification
+
+Azure and GCP additionally run a **mandatory dependency preflight** (`lib/{azure,gcp}/dependencies.py`) before
+the permission check above, checking that every package that cloud's collector can use is actually installed -
+not just the couple of core ones needed to start. Azure and GCP each split services across many separate
+packages (`azure-mgmt-*`, `google-cloud-*`); a partial install used to fail silently, one collector at a time,
+each just logging a "not installed, skipping" warning and moving on - the result looked like a complete
+collection but was quietly missing entire resource types (Synapse, Redis, NetApp, PostgreSQL/MySQL) or real-usage
+data (blob capacity, file share usage, change rates). As with the permission preflight, there is **no flag to
+skip this** - install the missing package(s) it lists (`pip install -r requirements.txt` or `./setup.sh`) and
+re-run. AWS and M365 don't need this check: AWS's `boto3` covers all services in one package, and M365's SDK
+imports fail immediately and loudly rather than silently if missing, so neither has the same failure mode.
 
 ## Security and Privacy
 
@@ -18,9 +53,9 @@ By default, the CCA collectors **redact sensitive identifiers** (resource IDs, A
 To include full resource identifiers in the output, use the `--include-resource-ids` flag:
 
 ```bash
-python3 aws_collect.py --include-resource-ids
-python3 azure_collect.py --include-resource-ids
-python3 gcp_collect.py --include-resource-ids
+python3 collect.py --cloud aws --include-resource-ids
+python3 collect.py --cloud azure --include-resource-ids
+python3 collect.py --cloud gcp --include-resource-ids
 ```
 
 All timestamps in output files use **UTC (ISO 8601 format)** for consistency across time zones.
@@ -75,6 +110,7 @@ If you need a least-privilege policy, use the following:
                 "rds:DescribeDBClusterSnapshots",
                 
                 "cloudwatch:GetMetricStatistics",
+                "cloudwatch:GetMetricData",
                 
                 "s3:ListAllMyBuckets",
                 "s3:GetBucketLocation",
@@ -179,13 +215,18 @@ For automatic account discovery via AWS Organizations:
     "Effect": "Allow",
     "Action": [
         "organizations:ListAccounts",
-        "organizations:DescribeOrganization"
+        "organizations:DescribeOrganization",
+        "organizations:ListParents",
+        "organizations:DescribeOrganizationalUnit",
+        "organizations:ListRoots"
     ],
     "Resource": "*"
 }
 ```
 
 This permission is only needed in the management account (or delegated admin).
+
+`ListParents`, `DescribeOrganizationalUnit`, and `ListRoots` are used to enrich accounts with OU metadata (`ou_id`, `ou_name`, `ou_path`) in output JSON.
 
 ### Permissions by Service
 
@@ -194,6 +235,10 @@ This permission is only needed in the management account (or delegated admin).
 | **STS** | `sts:GetCallerIdentity` | Get account ID |
 | | `sts:AssumeRole` | Assume roles in other accounts (multi-account) |
 | **Organizations** | `organizations:ListAccounts` | Discover accounts (--org-role) |
+| | `organizations:DescribeOrganization` | Get org ID and management account ID |
+| | `organizations:ListParents` | Resolve account parent OU |
+| | `organizations:DescribeOrganizationalUnit` | Resolve OU name |
+| | `organizations:ListRoots` | Resolve org root |
 | **EC2** | `ec2:DescribeRegions` | List enabled regions |
 | | `ec2:DescribeInstances` | List EC2 instances |
 | | `ec2:DescribeVolumes` | List EBS volumes |
@@ -203,6 +248,7 @@ This permission is only needed in the management account (or delegated admin).
 | | `rds:DescribeDBSnapshots` | List RDS snapshots |
 | | `rds:DescribeDBClusterSnapshots` | List Aurora snapshots |
 | **CloudWatch** | `cloudwatch:GetMetricStatistics` | Get Aurora storage metrics |
+| | `cloudwatch:GetMetricData` | Batch metric queries for Aurora and change-rate data |
 | **S3** | `s3:ListAllMyBuckets` | List S3 buckets |
 | | `s3:GetBucketLocation` | Get bucket region |
 | | `s3:GetBucketTagging` | Get bucket tags |
@@ -560,7 +606,7 @@ includedPermissions:
 
 ### Change Rate Output Format
 
-When `--include-change-rate` is specified, collectors output a separate JSON file (`cca_*_change_rates_*.json`) with this structure:
+By default, collectors output a separate change-rate JSON file (`cca_*_change_rates_*.json`). Use `--skip-change-rate` to disable it.
 
 ```json
 {
@@ -612,7 +658,7 @@ When `--include-change-rate` is specified, collectors output a separate JSON fil
 
 ## Kubernetes PVC Collection Permissions (Optional)
 
-When using the `--include-pvc` flag, the collectors connect to managed Kubernetes clusters (EKS/AKS/GKE) to discover PersistentVolumeClaims. These permissions are **optional** - the collector will work without them, but you won't get PVC data.
+PVC collection is enabled by default. Use `--skip-pvc` to disable it. These permissions are **optional** - the collector will work without them, but you won't get PVC data.
 
 ### Prerequisites
 
@@ -762,15 +808,11 @@ export MS365_CLIENT_SECRET="your-client-secret"
 
 ---
 
-## Cost Collector Permissions
+## Cost Collection Permissions
 
-The cost collector (`cost_collect.py`) gathers backup and snapshot spending data. Cost collection permissions are **included in the default setup files** (with `EnableCostExplorerAccess=true` for AWS).
+Cost collection is integrated into each cloud collector and runs by default alongside inventory. These permissions are **included in the default setup files** (with `EnableCostExplorerAccess=true` for AWS).
 
 > **Note:** If you deployed permissions before this update, add the permissions below to enable cost collection.
-
-> **Important:** Cost collection is separate from inventory collection. The inventory collector
-> (`aws_collect.py`) gathers resource data and can run from any account, while the cost collector
-> requires access to billing APIs which have different permission models.
 
 ### AWS Cost Explorer
 
@@ -780,8 +822,7 @@ The cost collector (`cost_collect.py`) gathers backup and snapshot spending data
 
 **Requirements:**
 1. Must run from the **management account** (the payer account)
-2. Cost Explorer must be enabled (it's enabled by default, but verify in AWS Console → Billing)
-3. For multi-account breakdown, use `--org-costs` flag
+2. Cost Explorer must be enabled (verify in AWS Console → Billing)
 
 Add to your IAM policy:
 
@@ -806,19 +847,18 @@ Add to your IAM policy:
 
 #### AWS Organizations Considerations
 
-**Single Organization:** Run cost_collect once from the management account:
+**Single Organization:** Cost collection runs from the management account automatically:
 ```bash
-python3 cost_collect.py --aws --org-costs
+python3 collect.py --cloud aws --profile mgmt-account
 ```
 
-**Multiple Separate Organizations:** If you have multiple independent AWS Organizations
-(e.g., from acquisitions), you must run cost_collect separately from each management account:
+**Multiple Separate Organizations:** Run from each management account separately:
 ```bash
 # From org1 management account
-python3 cost_collect.py --aws --org-costs --profile org1-mgmt -o ./org1/
+python3 collect.py --cloud aws --profile org1-mgmt -o ./org1/
 
-# From org2 management account  
-python3 cost_collect.py --aws --org-costs --profile org2-mgmt -o ./org2/
+# From org2 management account
+python3 collect.py --cloud aws --profile org2-mgmt -o ./org2/
 ```
 
 Then merge results using `scripts/merge_batch_outputs.py` if needed.

@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -33,66 +34,95 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.utils import generate_run_id, get_timestamp, write_json
 
 
+def _is_merge_artifact(path: Path) -> bool:
+    """Return True for previously merged outputs that should not be re-merged."""
+    return path.name.endswith("_merged.json")
+
+
+def _get_batch_dirs(folder: Path) -> List[Path]:
+    """Return batch directories (batch01, batch02, ...)."""
+    batch_dirs = []
+    for subfolder in folder.iterdir():
+        if subfolder.is_dir() and re.fullmatch(r"batch\d+", subfolder.name):
+            batch_dirs.append(subfolder)
+    return sorted(batch_dirs)
+
+
+def _latest_file_in_dir(folder: Path, patterns: List[str]) -> Optional[Path]:
+    """Pick the most recently modified matching file, excluding merged artifacts."""
+    candidates: List[Path] = []
+    for pattern in patterns:
+        for file_path in folder.glob(pattern):
+            if not _is_merge_artifact(file_path):
+                candidates.append(file_path)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def find_inventory_files(folder: Path) -> List[Path]:
     """Find all inventory JSON files in folder and subfolders."""
-    inv_files = []
+    inv_patterns = ["cca_*_inv_*.json", "cca_inv_*.json"]
+    inv_files: List[Path] = []
 
-    # Check root folder - match both cca_*_inv_*.json and cca_inv_*.json patterns
-    for pattern in ["cca_*_inv_*.json", "cca_inv_*.json"]:
-        for f in folder.glob(pattern):
-            if f not in inv_files:
-                inv_files.append(f)
+    batch_dirs = _get_batch_dirs(folder)
+    if batch_dirs:
+        # Batch mode: use only the latest inventory file per batch folder.
+        for batch_dir in batch_dirs:
+            latest = _latest_file_in_dir(batch_dir, inv_patterns)
+            if latest:
+                inv_files.append(latest)
+        return sorted(inv_files)
 
-    # Check subfolders (batch folders)
-    for subfolder in folder.iterdir():
-        if subfolder.is_dir() and not subfolder.name.startswith('.'):
-            for pattern in ["cca_*_inv_*.json", "cca_inv_*.json"]:
-                for f in subfolder.glob(pattern):
-                    if f not in inv_files:
-                        inv_files.append(f)
-
+    # Non-batch mode: use root inventory files only.
+    for pattern in inv_patterns:
+        for file_path in folder.glob(pattern):
+            if not _is_merge_artifact(file_path) and file_path not in inv_files:
+                inv_files.append(file_path)
     return sorted(inv_files)
 
 
 def find_summary_files(folder: Path) -> List[Path]:
     """Find all summary JSON files in folder and subfolders."""
-    sum_files = []
+    sum_patterns = ["cca_*_sum_*.json", "cca_sum_*.json"]
+    sum_files: List[Path] = []
 
-    # Check root folder
-    for pattern in ["cca_*_sum_*.json", "cca_sum_*.json"]:
-        for f in folder.glob(pattern):
-            if f not in sum_files:
-                sum_files.append(f)
+    batch_dirs = _get_batch_dirs(folder)
+    if batch_dirs:
+        # Batch mode: use only the latest summary file per batch folder.
+        for batch_dir in batch_dirs:
+            latest = _latest_file_in_dir(batch_dir, sum_patterns)
+            if latest:
+                sum_files.append(latest)
+        return sorted(sum_files)
 
-    # Check subfolders
-    for subfolder in folder.iterdir():
-        if subfolder.is_dir() and not subfolder.name.startswith('.'):
-            for pattern in ["cca_*_sum_*.json", "cca_sum_*.json"]:
-                for f in subfolder.glob(pattern):
-                    if f not in sum_files:
-                        sum_files.append(f)
-
+    # Non-batch mode: use root summary files only.
+    for pattern in sum_patterns:
+        for file_path in folder.glob(pattern):
+            if not _is_merge_artifact(file_path) and file_path not in sum_files:
+                sum_files.append(file_path)
     return sorted(sum_files)
 
 
 def find_cost_files(folder: Path) -> List[Path]:
     """Find all cost JSON files in folder and subfolders."""
-    cost_files = []
+    cost_patterns = ["cca_*_cost_*.json", "cca_cost_*.json", "*cost*.json"]
+    cost_files: List[Path] = []
 
-    # Check root folder
-    for pattern in ["cca_*_cost_*.json", "cca_cost_*.json", "*cost*.json"]:
-        for f in folder.glob(pattern):
-            if f not in cost_files:
-                cost_files.append(f)
+    batch_dirs = _get_batch_dirs(folder)
+    if batch_dirs:
+        # Batch mode: use only the latest cost file per batch folder.
+        for batch_dir in batch_dirs:
+            latest = _latest_file_in_dir(batch_dir, cost_patterns)
+            if latest:
+                cost_files.append(latest)
+        return sorted(cost_files)
 
-    # Check subfolders
-    for subfolder in folder.iterdir():
-        if subfolder.is_dir() and not subfolder.name.startswith('.'):
-            for pattern in ["cca_*_cost_*.json", "cca_cost_*.json", "*cost*.json"]:
-                for f in subfolder.glob(pattern):
-                    if f not in cost_files:
-                        cost_files.append(f)
-
+    # Non-batch mode: use root cost files only.
+    for pattern in cost_patterns:
+        for file_path in folder.glob(pattern):
+            if not _is_merge_artifact(file_path) and file_path not in cost_files:
+                cost_files.append(file_path)
     return sorted(cost_files)
 
 

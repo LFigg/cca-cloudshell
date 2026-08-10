@@ -9,13 +9,29 @@ Dual-metric approach:
 - Transaction log rate: GB of logs generated daily (always 100% capture rate)
 """
 import logging
+import statistics
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import boto3
 
 from .constants import DEFAULT_SAMPLE_DAYS, bytes_to_gb
+from .utils import check_and_raise_auth_error
 
 logger = logging.getLogger(__name__)
+
+
+def _steady_state_average(daily_values: List[float]) -> float:
+    """Aggregate a series of daily metric values into a single "steady-state
+    daily" figure, resistant to a single spike day (a batch job, a reindex,
+    a one-off full backup) skewing what gets reported as the Sizer
+    Encyclopedia's DCR - the amount of data that changes in a *typical* 24
+    hours, not the peak. A plain mean lets one outlier day dominate a short
+    (e.g. 7-day) sample; the median doesn't move unless the majority of
+    sampled days shift.
+    """
+    return statistics.median(daily_values)
 
 
 @dataclass
@@ -70,13 +86,13 @@ class ChangeRateSummary:
 # AWS CloudWatch Change Rate Collection
 # ============================================================================
 
-def get_aws_cloudwatch_client(session, region: str):
+def get_aws_cloudwatch_client(session: boto3.Session, region: str) -> Any:
     """Get CloudWatch client for a region."""
     return session.client('cloudwatch', region_name=region)
 
 
 def get_cloudwatch_metric_average(
-    cloudwatch_client,
+    cloudwatch_client: Any,
     namespace: str,
     metric_name: str,
     dimensions: List[Dict[str, str]],
@@ -115,16 +131,16 @@ def get_cloudwatch_metric_average(
         if not datapoints:
             return None
 
-        # Calculate average daily value
-        total = sum(dp.get(stat, 0) for dp in datapoints)
-        return total / len(datapoints)
+        daily_values = [dp.get(stat, 0) for dp in datapoints]
+        return _steady_state_average(daily_values)
 
     except Exception as e:
-        logger.debug(f"Error getting CloudWatch metric {namespace}/{metric_name}: {e}")
+        check_and_raise_auth_error(e, f"get CloudWatch metric {namespace}/{metric_name}", "aws")
+        logger.warning(f"Error getting CloudWatch metric {namespace}/{metric_name}: {e}")
         return None
 
 
-def get_ebs_volume_change_rate(cloudwatch_client, volume_id: str, volume_size_gb: float, days: int = DEFAULT_SAMPLE_DAYS) -> Optional[DataChangeMetrics]:
+def get_ebs_volume_change_rate(cloudwatch_client: Any, volume_id: str, volume_size_gb: float, days: int = DEFAULT_SAMPLE_DAYS) -> Optional[DataChangeMetrics]:
     """
     Get change rate for an EBS volume using VolumeWriteBytes metric.
     """
@@ -150,7 +166,7 @@ def get_ebs_volume_change_rate(cloudwatch_client, volume_id: str, volume_size_gb
     )
 
 
-def get_efs_change_rate(cloudwatch_client, filesystem_id: str, filesystem_size_gb: float, days: int = DEFAULT_SAMPLE_DAYS) -> Optional[DataChangeMetrics]:
+def get_efs_change_rate(cloudwatch_client: Any, filesystem_id: str, filesystem_size_gb: float, days: int = DEFAULT_SAMPLE_DAYS) -> Optional[DataChangeMetrics]:
     """
     Get change rate for an EFS filesystem using DataWriteIOBytes metric.
     """
@@ -176,7 +192,7 @@ def get_efs_change_rate(cloudwatch_client, filesystem_id: str, filesystem_size_g
     )
 
 
-def get_fsx_change_rate(cloudwatch_client, filesystem_id: str, filesystem_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+def get_fsx_change_rate(cloudwatch_client: Any, filesystem_id: str, filesystem_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Get change rate for an FSx filesystem using DataWriteBytes metric.
     Note: Works for FSx for Lustre, Windows, ONTAP, and OpenZFS.
@@ -203,7 +219,7 @@ def get_fsx_change_rate(cloudwatch_client, filesystem_id: str, filesystem_size_g
     )
 
 
-def get_rds_transaction_log_rate(cloudwatch_client, db_instance_id: str, engine: str, days: int = 7) -> Optional[TransactionLogMetrics]:
+def get_rds_transaction_log_rate(cloudwatch_client: Any, db_instance_id: str, engine: str, days: int = 7) -> Optional[TransactionLogMetrics]:
     """
     Get transaction log generation rate for an RDS instance.
 
@@ -237,9 +253,26 @@ def get_rds_transaction_log_rate(cloudwatch_client, db_instance_id: str, engine:
         if not datapoints:
             return None
 
-        # Average transaction log size (this is a rough approximation)
-        avg_log_bytes = sum(dp.get('Average', 0) for dp in datapoints) / len(datapoints)
-        daily_log_gb = avg_log_bytes / (1024 ** 3)
+        # BinLogDiskUsage/TransactionLogsDiskUsage is a GAUGE of currently-retained
+        # log bytes on disk, not a cumulative counter - averaging its raw value (the
+        # previous implementation) conflated "how much log is retained right now"
+        # with "how much log is generated per day," and was wildly sensitive to
+        # whatever retention window happens to be configured (a short rotation
+        # window underreports true generation; a long one overreports it - the
+        # average of the gauge isn't a rate at all). Sort chronologically and sum
+        # the positive day-over-day deltas instead - a genuine (if imperfect - it
+        # undercounts whenever old logs are purged the same day new ones are
+        # written) proxy for actual daily generation, the same delta-based
+        # methodology used for AGR/growth elsewhere in this module.
+        datapoints = sorted(datapoints, key=lambda dp: dp['Timestamp'])
+        values = [dp.get('Average', 0) for dp in datapoints]
+        if len(values) < 2:
+            # A single datapoint has no day-over-day delta to compute at all.
+            return None
+
+        daily_deltas_bytes = [max(0.0, values[i] - values[i - 1]) for i in range(1, len(values))]
+        avg_daily_log_bytes = _steady_state_average(daily_deltas_bytes)
+        daily_log_gb = avg_daily_log_bytes / (1024 ** 3)
 
         return TransactionLogMetrics(
             daily_generation_gb=daily_log_gb,
@@ -249,11 +282,12 @@ def get_rds_transaction_log_rate(cloudwatch_client, db_instance_id: str, engine:
         )
 
     except Exception as e:
-        logger.debug(f"Error getting RDS transaction log metrics for {db_instance_id}: {e}")
+        check_and_raise_auth_error(e, f"get RDS transaction log metrics for {db_instance_id}", "aws")
+        logger.warning(f"Error getting RDS transaction log metrics for {db_instance_id}: {e}")
         return None
 
 
-def get_rds_write_iops_change_rate(cloudwatch_client, db_instance_id: str, allocated_storage_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+def get_rds_write_iops_change_rate(cloudwatch_client: Any, db_instance_id: str, allocated_storage_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Estimate data change rate for RDS using WriteIOPS.
 
@@ -288,12 +322,23 @@ def get_rds_write_iops_change_rate(cloudwatch_client, db_instance_id: str, alloc
     )
 
 
-def get_s3_change_rate(cloudwatch_client, bucket_name: str, bucket_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+def get_s3_change_rate(cloudwatch_client: Any, bucket_name: str, bucket_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Estimate S3 bucket change rate using NumberOfObjects delta.
 
-    Note: S3 doesn't have direct write throughput metrics. This uses object count changes
-    as a rough proxy for change rate.
+    S3's only always-available CloudWatch metrics (BucketSizeBytes,
+    NumberOfObjects) are daily snapshots, not write-throughput deltas - unlike
+    every other change-rate function in this module, there is no direct
+    "bytes written" signal to fall back on here. This is a genuinely weaker
+    proxy: it is blind to any write that doesn't change the object COUNT (an
+    in-place overwrite of an existing key looks identical to zero activity).
+    A better metric (BytesUploaded) exists in AWS/S3's "request metrics," but
+    those are an opt-in, paid feature keyed by a customer-assigned FilterId
+    this tool has no way to discover without an additional API call and a new
+    permission - not implemented; see format_change_rate_output()'s S3 note,
+    which surfaces this limitation in the collected JSON output itself.
+
+    Treat the result as a lower bound on real change, not a point estimate.
     """
     try:
         end_time = datetime.now(timezone.utc)
@@ -328,7 +373,7 @@ def get_s3_change_rate(cloudwatch_client, bucket_name: str, bucket_size_gb: floa
         if not object_changes:
             return None
 
-        avg_daily_object_change = sum(object_changes) / len(object_changes)
+        avg_daily_object_change = _steady_state_average(object_changes)
         total_objects = sorted_points[-1].get('Average', 1)
 
         # Estimate change percentage based on object churn
@@ -345,7 +390,8 @@ def get_s3_change_rate(cloudwatch_client, bucket_name: str, bucket_size_gb: floa
         )
 
     except Exception as e:
-        logger.debug(f"Error getting S3 change rate for {bucket_name}: {e}")
+        check_and_raise_auth_error(e, f"get S3 change rate for {bucket_name}", "aws")
+        logger.warning(f"Error getting S3 change rate for {bucket_name}: {e}")
         return None
 
 
@@ -353,7 +399,7 @@ def get_s3_change_rate(cloudwatch_client, bucket_name: str, bucket_size_gb: floa
 # Azure Monitor Change Rate Collection
 # ============================================================================
 
-def get_azure_monitor_client(credential, subscription_id: str):
+def get_azure_monitor_client(credential: Any, subscription_id: str) -> Optional[Any]:
     """Get Azure Monitor client."""
     try:
         from azure.mgmt.monitor import MonitorManagementClient
@@ -364,7 +410,7 @@ def get_azure_monitor_client(credential, subscription_id: str):
 
 
 def get_azure_metric_average(
-    monitor_client,
+    monitor_client: Any,
     resource_id: str,
     metric_name: str,
     days: int = 7,
@@ -386,28 +432,27 @@ def get_azure_metric_average(
             aggregation=aggregation
         )
 
-        total_value = 0
-        data_points = 0
+        daily_values = []
 
         for metric in response.value:
             for timeseries in metric.timeseries:
                 for data in timeseries.data:
                     value = getattr(data, aggregation.lower(), None)
                     if value is not None:
-                        total_value += value
-                        data_points += 1
+                        daily_values.append(value)
 
-        if data_points == 0:
+        if not daily_values:
             return None
 
-        return total_value / data_points
+        return _steady_state_average(daily_values)
 
     except Exception as e:
-        logger.debug(f"Error getting Azure metric {metric_name}: {e}")
+        check_and_raise_auth_error(e, f"get Azure metric {metric_name}", "azure")
+        logger.warning(f"Error getting Azure metric {metric_name}: {e}")
         return None
 
 
-def get_azure_vm_change_rate(monitor_client, vm_resource_id: str, total_disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+def get_azure_vm_change_rate(monitor_client: Any, vm_resource_id: str, total_disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Get change rate for an Azure VM using VM-level Disk Write Bytes metric.
 
@@ -449,7 +494,7 @@ def get_azure_vm_change_rate(monitor_client, vm_resource_id: str, total_disk_siz
     )
 
 
-def get_azure_disk_change_rate(monitor_client, disk_resource_id: str, disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+def get_azure_disk_change_rate(monitor_client: Any, disk_resource_id: str, disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Get change rate for an Azure managed disk using Disk Write Bytes metric.
 
@@ -494,7 +539,7 @@ def get_azure_disk_change_rate(monitor_client, disk_resource_id: str, disk_size_
     )
 
 
-def get_azure_sql_transaction_log_rate(monitor_client, resource_id: str, days: int = 7) -> Optional[TransactionLogMetrics]:
+def get_azure_sql_transaction_log_rate(monitor_client: Any, resource_id: str, days: int = 7) -> Optional[TransactionLogMetrics]:
     """
     Estimate data change rate for Azure SQL Database using storage metric delta.
 
@@ -523,21 +568,30 @@ def get_azure_sql_transaction_log_rate(monitor_client, resource_id: str, days: i
             aggregation='Average'
         )
 
-        # Collect daily storage values
-        daily_values = []
+        # Collect (timestamp, value) pairs - MetricValue's real field is
+        # `time_stamp` (confirmed against the installed azure-mgmt-monitor SDK's
+        # MetricValue._attribute_map: {'time_stamp': {'key': 'timeStamp', ...}}).
+        daily_points = []
         for metric in response.value:
             for timeseries in metric.timeseries:
                 for data in timeseries.data:
                     value = getattr(data, 'average', None)
-                    if value is not None:
-                        daily_values.append(value)
+                    timestamp = getattr(data, 'time_stamp', None)
+                    if value is not None and timestamp is not None:
+                        daily_points.append((timestamp, value))
 
-        if len(daily_values) < 2:
+        if len(daily_points) < 2:
             # Need at least 2 data points to calculate delta
             return None
 
-        # Sort chronologically and calculate daily deltas
-        daily_values.sort()  # Assuming chronological order in query
+        # Sort chronologically by the real timestamp - NOT by value, which is a
+        # different bug (previously `daily_values.sort()` sorted the bare values
+        # themselves, silently corrupting the delta for any non-monotonic sample:
+        # e.g. readings [100, 150, 80, 130] sort to [80, 100, 130, 150], giving
+        # deltas [20, 30, 20] (avg 23.3) instead of the true day-order deltas
+        # [50, 0, 50] (avg 33.3) - a ~30% error with no error raised anywhere).
+        daily_points.sort(key=lambda point: point[0])
+        daily_values = [value for _timestamp, value in daily_points]
         deltas = []
         for i in range(1, len(daily_values)):
             delta = max(0, daily_values[i] - daily_values[i-1])  # Only count growth
@@ -547,7 +601,7 @@ def get_azure_sql_transaction_log_rate(monitor_client, resource_id: str, days: i
             return None
 
         # Average daily growth in bytes, convert to GB
-        avg_daily_growth_bytes = sum(deltas) / len(deltas)
+        avg_daily_growth_bytes = _steady_state_average(deltas)
         daily_growth_gb = avg_daily_growth_bytes / (1024 ** 3)
 
         return TransactionLogMetrics(
@@ -558,23 +612,31 @@ def get_azure_sql_transaction_log_rate(monitor_client, resource_id: str, days: i
         )
 
     except Exception as e:
-        logger.debug(f"Error getting Azure SQL storage metrics for {resource_id}: {e}")
+        check_and_raise_auth_error(e, f"get Azure SQL storage metrics for {resource_id}", "azure")
+        logger.warning(f"Error getting Azure SQL storage metrics for {resource_id}: {e}")
         return None
 
 
 def _azure_metric_latest_value(
-    monitor_client,
+    monitor_client: Any,
     resource_uri: str,
     metric_name: str,
     days: int = 3,
     aggregation: str = 'Average',
     interval: str = 'PT1H',
+    error_sink: Optional[List[str]] = None,
     metric_filter: Optional[str] = None,
 ) -> Optional[float]:
     """Return the most recent non-null value for an Azure Monitor metric, or None.
 
+    error_sink, if given, gets the exact failure text appended on error - this
+    always logs at WARNING regardless, but callers that aggregate many of these
+    calls (e.g. one per file share) can use error_sink to surface a concrete
+    example alongside a rollup count instead of relying on the caller having to
+    scroll back through potentially thousands of per-resource WARNING lines.
+
     metric_filter is an OData filter string (e.g. "FileShare eq 'myshare'") used
-    to scope the metric to one dimension value, such as a single file share.
+    to scope the metric to one dimension value.
     """
     try:
         end_time = datetime.now(timezone.utc)
@@ -597,13 +659,20 @@ def _azure_metric_latest_value(
                     value = getattr(data, attr, None)
                     if value is not None:
                         return value
+        if error_sink is not None:
+            error_sink.append(f"{metric_name}: metric returned no data points in the last {days}d")
         return None
     except Exception as e:
-        logger.debug(f"Error getting Azure metric {metric_name} for {resource_uri}: {e}")
+        check_and_raise_auth_error(e, f"get Azure metric {metric_name} for {resource_uri}", "azure")
+        logger.warning(f"Error getting Azure metric {metric_name} for {resource_uri}: {e}")
+        if error_sink is not None:
+            error_sink.append(f"{metric_name}: {e}")
         return None
 
 
-def get_azure_storage_account_capacity(monitor_client, storage_account_id: str) -> Optional[float]:
+def get_azure_storage_account_capacity(
+    monitor_client: Any, storage_account_id: str, error_sink: Optional[List[str]] = None
+) -> Optional[float]:
     """Get used capacity for an Azure Storage Account from Azure Monitor.
 
     UsedCapacity is emitted once per day with up to ~24h lag, so we sample a
@@ -613,14 +682,17 @@ def get_azure_storage_account_capacity(monitor_client, storage_account_id: str) 
         Used capacity in GB, or None if metric unavailable.
     """
     value = _azure_metric_latest_value(
-        monitor_client, storage_account_id, 'UsedCapacity', days=3, aggregation='Average'
+        monitor_client, storage_account_id, 'UsedCapacity', days=3, aggregation='Average',
+        error_sink=error_sink,
     )
     if value is None:
         return None
     return value / (1024 ** 3)
 
 
-def get_azure_blob_service_metrics(monitor_client, storage_account_id: str) -> Dict[str, Optional[float]]:
+def get_azure_blob_service_metrics(
+    monitor_client: Any, storage_account_id: str, error_sink: Optional[List[str]] = None
+) -> Dict[str, Optional[float]]:
     """Get blob-service-level metrics (capacity, blob count, container count).
 
     These are emitted on the /blobServices/default child of the storage account
@@ -629,13 +701,13 @@ def get_azure_blob_service_metrics(monitor_client, storage_account_id: str) -> D
     """
     blob_uri = f"{storage_account_id}/blobServices/default"
     capacity_bytes = _azure_metric_latest_value(
-        monitor_client, blob_uri, 'BlobCapacity', days=3, aggregation='Average'
+        monitor_client, blob_uri, 'BlobCapacity', days=3, aggregation='Average', error_sink=error_sink
     )
     blob_count = _azure_metric_latest_value(
-        monitor_client, blob_uri, 'BlobCount', days=3, aggregation='Average'
+        monitor_client, blob_uri, 'BlobCount', days=3, aggregation='Average', error_sink=error_sink
     )
     container_count = _azure_metric_latest_value(
-        monitor_client, blob_uri, 'ContainerCount', days=3, aggregation='Average'
+        monitor_client, blob_uri, 'ContainerCount', days=3, aggregation='Average', error_sink=error_sink
     )
     return {
         'capacity_gb': capacity_bytes / (1024 ** 3) if capacity_bytes is not None else None,
@@ -644,29 +716,9 @@ def get_azure_blob_service_metrics(monitor_client, storage_account_id: str) -> D
     }
 
 
-def get_azure_fileshare_capacity(monitor_client, storage_account_id: str, share_name: str) -> Optional[float]:
-    """Get actual used capacity for a single Azure File Share from Azure Monitor.
-
-    The Storage Resource Provider's file_shares.list()/get() APIs don't reliably
-    expose real usage (list()'s expand only supports deleted/snapshots, not stats,
-    and the current SDK model has no share_usage_bytes field at all). FileCapacity
-    on the /fileServices/default child supports a FileShare dimension, so we filter
-    to the specific share to get its actual used bytes.
-
-    Returns:
-        Used capacity in GB, or None if the metric is unavailable for this share.
-    """
-    file_uri = f"{storage_account_id}/fileServices/default"
-    capacity_bytes = _azure_metric_latest_value(
-        monitor_client, file_uri, 'FileCapacity', days=3, aggregation='Average',
-        metric_filter=f"FileShare eq '{share_name}'",
-    )
-    if capacity_bytes is None:
-        return None
-    return capacity_bytes / (1024 ** 3)
-
-
-def get_azure_sql_database_capacity(monitor_client, database_resource_id: str) -> Optional[float]:
+def get_azure_sql_database_capacity(
+    monitor_client: Any, database_resource_id: str, error_sink: Optional[List[str]] = None
+) -> Optional[float]:
     """
     Get actual used storage for an Azure SQL Database from Azure Monitor.
 
@@ -675,6 +727,7 @@ def get_azure_sql_database_capacity(monitor_client, database_resource_id: str) -
     Args:
         monitor_client: Azure Monitor client
         database_resource_id: Full resource ID of the SQL database
+        error_sink: optional list to append the exact failure text to
 
     Returns:
         Used storage in GB, or None if metric unavailable
@@ -707,21 +760,146 @@ def get_azure_sql_database_capacity(monitor_client, database_resource_id: str) -
                 break
 
         if latest_value is None:
+            if error_sink is not None:
+                error_sink.append("storage: metric returned no data points in the last 1d")
             return None
 
         # Convert bytes to GB
         return latest_value / (1024 ** 3)
 
     except Exception as e:
-        logger.debug(f"Error getting Azure SQL database capacity for {database_resource_id}: {e}")
+        check_and_raise_auth_error(e, f"get Azure SQL database capacity for {database_resource_id}", "azure")
+        logger.warning(f"Error getting Azure SQL database capacity for {database_resource_id}: {e}")
+        if error_sink is not None:
+            error_sink.append(f"storage: {e}")
         return None
+
+
+def get_azure_sql_managed_instance_capacity(
+    monitor_client: Any, mi_resource_id: str, error_sink: Optional[List[str]] = None
+) -> Optional[float]:
+    """Get actual used storage for an Azure SQL Managed Instance from Azure Monitor.
+
+    storage_space_used_mb has no dimensions - it's emitted at the instance
+    level, not per-database, so no summing across databases is needed. Its
+    values are megabytes despite the metric's documented Unit of "Count".
+    Verified against https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-sql-managedinstances-metrics
+
+    Returns:
+        Used storage in GB, or None if metric unavailable.
+    """
+    value = _azure_metric_latest_value(
+        monitor_client, mi_resource_id, 'storage_space_used_mb', days=3, aggregation='Average',
+        error_sink=error_sink,
+    )
+    if value is None:
+        return None
+    return value / 1024.0
+
+
+def get_azure_cosmosdb_capacity(
+    monitor_client: Any, account_resource_id: str, error_sink: Optional[List[str]] = None
+) -> Optional[float]:
+    """Get actual used storage (data + index) for a Cosmos DB account from Azure Monitor.
+
+    DataUsage and IndexUsage both carry CollectionName/DatabaseName/Region
+    dimensions, but querying without a dimension filter returns the
+    pre-aggregated account-wide total, so no per-container enumeration is
+    needed. Verified against https://learn.microsoft.com/en-us/azure/cosmos-db/monitor-reference
+    (DocumentQuota is the provisioning/quota figure and AvailableStorage is
+    deprecated - neither represents actual usage, so neither is used here).
+
+    Returns:
+        Used storage (data + index) in GB, or None if both metrics are unavailable.
+    """
+    data_bytes = _azure_metric_latest_value(
+        monitor_client, account_resource_id, 'DataUsage', days=3, aggregation='Total',
+        error_sink=error_sink,
+    )
+    index_bytes = _azure_metric_latest_value(
+        monitor_client, account_resource_id, 'IndexUsage', days=3, aggregation='Total',
+        error_sink=error_sink,
+    )
+    if data_bytes is None and index_bytes is None:
+        return None
+    return ((data_bytes or 0) + (index_bytes or 0)) / (1024 ** 3)
+
+
+def get_azure_flexible_server_storage_used(
+    monitor_client: Any, server_resource_id: str, error_sink: Optional[List[str]] = None
+) -> Optional[float]:
+    """Get actual used storage for a PostgreSQL/MySQL flexible server from Azure Monitor.
+
+    'storage_used' (bytes) is the identical metric name on both
+    Microsoft.DBforPostgreSQL/flexibleServers and Microsoft.DBforMySQL/flexibleServers,
+    verified against each resource type's "Supported metrics" reference page -
+    shared by both callers rather than duplicated.
+
+    Returns:
+        Used storage in GB, or None if metric unavailable.
+    """
+    value = _azure_metric_latest_value(
+        monitor_client, server_resource_id, 'storage_used', days=3, aggregation='Average',
+        error_sink=error_sink,
+    )
+    if value is None:
+        return None
+    return value / (1024 ** 3)
+
+
+def get_azure_redis_used_memory(
+    monitor_client: Any, cache_resource_id: str, error_sink: Optional[List[str]] = None
+) -> Optional[float]:
+    """Get actual used memory for a non-clustered Azure Cache for Redis instance.
+
+    Callers must only use this for shard_count == 0 caches: Monitor's docs
+    confirm 'usedmemory' has a ShardId dimension but don't state whether the
+    unfiltered account-level value sums across shards - the docs' one
+    explicit clustered-aggregation caution (Total Keys) says clustered
+    metrics return the max shard, not a true total, so assuming sum-across-
+    shards here without confirmation would repeat the exact mistake this
+    audit exists to catch. Verified against
+    https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-cache-redis-metrics
+
+    Returns:
+        Used memory in GB, or None if metric unavailable.
+    """
+    value = _azure_metric_latest_value(
+        monitor_client, cache_resource_id, 'usedmemory', days=3, aggregation='Maximum',
+        error_sink=error_sink,
+    )
+    if value is None:
+        return None
+    return value / (1024 ** 3)
+
+
+def get_azure_netapp_volume_usage(
+    monitor_client: Any, volume_resource_id: str, error_sink: Optional[List[str]] = None
+) -> Optional[float]:
+    """Get actual logical (used) size for an Azure NetApp Files volume from Azure Monitor.
+
+    VolumeLogicalSize is "used bytes" (includes active file system + snapshots),
+    distinct from VolumeAllocatedSize (the provisioned quota - the SDK's
+    usage_threshold field). Verified against
+    https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-netapp-netappaccounts-capacitypools-volumes-metrics
+
+    Returns:
+        Used size in GB, or None if metric unavailable.
+    """
+    value = _azure_metric_latest_value(
+        monitor_client, volume_resource_id, 'VolumeLogicalSize', days=1, aggregation='Average',
+        error_sink=error_sink,
+    )
+    if value is None:
+        return None
+    return value / (1024 ** 3)
 
 
 # ============================================================================
 # GCP Cloud Monitoring Change Rate Collection
 # ============================================================================
 
-def get_gcp_monitoring_client(project_id: str):
+def get_gcp_monitoring_client(project_id: str) -> Optional[Any]:
     """Get GCP Cloud Monitoring client."""
     try:
         from google.cloud import monitoring_v3
@@ -732,7 +910,7 @@ def get_gcp_monitoring_client(project_id: str):
 
 
 def get_gcp_metric_average(
-    monitoring_client,
+    monitoring_client: Any,
     project_id: str,
     metric_type: str,
     resource_labels: Dict[str, str],
@@ -766,27 +944,26 @@ def get_gcp_metric_average(
             }
         )
 
-        total_value = 0
-        data_points = 0
+        daily_values = []
 
         for time_series in results:
             for point in time_series.points:
                 value = point.value.double_value or point.value.int64_value
                 if value:
-                    total_value += value
-                    data_points += 1
+                    daily_values.append(value)
 
-        if data_points == 0:
+        if not daily_values:
             return None
 
-        return total_value / data_points
+        return _steady_state_average(daily_values)
 
     except Exception as e:
-        logger.debug(f"Error getting GCP metric {metric_type}: {e}")
+        check_and_raise_auth_error(e, f"get GCP metric {metric_type}", "gcp")
+        logger.warning(f"Error getting GCP metric {metric_type}: {e}")
         return None
 
 
-def get_gcp_disk_change_rate(monitoring_client, project_id: str, disk_name: str, zone: str, disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+def get_gcp_disk_change_rate(monitoring_client: Any, project_id: str, disk_name: str, zone: str, disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Get change rate for a GCP persistent disk using write_bytes_count metric.
     """
@@ -812,9 +989,95 @@ def get_gcp_disk_change_rate(monitoring_client, project_id: str, disk_name: str,
     )
 
 
-def get_cloudsql_change_rate(monitoring_client, project_id: str, instance_id: str, disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
+def compute_dcr_from_snapshot_deltas(
+    snapshot_points: List[Tuple[Union[datetime, str], float]],
+    base_size_gb: float,
+) -> Optional[DataChangeMetrics]:
+    """Derive a real, measured Daily Change Rate from a source resource's own
+    snapshot history, rather than a live write-throughput metric.
+
+    This is a genuinely different (and, where the underlying snapshot data
+    supports it, arguably better) DCR signal than every other function in this
+    module: `get_ebs_volume_change_rate`/`get_azure_vm_change_rate`/
+    `get_gcp_disk_change_rate` etc. all estimate DCR from raw write bytes/IOPS,
+    which has no concept of deduplication and overcounts any workload that
+    rewrites the same blocks repeatedly (DB page updates, swap, in-place log
+    rotation). A snapshot chain's own incremental storage growth - each
+    snapshot's real, already-deduplicated stored footprint since the prior one -
+    is a direct measurement of how much *unique* data actually changed, which is
+    much closer to what a backup product's incremental capture would see.
+
+    Today this is only meaningfully wireable for GCP disk snapshots
+    (`gcp:compute:snapshot`'s `storage_bytes` is genuinely incremental/dedup-aware
+    per the installed google-cloud-compute SDK's own field docs - see
+    lib/gcp/compute.py's collect_disk_snapshots()). AWS EBS/RDS snapshots and
+    Azure disk/SQL snapshots do not yet have a real per-snapshot incremental-size
+    field wired up (size_gb is 0.0/'unavailable' for those today - see the
+    "Deferred" tables in docs/v2-refactor-plan.md) - feeding zeros through this
+    function would just always yield 0% change, so it isn't wired in for those
+    clouds yet. Revisit once/if real incremental snapshot sizing lands there.
+
+    Args:
+        snapshot_points: (timestamp, incremental_size_gb) pairs, one per
+            snapshot in the source resource's chain, in ANY order (sorted
+            internally). Timestamps may be datetime objects or ISO-8601 strings
+            (GCP's `creation_timestamp` is a string).
+        base_size_gb: the source resource's own total size, for the percentage.
+
+    Returns:
+        DataChangeMetrics with daily_change_gb/daily_change_percent, or None if
+        fewer than 2 snapshots are given (no elapsed period to measure across).
+    """
+    if len(snapshot_points) < 2:
+        return None
+
+    def _as_datetime(value: Union[datetime, str]) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        # GCP's creation_timestamp is RFC3339, e.g. "2026-01-15T08:00:00.123-08:00"
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+
+    points = sorted(
+        ((_as_datetime(ts), size_gb) for ts, size_gb in snapshot_points),
+        key=lambda p: p[0]
+    )
+
+    elapsed = points[-1][0] - points[0][0]
+    elapsed_days = max(elapsed.total_seconds() / 86400, 1.0)  # floor at 1 day - avoid divide-by-zero for same-day snapshots
+
+    # Sum every snapshot's own incremental footprint across the whole window
+    # (including the first one - it's still real, measured stored bytes
+    # attributable to this chain during the sample period, not a baseline to
+    # discard) and spread it evenly across the elapsed period.
+    total_incremental_gb = sum(size_gb for _ts, size_gb in points)
+    daily_change_gb = total_incremental_gb / elapsed_days
+    daily_change_percent = (daily_change_gb / base_size_gb * 100) if base_size_gb > 0 else None
+
+    return DataChangeMetrics(
+        daily_change_gb=daily_change_gb,
+        daily_change_percent=daily_change_percent,
+        sample_days=round(elapsed_days, 1),
+        data_points=len(points),
+    )
+
+
+def get_cloudsql_change_rate(monitoring_client: Any, project_id: str, instance_id: str, disk_size_gb: float, days: int = 7) -> Optional[DataChangeMetrics]:
     """
     Get change rate for a Cloud SQL instance using disk write metrics.
+
+    NOTE on `daily_change_percent`: this is currently ALWAYS None for Cloud SQL.
+    `disk_size_gb` here is `resource.size_gb`, and Cloud SQL instances deliberately
+    always report `size_gb=0.0`/`size_source='unavailable'` (no verified real-usage
+    Cloud Monitoring metric exists yet for Cloud SQL storage - see the "Deferred"
+    table in docs/v2-refactor-plan.md) - so the `disk_size_gb > 0` guard below can
+    never pass. This is NOT a bug in this function: `daily_change_gb` (the absolute
+    measured write volume) is still real and returned as-is; only the percentage,
+    which structurally needs a real total-size denominator this collector doesn't
+    have yet, is honestly left unset rather than divided against a value known to
+    be zero. Wiring up real Cloud SQL storage usage is separate, already-deferred
+    work (would also fix this) - don't "fix" this by substituting an
+    allocated/provisioned capacity value here; that would violate the same
+    real-usage-only policy that zeroed size_gb in the first place.
     """
     daily_write_ops = get_gcp_metric_average(
         monitoring_client,
@@ -906,6 +1169,27 @@ def format_change_rate_output(summaries: Dict[str, ChangeRateSummary]) -> Dict[s
     """
     Format change rate summaries for JSON output.
     """
+    notes = [
+        "Data change rates are estimates based on write throughput metrics",
+        "Transaction log rates apply to database services (always 100% capture)",
+        "Use these values to override default DCR assumptions in sizing tools",
+    ]
+    # S3 has no write-throughput metric at all (confirmed: AWS/S3's only
+    # always-available CloudWatch metrics are BucketSizeBytes/NumberOfObjects,
+    # both daily snapshots, not deltas). get_s3_change_rate() estimates DCR from
+    # NumberOfObjects deltas - a weaker proxy than every other service here,
+    # since it's blind to any write that doesn't change the object COUNT (an
+    # in-place overwrite of an existing key looks like zero change). A better
+    # metric (BytesUploaded) exists but requires the customer to have already
+    # opted into paid S3 request metrics AND a metrics-configuration FilterId
+    # this tool doesn't have - not wired up; flagged here instead.
+    if any(summary.service_family == 'S3' for summary in summaries.values()):
+        notes.append(
+            "S3 change rate is estimated from NumberOfObjects deltas, not actual bytes written - "
+            "it will under-report change for buckets where existing objects are overwritten in "
+            "place (object count unchanged, content changed). Treat S3 DCR values as a lower bound"
+        )
+
     return {
         "change_rates": {
             key: summary.to_dict()
@@ -914,11 +1198,7 @@ def format_change_rate_output(summaries: Dict[str, ChangeRateSummary]) -> Dict[s
         "collection_metadata": {
             "collected_at": datetime.now(timezone.utc).isoformat(),
             "sample_period_days": 7,
-            "notes": [
-                "Data change rates are estimates based on write throughput metrics",
-                "Transaction log rates apply to database services (always 100% capture)",
-                "Use these values to override default DCR assumptions in sizing tools"
-            ]
+            "notes": notes,
         }
     }
 
@@ -992,16 +1272,27 @@ def finalize_change_rate_output(
                 summary['data_change']['daily_change_gb'] / summary['total_size_gb'] * 100
             )
 
+    notes = [
+        f'Data change rates are estimates based on {provider_note} write throughput metrics',
+        'Transaction log rates apply to database services (always 100% capture)',
+        'Use these values to override default DCR assumptions in sizing tools',
+    ]
+    # See get_s3_change_rate()'s docstring - S3 has no write-throughput metric
+    # at all, so its DCR is estimated from NumberOfObjects deltas, a weaker
+    # proxy than every other service here (blind to same-key overwrites).
+    if any(summary.get('service_family') == 'S3' for summary in all_change_rates.values()):
+        notes.append(
+            "S3 change rate is estimated from NumberOfObjects deltas, not actual bytes written - "
+            "it will under-report change for buckets where existing objects are overwritten in "
+            "place (object count unchanged, content changed). Treat S3 DCR values as a lower bound"
+        )
+
     return {
         'change_rates': all_change_rates,
         'collection_metadata': {
             'collected_at': datetime.now(timezone.utc).isoformat(),
             'sample_period_days': sample_days,
-            'notes': [
-                f'Data change rates are estimates based on {provider_note} write throughput metrics',
-                'Transaction log rates apply to database services (always 100% capture)',
-                'Use these values to override default DCR assumptions in sizing tools'
-            ]
+            'notes': notes,
         }
     }
 
