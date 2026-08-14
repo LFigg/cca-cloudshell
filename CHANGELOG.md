@@ -5,6 +5,12 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-08-14
+
+### Added
+
+- **`--skip-permission-failures` for the Azure collector**: excludes (rather than aborts on) subscriptions that fail the permission preflight, logging each one. Every subscription that remains is still fully verified before collection starts; the run still exits if every subscription fails.
+
 ## [2.0.2] - 2026-08-14
 
 ### Fixed

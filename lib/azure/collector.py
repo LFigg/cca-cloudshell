@@ -138,6 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Specific subscription ID (default: all accessible)')
     parser.add_argument('--exclude-subscriptions', dest='exclude_subscriptions',
                         help='Comma-separated subscription IDs to skip (default: none)')
+    parser.add_argument('--skip-permission-failures', action='store_true',
+                        help='Log and exclude subscriptions that fail the permission preflight '
+                             'instead of aborting the whole run (default: abort)')
     parser.add_argument('--regions',
                         help='Comma-separated list of regions to filter (e.g., eastus,westus2)')
     parser.add_argument('--output', help='Output directory or blob URL', default='.')
@@ -237,9 +240,13 @@ def run_collection(args) -> None:
     # handling below) or, worse, a resource type silently keeps degraded
     # placeholder data with no clear signal anything was wrong (e.g. Azure
     # Monitor capacity lookups leaving file shares at quota instead of usage).
-    # There is no flag to skip this - if the collection needs a permission,
-    # it must be verified up front so it can be fixed once, rather than
-    # discovered partway through (or after) a run.
+    # By default there is no flag to skip this - if the collection needs a
+    # permission, it must be verified up front so it can be fixed once,
+    # rather than discovered partway through (or after) a run.
+    # --skip-permission-failures is a narrow, explicit exception: it excludes
+    # only the specific subscription(s) that failed the check (logged below)
+    # and still verifies every subscription that remains, so this preflight's
+    # guarantee holds for everything that actually gets collected.
     logger.info("Verifying Azure permissions for this run's configuration...")
     print("Verifying Azure permissions before starting collection...")
     permission_results = verify_azure_permissions(
@@ -248,18 +255,35 @@ def run_collection(args) -> None:
     subs_missing_permissions = [r for r in permission_results if r.missing]
     if subs_missing_permissions:
         report = format_permission_report(permission_results)
-        logger.error(
-            f"Permission check failed for {len(subs_missing_permissions)}/{len(subscriptions)} "
-            f"subscription(s). Collection was not started.\n{report}"
+        if not args.skip_permission_failures:
+            logger.error(
+                f"Permission check failed for {len(subs_missing_permissions)}/{len(subscriptions)} "
+                f"subscription(s). Collection was not started.\n{report}"
+            )
+            print(
+                f"\n✗ Permission check failed for {len(subs_missing_permissions)}/{len(subscriptions)} "
+                f"subscription(s) - collection was not started.\n{report}\n\n"
+                "Grant the missing role assignment(s) above, narrow this run with "
+                "--subscription-id/--exclude-subscriptions/--skip-change-rate/--skip-pvc/--no-costs "
+                "as appropriate, or pass --skip-permission-failures to collect from the "
+                "remaining subscriptions instead, then re-run."
+            )
+            sys.exit(1)
+
+        skipped_ids = {r.subscription_id for r in subs_missing_permissions}
+        logger.warning(
+            f"--skip-permission-failures set: excluding {len(subs_missing_permissions)}/{len(subscriptions)} "
+            f"subscription(s) that failed the permission check.\n{report}"
         )
         print(
-            f"\n✗ Permission check failed for {len(subs_missing_permissions)}/{len(subscriptions)} "
-            f"subscription(s) - collection was not started.\n{report}\n\n"
-            "Grant the missing role assignment(s) above (or narrow this run with "
-            "--subscription-id/--skip-change-rate/--skip-pvc/--no-costs as appropriate), "
-            "then re-run."
+            f"\n⚠ Skipping {len(subs_missing_permissions)}/{len(subscriptions)} subscription(s) that "
+            f"failed the permission check (--skip-permission-failures set):\n{report}\n"
         )
-        sys.exit(1)
+        subscriptions = [s for s in subscriptions if s['id'] not in skipped_ids]
+        permission_results = [r for r in permission_results if r.subscription_id not in skipped_ids]
+        if not subscriptions:
+            logger.error("All subscriptions failed the permission check. Nothing to collect.")
+            sys.exit(1)
 
     subs_with_warnings = [r for r in permission_results if r.warnings and not r.missing]
     if subs_with_warnings:

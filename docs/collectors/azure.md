@@ -14,6 +14,9 @@ python3 collect.py --cloud azure --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxx
 # All accessible subscriptions except a few
 python3 collect.py --cloud azure --exclude-subscriptions xxxxxxxx-...,yyyyyyyy-...
 
+# Skip subscriptions that fail the permission preflight, instead of aborting the whole run
+python3 collect.py --cloud azure --skip-permission-failures
+
 # Custom output directory
 python3 collect.py --cloud azure -o ./my_output/
 
@@ -33,6 +36,7 @@ python3 collect.py --cloud azure --no-costs
 |--------|-------------|
 | `--subscription-id ID` | Specific subscription to collect from |
 | `--exclude-subscriptions IDS` | Comma-separated subscription IDs to skip |
+| `--skip-permission-failures` | Exclude (rather than abort on) subscriptions that fail the permission preflight |
 | `-o, --output PATH` | Output directory |
 | `--regions REGIONS` | Filter to specific regions (comma-separated) |
 | `--include-resource-ids` | Include full resource IDs (default: redact) |
