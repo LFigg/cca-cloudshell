@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     import boto3
 
 from .constants import DEFAULT_SAMPLE_DAYS, bytes_to_gb
-from .utils import check_and_raise_auth_error
+from .utils import check_and_raise_auth_error, isoformat_z
 
 logger = logging.getLogger(__name__)
 
@@ -83,18 +83,6 @@ class ChangeRateSummary:
         if self.transaction_logs:
             result["transaction_logs"] = asdict(self.transaction_logs)
         return result
-
-
-def _isoformat_z(dt: datetime) -> str:
-    """Format a UTC datetime with a 'Z' suffix instead of '+00:00'.
-
-    Azure Monitor's timespan query parameter is sent unencoded by the SDK, and
-    a raw '+' in a query string gets decoded by the server as a literal space -
-    turning "...192769+00:00" into "...192769 00:00", which Azure Monitor then
-    rejects as an invalid ISO 8601 interval. 'Z' means the same UTC offset
-    without the ambiguous character.
-    """
-    return dt.isoformat().replace("+00:00", "Z")
 
 
 # ============================================================================
@@ -437,7 +425,7 @@ def get_azure_metric_average(
     try:
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=days)
-        timespan = f"{_isoformat_z(start_time)}/{_isoformat_z(end_time)}"
+        timespan = f"{isoformat_z(start_time)}/{isoformat_z(end_time)}"
 
         response = monitor_client.metrics.list(
             resource_uri=resource_id,
@@ -573,7 +561,7 @@ def get_azure_sql_transaction_log_rate(monitor_client: Any, resource_id: str, da
     try:
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=days)
-        timespan = f"{_isoformat_z(start_time)}/{_isoformat_z(end_time)}"
+        timespan = f"{isoformat_z(start_time)}/{isoformat_z(end_time)}"
 
         response = monitor_client.metrics.list(
             resource_uri=resource_id,
@@ -656,7 +644,7 @@ def _azure_metric_latest_value(
     try:
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=days)
-        timespan = f"{_isoformat_z(start_time)}/{_isoformat_z(end_time)}"
+        timespan = f"{isoformat_z(start_time)}/{isoformat_z(end_time)}"
 
         response = monitor_client.metrics.list(
             resource_uri=resource_uri,
@@ -750,7 +738,7 @@ def get_azure_sql_database_capacity(
     try:
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=1)  # Just need latest value
-        timespan = f"{_isoformat_z(start_time)}/{_isoformat_z(end_time)}"
+        timespan = f"{isoformat_z(start_time)}/{isoformat_z(end_time)}"
 
         response = monitor_client.metrics.list(
             resource_uri=database_resource_id,

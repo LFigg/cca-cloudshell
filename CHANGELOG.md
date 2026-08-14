@@ -5,6 +5,14 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] - 2026-08-14
+
+### Fixed
+
+- **Cost data collection failing for every subscription**: `azure-mgmt-costmanagement`'s pinned `5.0.0` renamed `QueryComparisonExpression`'s `values` constructor kwarg to `values_property`. Every run failed with `QueryComparisonExpression.__init__() got an unexpected keyword argument 'values'` before any cost data could be collected.
+- **Misleading "Bearer token authentication is not permitted for non-TLS...URLs" error**: `CostManagementClient(credential, subscription_id)` passed `subscription_id` into what is actually the client's `base_url` parameter (Cost Management has no client-level subscription; it scopes via the `scope` string passed to `query.usage()`). That silently corrupted the ARM endpoint into a scheme-less string, which is what actually tripped the bearer-token-over-https guard - not a network or proxy issue as it first appeared. Fixed in both the real cost collector and the cost-management permission preflight probe.
+- **Remaining "invalid time interval" Monitor errors**: the permission preflight's own `monitor_metrics()`/`monitor_activity_log()` probes built their timespan/filter strings with `datetime.isoformat()` directly, missing the `+00:00`-decoded-as-space fix already applied to the real collector in 2.0.2. Generalized the fix into `lib.utils.isoformat_z()` and applied it here too.
+
 ## [2.0.3] - 2026-08-14
 
 ### Added

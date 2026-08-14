@@ -50,7 +50,14 @@ def collect_azure_costs(
             QueryTimePeriod,
         )
 
-        client = CostManagementClient(credential, subscription_id)
+        # CostManagementClient has no subscription_id parameter - Cost
+        # Management scopes by the `scope` string passed to query.usage(),
+        # not a client-level subscription. Its 2nd positional param is
+        # actually base_url, so passing subscription_id there used to
+        # silently corrupt the ARM endpoint into a scheme-less string,
+        # which then failed with a misleading "Bearer token authentication
+        # is not permitted for non-TLS protected (non-https) URLs" error.
+        client = CostManagementClient(credential)
         scope = f"/subscriptions/{subscription_id}"
 
         from_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -78,14 +85,14 @@ def collect_azure_costs(
                             dimensions=QueryComparisonExpression(
                                 name="ServiceName",
                                 operator="In",
-                                values=AZURE_BACKUP_FILTERS['service_names'],
+                                values_property=AZURE_BACKUP_FILTERS['service_names'],
                             )
                         ),
                         QueryFilter(
                             dimensions=QueryComparisonExpression(
                                 name="MeterCategory",
                                 operator="In",
-                                values=AZURE_BACKUP_FILTERS['meter_categories'],
+                                values_property=AZURE_BACKUP_FILTERS['meter_categories'],
                             )
                         ),
                     ]

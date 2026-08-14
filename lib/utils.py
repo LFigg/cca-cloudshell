@@ -355,9 +355,21 @@ def generate_run_id() -> str:
     return f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
 
 
+def isoformat_z(dt: datetime) -> str:
+    """Format a UTC datetime with a 'Z' suffix instead of '+00:00'.
+
+    Some cloud APIs (e.g. Azure Monitor) receive this as a raw, unencoded
+    query parameter - and a literal '+' in a query string gets decoded by
+    the server as a space, turning "...192769+00:00" into "...192769 00:00",
+    which those endpoints then reject as an invalid ISO 8601 value. 'Z' means
+    the same UTC offset without the ambiguous character.
+    """
+    return dt.isoformat().replace('+00:00', 'Z')
+
+
 def get_timestamp() -> str:
     """Get current UTC timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    return isoformat_z(datetime.now(timezone.utc))
 
 
 def format_bytes_to_gb(bytes_value: Optional[int]) -> float:

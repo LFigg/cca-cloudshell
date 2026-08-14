@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 from lib.azure.helpers import extract_resource_group
-from lib.utils import is_auth_error
+from lib.utils import is_auth_error, isoformat_z
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +193,7 @@ class _AzurePermissionProbes:
         client = MonitorManagementClient(self.credential, self.subscription_id)
         end = datetime.now(timezone.utc)
         start = end - timedelta(hours=1)
-        filter_str = f"eventTimestamp ge '{start.isoformat()}' and eventTimestamp le '{end.isoformat()}'"
+        filter_str = f"eventTimestamp ge '{isoformat_z(start)}' and eventTimestamp le '{isoformat_z(end)}'"
         _first(client.activity_logs.list(filter=filter_str))
 
     def monitor_metrics(self):
@@ -215,7 +215,7 @@ class _AzurePermissionProbes:
         start = end - timedelta(hours=3)
         client.metrics.list(
             resource_uri=sample,
-            timespan=f"{start.isoformat()}/{end.isoformat()}",
+            timespan=f"{isoformat_z(start)}/{isoformat_z(end)}",
             interval='PT1H',
             metricnames=metric_name,
             aggregation='Average',
@@ -226,7 +226,10 @@ class _AzurePermissionProbes:
         from azure.mgmt.costmanagement import CostManagementClient
         from azure.mgmt.costmanagement.models import QueryDataset, QueryDefinition, QueryTimePeriod
 
-        client = CostManagementClient(self.credential, self.subscription_id)
+        # No subscription_id param on CostManagementClient - see the comment
+        # in lib/azure/cost.py's collect_azure_costs() for why passing it
+        # positionally corrupts the ARM endpoint instead of raising cleanly.
+        client = CostManagementClient(self.credential)
         scope = f"/subscriptions/{self.subscription_id}"
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=1)
