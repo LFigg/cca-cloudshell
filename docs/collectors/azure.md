@@ -11,6 +11,9 @@ python3 collect.py --cloud azure
 # Specific subscription
 python3 collect.py --cloud azure --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
+# All accessible subscriptions except a few
+python3 collect.py --cloud azure --exclude-subscriptions xxxxxxxx-...,yyyyyyyy-...
+
 # Custom output directory
 python3 collect.py --cloud azure -o ./my_output/
 
@@ -29,6 +32,7 @@ python3 collect.py --cloud azure --no-costs
 | Option | Description |
 |--------|-------------|
 | `--subscription-id ID` | Specific subscription to collect from |
+| `--exclude-subscriptions IDS` | Comma-separated subscription IDs to skip |
 | `-o, --output PATH` | Output directory |
 | `--regions REGIONS` | Filter to specific regions (comma-separated) |
 | `--include-resource-ids` | Include full resource IDs (default: redact) |

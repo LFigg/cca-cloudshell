@@ -5,7 +5,17 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v2.0.0 (v2-refactor branch)
+## [2.0.1] - 2026-08-14
+
+### Fixed
+
+- **Azure-only installs crashing on collection**: `lib/change_rate.py` (shared by all four cloud collectors) unconditionally imported `boto3` at module load just for a type hint, so any Azure-only setup (no `boto3` installed) failed immediately with `No module named 'boto3'` once `lib/azure/collector.py` pulled the module in. Fixed by deferring the import under `TYPE_CHECKING` with `from __future__ import annotations`.
+
+### Added
+
+- **`--exclude-subscriptions` for the Azure collector**: comma-separated list of subscription IDs to skip, applied alongside the existing `--subscription-id` filtering.
+
+## [2.0.0] - 2026-08-10
 
 ### Security
 

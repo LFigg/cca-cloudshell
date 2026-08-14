@@ -136,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='CCA CloudShell - Azure Resource Collector')
     parser.add_argument('--subscription-id', '--subscription', dest='subscription_id',
                         help='Specific subscription ID (default: all accessible)')
+    parser.add_argument('--exclude-subscriptions', dest='exclude_subscriptions',
+                        help='Comma-separated subscription IDs to skip (default: none)')
     parser.add_argument('--regions',
                         help='Comma-separated list of regions to filter (e.g., eastus,westus2)')
     parser.add_argument('--output', help='Output directory or blob URL', default='.')
@@ -214,6 +216,17 @@ def run_collection(args) -> None:
             sys.exit(1)
     else:
         subscriptions = [s for s in all_subscriptions if s['state'] == 'Enabled']
+
+    if args.exclude_subscriptions:
+        excluded_ids = {s.strip() for s in args.exclude_subscriptions.split(',') if s.strip()}
+        found_ids = {s['id'] for s in subscriptions}
+        unmatched = excluded_ids - found_ids
+        if unmatched:
+            logger.warning(f"--exclude-subscriptions ID(s) not found among scanned subscriptions: {', '.join(sorted(unmatched))}")
+        subscriptions = [s for s in subscriptions if s['id'] not in excluded_ids]
+        if not subscriptions:
+            logger.error("All subscriptions were excluded via --exclude-subscriptions. Nothing to collect.")
+            sys.exit(1)
 
     logger.info(f"Found {len(subscriptions)} subscription(s) to scan")
 

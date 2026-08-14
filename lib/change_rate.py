@@ -8,13 +8,16 @@ Dual-metric approach:
 - Data change rate: Percentage/GB of data that changes daily (for incremental backups)
 - Transaction log rate: GB of logs generated daily (always 100% capture rate)
 """
+from __future__ import annotations
+
 import logging
 import statistics
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-import boto3
+if TYPE_CHECKING:
+    import boto3
 
 from .constants import DEFAULT_SAMPLE_DAYS, bytes_to_gb
 from .utils import check_and_raise_auth_error
