@@ -5,6 +5,13 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-08-14
+
+### Fixed
+
+- **Redis permission preflight crashing collection**: the check called `client.redis.list()`, which doesn't exist on `RedisOperations` (only `list_by_subscription()`/`list_by_resource_group()` do). Every Azure run failed the preflight with `'RedisOperations' object has no attribute 'list'` before collection could start.
+- **Azure Monitor rejecting change-rate metric requests**: `lib/change_rate.py` built the Monitor `timespan` query parameter with `datetime.isoformat()`, whose `+00:00` UTC offset is sent unencoded and decoded by Azure's endpoint as a literal space, producing a malformed interval Azure Monitor rejected with `BadRequest`. Now renders the offset as `Z` instead.
+
 ## [2.0.1] - 2026-08-14
 
 ### Fixed

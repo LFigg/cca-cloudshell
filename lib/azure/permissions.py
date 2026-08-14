@@ -147,7 +147,7 @@ class _AzurePermissionProbes:
     def redis(self):
         from azure.mgmt.redis import RedisManagementClient
         client = RedisManagementClient(self.credential, self.subscription_id)
-        _first(client.redis.list())
+        _first(client.redis.list_by_subscription())
 
     # -- Backup -------------------------------------------------------------
     def recovery_services_vaults(self):
