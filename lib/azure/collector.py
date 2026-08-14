@@ -10,6 +10,7 @@ Usage:
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -128,6 +129,36 @@ def collect_subscription(
 
 
 # =============================================================================
+# Resolve Parallel Subscriptions
+# =============================================================================
+
+def resolve_parallel_subscriptions(explicit_value: Optional[int], subscription_count: int) -> int:
+    """Resolve the effective --parallel-subscriptions worker count.
+
+    Mirrors lib/aws/collector.py's --parallel-accounts tiered-default
+    pattern, scaled by subscription count, but hard-capped at 8 regardless
+    of tenant size - every subscription shares one credential's Azure
+    Resource Manager throttling budget, so unbounded concurrency risks
+    trading collection time for 429 retry/backoff time instead.
+
+    Args:
+        explicit_value: The --parallel-subscriptions CLI value, or None if
+            not passed (falls back to the tiered default below).
+        subscription_count: Number of subscriptions this run will scan.
+
+    Returns:
+        Number of subscriptions to collect concurrently.
+    """
+    if explicit_value is not None:
+        return explicit_value
+    if subscription_count >= 100:
+        return 8
+    if subscription_count >= 50:
+        return 4
+    return 1
+
+
+# =============================================================================
 # Argument Parser (for collect.py)
 # =============================================================================
 
@@ -141,6 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--skip-permission-failures', action='store_true',
                         help='Log and exclude subscriptions that fail the permission preflight '
                              'instead of aborting the whole run (default: abort)')
+    parser.add_argument('--parallel-subscriptions', type=int, default=None, metavar='N',
+                        help='Number of subscriptions to collect in parallel '
+                             '(default: auto-scaled by subscription count - '
+                             '1 under 50, 4 from 50-99, 8 at 100 or more)')
     parser.add_argument('--regions',
                         help='Comma-separated list of regions to filter (e.g., eastus,westus2)')
     parser.add_argument('--output', help='Output directory or blob URL', default='.')
@@ -233,6 +268,15 @@ def run_collection(args) -> None:
 
     logger.info(f"Found {len(subscriptions)} subscription(s) to scan")
 
+    args.parallel_subscriptions = resolve_parallel_subscriptions(
+        args.parallel_subscriptions, len(subscriptions)
+    )
+    if args.parallel_subscriptions > 1:
+        logger.info(
+            f"Collecting {len(subscriptions)} subscription(s) with "
+            f"{args.parallel_subscriptions} parallel workers"
+        )
+
     # Mandatory preflight: verify every permission this run's flags require -
     # across every subscription - before collecting anything. A gap found
     # midway through collection today means either an entire subscription's
@@ -295,27 +339,50 @@ def run_collection(args) -> None:
     failed_subscriptions = []
 
     with ProgressTracker("Azure", total_accounts=len(subscriptions)) as tracker:
-        for sub in subscriptions:
-            try:
+        with ThreadPoolExecutor(max_workers=args.parallel_subscriptions) as executor:
+            # Always pass None for the tracker, regardless of
+            # parallel_subscriptions. ThreadPoolExecutor.submit() starts the
+            # worker immediately - it does not wait for the main thread to
+            # reach as_completed() - so even at parallel_subscriptions=1 the
+            # worker's tracker calls inside collect_subscription() would
+            # race ahead of this loop's own start_account() call for that
+            # same subscription below. Only the thread draining
+            # as_completed() may call ProgressTracker methods, at any N.
+            futures = {
+                executor.submit(
+                    collect_subscription, credential, sub['id'], sub['name'],
+                    None, args.parallel_resources, args.include_recovery_points
+                ): sub
+                for sub in subscriptions
+            }
+            for future in as_completed(futures):
+                sub = futures[future]
+                # start_account()/subscription_info.append() happen
+                # unconditionally, before inspecting future.result() - this
+                # matches today's sequential code exactly: a subscription
+                # that raises still ends up in subscription_info (the
+                # append there happens before collect_subscription() is
+                # even called), not just successful ones. Preserving this
+                # keeps downstream successful_sub_ids/cost-loop iteration
+                # (further below) behaviorally identical to today.
                 tracker.start_account(sub['id'], sub['name'])
                 subscription_info.append({
                     'subscription_id': sub['id'],
                     'subscription_name': sub['name']
                 })
-                all_resources.extend(collect_subscription(
-                    credential, sub['id'], sub['name'], tracker,
-                    parallel_resources=args.parallel_resources,
-                    include_recovery_points=args.include_recovery_points
-                ))
-                tracker.complete_account()
-            except AuthError as e:
-                logger.error(f"Auth error for subscription {sub['id']}: {e}")
-                failed_subscriptions.append({'id': sub['id'], 'name': sub['name'], 'error': str(e)})
-                continue
-            except Exception as e:
-                logger.error(f"Failed to collect from subscription {sub['id']}: {e}")
-                failed_subscriptions.append({'id': sub['id'], 'name': sub['name'], 'error': str(e)})
-                continue
+                try:
+                    sub_resources = future.result()
+                    all_resources.extend(sub_resources)
+                    tracker.add_resources(
+                        len(sub_resources), sum(r.size_gb for r in sub_resources)
+                    )
+                    tracker.complete_account()
+                except AuthError as e:
+                    logger.error(f"Auth error for subscription {sub['id']}: {e}")
+                    failed_subscriptions.append({'id': sub['id'], 'name': sub['name'], 'error': str(e)})
+                except Exception as e:
+                    logger.error(f"Failed to collect from subscription {sub['id']}: {e}")
+                    failed_subscriptions.append({'id': sub['id'], 'name': sub['name'], 'error': str(e)})
 
     if failed_subscriptions:
         logger.warning(f"Collection failed for {len(failed_subscriptions)} subscription(s)")
@@ -334,15 +401,22 @@ def run_collection(args) -> None:
         logger.info("Collecting change rate metrics from Azure Monitor...")
         print("Collecting change rate metrics and storage capacities from Azure Monitor...")
         all_change_rates: Dict = {}
-        for sub in subscriptions:
-            if sub['id'] not in successful_sub_ids:
-                continue
-            try:
-                sub_resources = [r for r in all_resources if r.subscription_id == sub['id']]
-                cr_data = collect_azure_change_rates(credential, sub['id'], sub_resources, args.change_rate_days)
-                merge_change_rates(all_change_rates, cr_data)
-            except Exception as e:
-                logger.warning(f"Failed to collect change rates for subscription {sub['id']}: {e}")
+        subs_to_process = [s for s in subscriptions if s['id'] in successful_sub_ids]
+        with ThreadPoolExecutor(max_workers=args.parallel_subscriptions) as executor:
+            futures = {
+                executor.submit(
+                    collect_azure_change_rates, credential, sub['id'],
+                    [r for r in all_resources if r.subscription_id == sub['id']],
+                    args.change_rate_days
+                ): sub
+                for sub in subs_to_process
+            }
+            for future in as_completed(futures):
+                sub = futures[future]
+                try:
+                    merge_change_rates(all_change_rates, future.result())
+                except Exception as e:
+                    logger.warning(f"Failed to collect change rates for subscription {sub['id']}: {e}")
         if all_change_rates:
             change_rate_data = finalize_change_rate_output(
                 all_change_rates, args.change_rate_days, "Azure Monitor"
@@ -409,14 +483,19 @@ def run_collection(args) -> None:
         logger.info("Collecting Azure costs from Cost Management...")
         print("Collecting Azure costs from Cost Management...")
         start_date, end_date = get_last_full_month()
-        for sub in subscription_info:
-            try:
-                records = collect_azure_costs(
-                    credential, sub['subscription_id'], start_date, end_date
-                )
-                cost_records.extend(records)
-            except Exception as e:
-                logger.warning(f"Failed to collect costs for subscription {sub['subscription_id']}: {e}")
+        with ThreadPoolExecutor(max_workers=args.parallel_subscriptions) as executor:
+            futures = {
+                executor.submit(
+                    collect_azure_costs, credential, sub['subscription_id'], start_date, end_date
+                ): sub
+                for sub in subscription_info
+            }
+            for future in as_completed(futures):
+                sub = futures[future]
+                try:
+                    cost_records.extend(future.result())
+                except Exception as e:
+                    logger.warning(f"Failed to collect costs for subscription {sub['subscription_id']}: {e}")
 
     # Data quality: how many resources have no measured actual usage (reported
     # as 0.0, never a quota/allocated estimate) vs. how many were confirmed.
