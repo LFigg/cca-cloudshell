@@ -223,13 +223,14 @@ class _AzurePermissionProbes:
 
     # -- Cost Management --------------------------------------------------
     def cost_management(self):
-        from azure.mgmt.costmanagement import CostManagementClient
         from azure.mgmt.costmanagement.models import QueryDataset, QueryDefinition, QueryTimePeriod
+
+        from lib.azure.cost import _build_cost_management_client
 
         # No subscription_id param on CostManagementClient - see the comment
         # in lib/azure/cost.py's collect_azure_costs() for why passing it
         # positionally corrupts the ARM endpoint instead of raising cleanly.
-        client = CostManagementClient(self.credential)
+        client = _build_cost_management_client(self.credential)
         scope = f"/subscriptions/{self.subscription_id}"
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=1)

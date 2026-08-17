@@ -64,6 +64,11 @@ from lib.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Cost Management throttles far more aggressively than the rest of ARM, so
+# cost collection uses its own low, fixed concurrency instead of
+# args.parallel_subscriptions (which scales up to 8 for large tenants).
+COST_MANAGEMENT_WORKERS = 2
+
 
 # =============================================================================
 # Subscription Collection
@@ -483,7 +488,7 @@ def run_collection(args) -> None:
         logger.info("Collecting Azure costs from Cost Management...")
         print("Collecting Azure costs from Cost Management...")
         start_date, end_date = get_last_full_month()
-        with ThreadPoolExecutor(max_workers=args.parallel_subscriptions) as executor:
+        with ThreadPoolExecutor(max_workers=COST_MANAGEMENT_WORKERS) as executor:
             futures = {
                 executor.submit(
                     collect_azure_costs, credential, sub['subscription_id'], start_date, end_date

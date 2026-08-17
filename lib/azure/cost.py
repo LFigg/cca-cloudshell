@@ -15,6 +15,19 @@ from lib.models import CostRecord
 
 logger = logging.getLogger(__name__)
 
+# Cost Management throttles far more aggressively than the rest of ARM, so
+# both call sites (real collection here, and the permission pre-flight probe
+# in lib/azure/permissions.py) build their client through this factory to
+# get a longer retry budget instead of the SDK's default of 3.
+def _build_cost_management_client(credential):
+    from azure.mgmt.costmanagement import CostManagementClient
+    return CostManagementClient(
+        credential,
+        retry_total=6,
+        retry_status=6,
+        retry_backoff_factor=1.5,
+    )
+
 
 def collect_azure_costs(
     credential,
@@ -39,7 +52,6 @@ def collect_azure_costs(
     records: List[CostRecord] = []
 
     try:
-        from azure.mgmt.costmanagement import CostManagementClient
         from azure.mgmt.costmanagement.models import (
             QueryAggregation,
             QueryComparisonExpression,
@@ -57,7 +69,7 @@ def collect_azure_costs(
         # silently corrupt the ARM endpoint into a scheme-less string,
         # which then failed with a misleading "Bearer token authentication
         # is not permitted for non-TLS protected (non-https) URLs" error.
-        client = CostManagementClient(credential)
+        client = _build_cost_management_client(credential)
         scope = f"/subscriptions/{subscription_id}"
 
         from_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
