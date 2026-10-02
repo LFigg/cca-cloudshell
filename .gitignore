@@ -26,4 +26,7 @@ tests/large_scale_output_m365/
 # Internal-only reference docs (never commit/push — local machine only)
 docs/internal-reference/
 
+# Customer outputs/reports - local scratch only, never commit/push
+INWORK/
+
 

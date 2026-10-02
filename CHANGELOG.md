@@ -5,6 +5,12 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - 2026-10-02
+
+### Fixed
+
+- **AWS collector: a single denied API call could erase an entire account's or region's inventory**: `collect_backup_region_settings()` (called once per account, before any region is processed) and each resource-type collector inside `collect_region()` raised `AuthError` with no enclosing try/except at those call sites. When an SCP denied one call, `backup:DescribeRegionSettings` for the whole account, or `ec2:DescribeInstances` in a single region, the exception propagated past every sibling collector queued behind it, discarding resources already gathered (such as S3 buckets) and skipping every untried resource type or region. In one customer run this zeroed out 64% of accounts entirely and limited most "successful" accounts to only a handful of their ~17 regions. Each call site now catches and logs the failure instead of letting it escalate, and the sequential per-region loop (`parallel_regions=1`, the CloudShell default) is now isolated the same way the parallel path already was.
+
 ## [2.1.0] - 2026-08-14
 
 ### Added

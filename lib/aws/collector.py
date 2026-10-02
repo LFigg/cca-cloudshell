@@ -127,7 +127,11 @@ def collect_region(
     def collect_and_track(name: str, collect_fn, *args):
         if tracker:
             tracker.update_task(f"Collecting {name}...")
-        result = collect_fn(*args)
+        try:
+            result = collect_fn(*args)
+        except Exception as e:
+            logger.error(f"[{region}] Failed to collect {name}: {e}")
+            return []
         if tracker and result:
             tracker.add_resources(len(result), sum(r.size_gb for r in result))
         return result
@@ -200,7 +204,11 @@ def collect_account(
     if tracker:
         tracker.update_task("Collecting Backup region settings...")
     backup_region = regions[0] if regions else 'us-east-1'
-    backup_settings = collect_backup_region_settings(session, backup_region, account_id)
+    try:
+        backup_settings = collect_backup_region_settings(session, backup_region, account_id)
+    except Exception as e:
+        logger.error(f"Failed to collect Backup region settings for account {account_id}: {e}")
+        backup_settings = []
     for resource in backup_settings:
         resource.region = 'global'
         resource.resource_id = f"arn:aws:backup:{account_id}:region-settings"
@@ -227,8 +235,11 @@ def collect_account(
         for region in regions:
             if tracker:
                 tracker.start_region(region)
-            region_resources = collect_region(session, region, account_id, tracker)
-            resources.extend(region_resources)
+            try:
+                region_resources = collect_region(session, region, account_id, tracker)
+                resources.extend(region_resources)
+            except Exception as e:
+                logger.error(f"[{region}] Failed: {e}")
             if tracker:
                 tracker.complete_region()
 
