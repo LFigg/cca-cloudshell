@@ -5,6 +5,12 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-10-07
+
+### Changed
+
+- **`docs/reports/assessment.md`**: reworded to use AWS's actual service names (Amazon EBS, Amazon RDS, Amazon Data Lifecycle Manager, Amazon Machine Image) instead of generic/internal phrasing, and rewritten as readable paragraphs instead of semicolon-chained, code-reference-heavy bullets. No factual changes beyond fixing one inaccuracy: `aws:rds:cluster` covers Multi-AZ DB Clusters as well as Aurora, not just Aurora.
+
 ## [2.2.0] - 2026-10-07
 
 ### Added
