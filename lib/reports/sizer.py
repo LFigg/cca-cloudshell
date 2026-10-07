@@ -548,11 +548,11 @@ def generate_sizer_json(
     # whose actual usage couldn't be measured contributes 0 GB to its
     # workload's data_size_tb rather than a fabricated allocation/quota guess -
     # correct, but it means data_size_tb can be a real, understated total. The
-    # per-resource-type breakdown mirrors what lib/reports/assessment.py and
-    # lib/reports/protection.py already surface, so an SE sees the same gap
-    # picture whichever CCA deliverable they're reading; the per-workload
-    # 'accurate_data_size'/'unmeasured_context_gb' fields above are the
-    # actionable version scoped to what's actually in THIS sizer JSON.
+    # per-resource-type breakdown mirrors what lib/reports/assessment.py already
+    # surfaces, so an SE sees the same gap picture whichever CCA deliverable
+    # they're reading; the per-workload 'accurate_data_size'/
+    # 'unmeasured_context_gb' fields above are the actionable version scoped
+    # to what's actually in THIS sizer JSON.
     data_quality_summary = compute_data_quality_summary_from_dicts(resources)
     data_quality_warnings = []
     inaccurate_size_workloads = [w for w in workloads if not w.accurate_data_size]

@@ -5,6 +5,20 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-10-07
+
+### Added
+
+- **`docs/reports/{assessment,cost,m365}.md`**: documentation for every value in these three reports, naming the exact function/logic behind each tab's numbers and the real gotchas in each report's inputs (file-discovery patterns, a required-but-unused CLI flag, the M365 report's summary-file pairing convention, duplicate-account double-counting).
+
+### Removed
+
+- **Protection Report** (`lib/reports/protection.py`, `scripts/generate_protection_report.py`, and its tests/docs): removed entirely. It predated the Assessment Report, duplicated AWS-only protection logic under different (and disagreeing) rules, and covered a narrower scope - AWS EC2/EBS/RDS only, with just a flat multi-cloud overview for everything else, no protection determination at all for Azure/GCP. Use the Assessment Report's Protection Analysis and Unprotected Resources tabs instead.
+
+### Fixed
+
+- Several documented `generate_assessment_report.py`/`generate_cost_report.py` example commands across the README and docs/ were missing required flags (`--inventory`, `--summary`) or pointed `--cost` at a cost-file naming pattern no collector actually writes, and would fail exactly as written. Corrected.
+
 ## [2.1.2] - 2026-10-02
 
 ### Fixed

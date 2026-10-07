@@ -221,14 +221,12 @@ When output is piped (non-TTY), plain text progress messages are shown instead.
 After collection, generate reports for analysis:
 
 ```bash
-# Protection status report
-python scripts/generate_protection_report.py cca_aws_inv_*.json protection_report.xlsx
-
 # Comprehensive assessment report (multi-tab Excel)
-python scripts/generate_assessment_report.py cca_*_inv_*.json assessment.xlsx
+python scripts/generate_assessment_report.py --inventory cca_*_inv_*.json -o assessment.xlsx
 
-# Include cost data in assessment
-python scripts/generate_assessment_report.py cca_aws_inv_*.json --cost cca_cost_*.json -o assessment.xlsx
+# Include cost data in assessment (point --cost at the collector's actual
+# cca_<cloud>_costs_*.json file - see docs/reports/assessment.md)
+python scripts/generate_assessment_report.py --inventory cca_aws_inv_*.json --cost cca_aws_costs_*.json -o assessment.xlsx
 ```
 
 ## Privacy and Security

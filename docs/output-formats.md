@@ -231,43 +231,16 @@ resource type):
 
 ---
 
-## Protection Report (Excel)
-
-Generate an Excel protection report from the inventory:
-
-```bash
-python scripts/generate_protection_report.py cca_aws_inv_143052.json protection_report.xlsx
-```
-
-### Report Tabs
-
-| Tab | Description |
-|-----|-------------|
-| **Summary** | Resource counts, sizes, protection percentages |
-| **Protection Report** | Instance → Volume → Snapshot hierarchy |
-| **Backup Plans** | Backup plans with schedules and retention |
-| **Backup Selections** | Resources assigned to backup plans |
-
-### Protection Status Colors
-
-| Status | Color | Description |
-|--------|-------|-------------|
-| Protected | Green | Has snapshots or recovery points |
-| In Backup Plan | Yellow | Assigned to backup plan, no snapshots yet |
-| Unprotected | Red | No snapshots or backup coverage |
-| No Storage | Gray | Resource has no associated storage |
-
----
-
 ## Assessment Report (Excel)
 
 Generate a comprehensive multi-tab report for sizing and TCO analysis:
 
 ```bash
-python scripts/generate_assessment_report.py cca_aws_inv_*.json assessment.xlsx
+python scripts/generate_assessment_report.py --inventory cca_aws_inv_*.json -o assessment.xlsx
 
-# Include cost data
-python scripts/generate_assessment_report.py cca_*_inv_*.json --cost cca_cost_*.json -o assessment.xlsx
+# Include cost data (point --cost at the collector's actual cca_<cloud>_costs_*.json
+# file - see docs/reports/assessment.md for why auto-discovery alone isn't enough)
+python scripts/generate_assessment_report.py --inventory cca_*_inv_*.json --cost cca_aws_costs_*.json -o assessment.xlsx
 ```
 
 ### Assessment Report Tabs

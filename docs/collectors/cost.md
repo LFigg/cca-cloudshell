@@ -161,10 +161,12 @@ After collection, include cost data in the assessment report:
 
 ```bash
 # Generate comprehensive assessment report with cost data
-python scripts/generate_assessment_report.py cca_aws_inv_*.json \
+python scripts/generate_assessment_report.py --inventory cca_aws_inv_*.json \
     --cost cca_aws_costs_*.json -o assessment.xlsx
 
 # Generate cost-only report
+# Note: --summary is required by argparse but its content is unused - pass the
+# same cost file to both flags. See docs/reports/cost.md
 python scripts/generate_cost_report.py \
-    -i cca_aws_costs_*.json -o cost_report.xlsx
+    -i cca_aws_costs_*.json -s cca_aws_costs_*.json -o cost_report.xlsx
 ```

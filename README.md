@@ -88,6 +88,9 @@ Each collector generates:
 | [Permission Setup Scripts](setup/README.md) | Setup scripts for Azure/GCP |
 | [Config Examples](config-examples/README.md) | YAML config file examples |
 | [Output Formats](docs/output-formats.md) | JSON schema, CSV fields |
+| [Assessment Report](docs/reports/assessment.md) | How each tab/value is computed, input gotchas |
+| [Cost Report](docs/reports/cost.md) | Cost breakdown sheets, optimization recommendation caveats |
+| [M365 Report](docs/reports/m365.md) | WST sizing inputs, summary-file pairing gotchas |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and solutions |
 
 ## Common Options
@@ -187,24 +190,18 @@ python3 collect.py --config cca-config.yaml
 Config files support environment variable substitution (`${VAR}` or `${VAR:-default}`).
 See [config-examples/](config-examples/) for samples.
 
-## Protection Report
-
-Generate an Excel report with protection status analysis:
-
-```bash
-python scripts/generate_protection_report.py inventory.json report.xlsx
-```
-
 ## Assessment Report
 
 Generate a comprehensive multi-tab Excel report combining inventory and cost data:
 
 ```bash
 # Single inventory file
-python scripts/generate_assessment_report.py cca_aws_inv_*.json assessment.xlsx
+python scripts/generate_assessment_report.py --inventory cca_aws_inv_*.json -o assessment.xlsx
 
-# Multiple inventory files (multi-cloud)
-python scripts/generate_assessment_report.py cca_*_inv_*.json --cost cca_cost_*.json -o assessment.xlsx
+# Multiple inventory files (multi-cloud) plus cost data
+# Note: --cost must point at the collector's actual cost file (cca_<cloud>_costs_*.json),
+# not auto-discovery's cca_cost_sum_*.json pattern - see docs/reports/assessment.md
+python scripts/generate_assessment_report.py --inventory cca_*_inv_*.json --cost cca_aws_costs_*.json -o assessment.xlsx
 ```
 
 The assessment report includes:
@@ -291,12 +288,10 @@ cca-cloudshell/
 │   │   └── teams.py        # Teams
 │   └── reports/            # Report generation
 │       ├── assessment.py   # Multi-tab Excel assessment report
-│       ├── protection.py   # Protection status report
 │       ├── m365.py         # M365-specific Excel report
 │       └── cost.py         # Cost analysis report
 ├── scripts/                # Thin CLI wrappers for report generators
 │   ├── generate_assessment_report.py
-│   ├── generate_protection_report.py
 │   ├── generate_m365_report.py
 │   ├── generate_cost_report.py
 │   └── merge_batch_outputs.py

@@ -369,20 +369,16 @@ Each collector generates three files:
 ### Generate Reports
 
 ```bash
-# Generate protection status report from inventory
-python3 scripts/generate_protection_report.py \
-    ./output/cca_aws_inv_143052.json \
-    ./output/protection_report.xlsx
-
 # Generate comprehensive assessment report (multi-tab Excel)
 python3 scripts/generate_assessment_report.py \
-    ./output/cca_aws_inv_*.json \
+    --inventory ./output/cca_aws_inv_*.json \
     -o ./output/assessment_report.xlsx
 
-# Include cost data in assessment report
+# Include cost data in assessment report (point --cost at the collector's actual
+# cca_<cloud>_costs_*.json file - see docs/reports/assessment.md)
 python3 scripts/generate_assessment_report.py \
-    ./output/cca_aws_inv_*.json \
-    --cost ./output/cca_cost_*.json \
+    --inventory ./output/cca_aws_inv_*.json \
+    --cost ./output/cca_aws_costs_*.json \
     -o ./output/assessment_report.xlsx
 ```
 
@@ -519,7 +515,7 @@ The merge script:
 
 5. **Generate reports:**
    ```bash
-   python3 scripts/generate_protection_report.py ./myorg/*_merged.json ./myorg/report.xlsx
+   python3 scripts/generate_assessment_report.py --inventory ./myorg/*_merged.json -o ./myorg/report.xlsx
    ```
 
 ### Recommended Folder Structure for Multi-Org

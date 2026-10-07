@@ -76,12 +76,11 @@ def compute_data_quality_summary_from_dicts(resources: List[Dict[str, Any]]) -> 
     """Same as compute_data_quality_summary(), for raw resource dicts (the shape
     every report generator actually works with, loaded straight from a
     cca_*_inv_*.json file - CloudResource.to_dict()'s output, not a CloudResource
-    instance). lib/reports/assessment.py and lib/reports/protection.py both read
-    resources this way and, before this function existed, had no visibility into
-    size_source at all - an 'unavailable' (0 GB, real usage couldn't be measured)
-    resource was indistinguishable from a genuinely empty one in either report,
-    silently understating total capacity with no caveat in the customer-facing
-    deliverable.
+    instance). lib/reports/assessment.py reads resources this way and, before
+    this function existed, had no visibility into size_source at all - an
+    'unavailable' (0 GB, real usage couldn't be measured) resource was
+    indistinguishable from a genuinely empty one, silently understating total
+    capacity with no caveat in the customer-facing deliverable.
     """
     buckets: Dict[str, DataQualityBucket] = {}
 
