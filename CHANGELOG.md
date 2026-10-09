@@ -5,6 +5,18 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-10-09
+
+### Added
+
+- **`scripts/collect_parallel_profiles.sh`**: runs N accounts' `collect.py` invocations concurrently (via `xargs -P`) for SSO setups where no single identity can assume a role into every account, so `--org-role`/`--role-arns` can't build a multi-account target list and collection has to be one `--profile` invocation per account. A single-instance lock (`mkdir`, portable to macOS which has no `flock(1)`) refuses to start a second run against the same output directory, and re-running the same command resumes by skipping any account that already has a real inventory file. Documented in `docs/admin-machine-setup.md`.
+
+### Fixed
+
+- **`collect_account()`**: `get_enabled_regions()` and `collect_s3_buckets()` both ran unguarded at the top of the function, before Backup region settings even got a chance to run - either one raising (e.g. a denied `ec2:DescribeRegions` or `s3:ListBuckets`) still took out the whole account's collection the same way the Backup region-settings bug did. Both are now caught and logged instead.
+- **Backup region-settings selection**: the real collection picked its probe region from `regions[0]` of an alphabetically-sorted enabled-region list, almost never `us-east-1` (codes like `ap-northeast-1` sort first) - while the mandatory preflight check always probes that exact API in `us-east-1`. Same account, same credentials, same API action, passed preflight and failed real collection. Since this data is account-wide (identical from any region), `collect_account()` now prefers `us-east-1` when it's enabled, which should recover this data for most/all accounts rather than just stop the failure from being fatal.
+- **`merge_batch_outputs.py`**: `find_inventory_files()`/`find_summary_files()`/`find_cost_files()` only recognized `batchNN/` subdirectories or flat root files, not nested per-account folders from an external per-account orchestration loop - pointing the script at a real multi-account collection found and merged nothing. Added a recursive fallback that only engages when the existing two modes find nothing.
+
 ## [2.2.1] - 2026-10-07
 
 ### Changed

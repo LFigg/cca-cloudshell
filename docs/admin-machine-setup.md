@@ -461,6 +461,34 @@ python3 collect.py --cloud aws -- --org-role CCARole --batch-size 20 --pause-bet
 python3 collect.py --cloud aws -- --org-role CCARole --batch-size 20 --interactive -o ./collection/
 ```
 
+### Per-Account SSO Profiles (No Org-Wide Role)
+
+Everything above assumes one identity can `sts:AssumeRole` into every target account - `--org-role` and `--role-arns` both chain-assume from a single base session. Some SSO setups don't work that way: each account is its own distinct IAM Identity Center permission set, with its own AWS CLI profile (`aws configure sso`), and there is no single role one profile can assume into every other account.
+
+In that case, neither `--org-role` nor `--role-arns` helps, and the only way to collect from N accounts is N separate `collect.py --profile <profile>` invocations. Running those one at a time is what actually causes most "this took 10 hours" complaints for 90+ account environments - not the collector itself, but a sequential loop around it. `scripts/collect_parallel_profiles.sh` runs multiple accounts' invocations concurrently instead:
+
+```bash
+# accounts.csv: one "account_id,profile_name" pair per line (header row OK)
+./scripts/collect_parallel_profiles.sh accounts.csv ./output 8
+
+# Extra arguments after the concurrency number pass through to every
+# collect.py invocation unchanged:
+./scripts/collect_parallel_profiles.sh accounts.csv ./output 8 --parallel-regions 4
+```
+
+What it does differently from a hand-rolled loop:
+
+- **Concurrency** is via `xargs -P`, not collect.py's own `--parallel-accounts` (which requires `--org-role`/`--role-arns` to build its account list). There's no AWS-side reason to keep this low - each account uses entirely separate credentials and quota, so there's no cross-account throttling the way there might be from raising per-account `--parallel-regions`. Start at 8 and raise it if the machine running it handles that fine.
+- **Safe to resume**: re-running the exact same command skips any account that already has a real inventory file (`cca_aws_inv_*.json`) in its output folder. Interrupted overnight, Ctrl-C'd, laptop slept - just run it again.
+- **Single-instance lock**: a second invocation against the same output directory refuses to start rather than silently duplicating work. If accounts ever look like they were collected more than once with near-identical timestamps, this is the thing that would have prevented it - running the same collection concurrently from two terminals/scripts without realizing it.
+- Each account gets its own status and log file under `<output>/.status/`, so one account's progress can never corrupt another's.
+
+After it finishes (or even partway through, for already-completed accounts):
+
+```bash
+python3 scripts/merge_batch_outputs.py ./output/
+```
+
 ### Account Filtering
 
 ```bash

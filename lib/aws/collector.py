@@ -190,20 +190,42 @@ def collect_account(
     resources: List[CloudResource] = []
 
     if regions is None:
-        regions = get_enabled_regions(session)
+        try:
+            regions = get_enabled_regions(session)
+        except Exception as e:
+            logger.error(f"Failed to discover enabled regions for account {account_id}: {e}")
+            regions = []
 
     logger.info(f"Collecting from account {account_id} across {len(regions)} regions (parallel={parallel_regions})")
 
     if tracker:
         tracker.update_task("Collecting S3 buckets...")
-    s3_resources = collect_s3_buckets(session, account_id, include_sizes=include_storage_sizes)
+    try:
+        s3_resources = collect_s3_buckets(session, account_id, include_sizes=include_storage_sizes)
+    except Exception as e:
+        logger.error(f"Failed to collect S3 buckets for account {account_id}: {e}")
+        s3_resources = []
     resources.extend(s3_resources)
     if tracker:
         tracker.add_resources(len(s3_resources), sum(r.size_gb for r in s3_resources))
 
     if tracker:
         tracker.update_task("Collecting Backup region settings...")
-    backup_region = regions[0] if regions else 'us-east-1'
+    # Prefer us-east-1 over regions[0] (the alphabetically-first enabled
+    # region, almost never us-east-1 since codes like ap-northeast-1 sort
+    # first): this setting is account-wide/global, identical from any
+    # region, and us-east-1 is the one region the mandatory preflight check
+    # already proved is callable for this exact API action (see
+    # lib/aws/permissions.py's _DEFAULT_PROBE_REGION). Some SCPs scope AWS
+    # Backup actions to specific regions independently of other services'
+    # own region restrictions, so regions[0] can land somewhere this
+    # specific call is denied even though us-east-1 would have worked.
+    if not regions:
+        backup_region = 'us-east-1'
+    elif 'us-east-1' in regions:
+        backup_region = 'us-east-1'
+    else:
+        backup_region = regions[0]
     try:
         backup_settings = collect_backup_region_settings(session, backup_region, account_id)
     except Exception as e:

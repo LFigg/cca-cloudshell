@@ -60,6 +60,22 @@ def _latest_file_in_dir(folder: Path, patterns: List[str]) -> Optional[Path]:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def _find_files_recursive(folder: Path, patterns: List[str]) -> List[Path]:
+    """Last-resort discovery: search every subdirectory, any depth.
+
+    Covers output from external per-account orchestration loops (one
+    numbered subfolder per account, under one or more differently-timestamped
+    top-level run folders) - a shape that matches neither "batchNN" dirs nor
+    a flat root of files.
+    """
+    found: List[Path] = []
+    for pattern in patterns:
+        for file_path in folder.glob(f"**/{pattern}"):
+            if not _is_merge_artifact(file_path) and file_path not in found:
+                found.append(file_path)
+    return sorted(found)
+
+
 def find_inventory_files(folder: Path) -> List[Path]:
     """Find all inventory JSON files in folder and subfolders."""
     inv_patterns = ["cca_*_inv_*.json", "cca_inv_*.json"]
@@ -79,7 +95,12 @@ def find_inventory_files(folder: Path) -> List[Path]:
         for file_path in folder.glob(pattern):
             if not _is_merge_artifact(file_path) and file_path not in inv_files:
                 inv_files.append(file_path)
-    return sorted(inv_files)
+    if inv_files:
+        return sorted(inv_files)
+
+    # Neither batch dirs nor root-level files found anything: fall back to
+    # a full recursive search before giving up.
+    return _find_files_recursive(folder, inv_patterns)
 
 
 def find_summary_files(folder: Path) -> List[Path]:
@@ -101,7 +122,10 @@ def find_summary_files(folder: Path) -> List[Path]:
         for file_path in folder.glob(pattern):
             if not _is_merge_artifact(file_path) and file_path not in sum_files:
                 sum_files.append(file_path)
-    return sorted(sum_files)
+    if sum_files:
+        return sorted(sum_files)
+
+    return _find_files_recursive(folder, sum_patterns)
 
 
 def find_cost_files(folder: Path) -> List[Path]:
@@ -123,7 +147,10 @@ def find_cost_files(folder: Path) -> List[Path]:
         for file_path in folder.glob(pattern):
             if not _is_merge_artifact(file_path) and file_path not in cost_files:
                 cost_files.append(file_path)
-    return sorted(cost_files)
+    if cost_files:
+        return sorted(cost_files)
+
+    return _find_files_recursive(folder, cost_patterns)
 
 
 def load_json_file(filepath: Path) -> Optional[Dict[str, Any]]:
