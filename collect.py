@@ -525,28 +525,39 @@ def check_azure_permissions() -> Tuple[bool, str, List[str]]:
             "Run: pip install azure-identity azure-mgmt-subscription"
         ]
 
+    from lib.azure.cloud import detect_azure_cloud, set_active_cloud
+    cloud = detect_azure_cloud()
+    set_active_cloud(cloud)
+
     try:
         # Exclude managed identity: in Cloud Shell, ManagedIdentityCredential
         # picks up the legacy Cloud Shell identity relay (via MSI_ENDPOINT)
         # ahead of AzureCliCredential, and that relay's AudienceNotSupported
         # failure for management.azure.com aborts the whole credential chain
         # before AzureCliCredential ever runs.
-        credential = DefaultAzureCredential(exclude_managed_identity_credential=True)
+        credential = DefaultAzureCredential(
+            exclude_managed_identity_credential=True,
+            authority=cloud.authority,
+        )
         # Get token to verify credentials work
-        credential.get_token("https://management.azure.com/.default")
-        details.append("Auth:     DefaultAzureCredential")
+        credential.get_token(cloud.credential_scopes[0])
+        details.append(f"Auth:     DefaultAzureCredential ({cloud.name})")
     except Exception as e:
         return False, f"Azure authentication failed: {e}", [
             "Configure credentials via:",
             "  - Azure Cloud Shell (recommended)",
             "  - az login",
             "  - Service principal environment variables",
-            "  - Managed identity"
+            "  - Managed identity",
+            "",
+            f"Detected cloud: {cloud.name}. If that's wrong, set the AZURE_CLOUD "
+            "environment variable (AzureCloud, AzureUSGovernment, or AzureChinaCloud) "
+            "or run 'az cloud set --name <cloud>' before retrying."
         ]
 
     # List subscriptions
     try:
-        sub_client = SubscriptionClient(credential)
+        sub_client = SubscriptionClient(credential, **cloud.arm_kwargs())
         subs = list(sub_client.subscriptions.list())
         if subs:
             details.append(f"Subs:     {len(subs)} accessible")

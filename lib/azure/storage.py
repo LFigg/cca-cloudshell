@@ -3,6 +3,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
+from lib.azure.cloud import get_active_cloud
 from lib.azure.helpers import extract_resource_group, normalize_region
 from lib.models import CloudResource
 from lib.utils import check_and_raise_auth_error
@@ -27,7 +28,7 @@ def collect_storage_accounts(credential, subscription_id: str) -> List[CloudReso
 
     resources = []
     try:
-        storage_client = StorageManagementClient(credential, subscription_id)
+        storage_client = StorageManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for account in storage_client.storage_accounts.list():
             if not account.id:
@@ -93,7 +94,7 @@ def collect_file_shares(credential, subscription_id: str) -> List[CloudResource]
 
     resources = []
     try:
-        storage_client = StorageManagementClient(credential, subscription_id)
+        storage_client = StorageManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for account in storage_client.storage_accounts.list():
             account_id = getattr(account, 'id', None)
@@ -217,7 +218,7 @@ def collect_netapp_files(credential, subscription_id: str) -> List[CloudResource
     try:
         from azure.mgmt.netapp import NetAppManagementClient
 
-        client = NetAppManagementClient(credential, subscription_id)
+        client = NetAppManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         # List all NetApp accounts across subscription
         for account in client.accounts.list_by_subscription():

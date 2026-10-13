@@ -3,6 +3,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
+from lib.azure.cloud import get_active_cloud
 from lib.azure.helpers import extract_resource_group, normalize_region
 from lib.models import CloudResource
 from lib.utils import check_and_raise_auth_error
@@ -27,7 +28,7 @@ def collect_recovery_services_vaults(credential, subscription_id: str) -> List[C
 
     resources = []
     try:
-        rs_client = RecoveryServicesClient(credential, subscription_id)
+        rs_client = RecoveryServicesClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for vault in rs_client.vaults.list_by_subscription_id():
             vault_id = getattr(vault, 'id', None)
@@ -79,7 +80,7 @@ def collect_backup_policies(credential, subscription_id: str) -> List[CloudResou
 
     resources = []
     try:
-        rs_client = RecoveryServicesClient(credential, subscription_id)
+        rs_client = RecoveryServicesClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         # First get all vaults
         for vault in rs_client.vaults.list_by_subscription_id():
@@ -91,7 +92,7 @@ def collect_backup_policies(credential, subscription_id: str) -> List[CloudResou
             rg = extract_resource_group(vault_id)
 
             try:
-                backup_client = RecoveryServicesBackupClient(credential, subscription_id)
+                backup_client = RecoveryServicesBackupClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
                 # List policies in this vault
                 for policy in backup_client.backup_policies.list(vault_name, rg):
@@ -161,7 +162,7 @@ def collect_backup_protected_items(credential, subscription_id: str) -> List[Clo
 
     resources = []
     try:
-        rs_client = RecoveryServicesClient(credential, subscription_id)
+        rs_client = RecoveryServicesClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         # First get all vaults
         for vault in rs_client.vaults.list_by_subscription_id():
@@ -174,7 +175,7 @@ def collect_backup_protected_items(credential, subscription_id: str) -> List[Clo
             vault_location = normalize_region(getattr(vault, 'location', ''))
 
             try:
-                backup_client = RecoveryServicesBackupClient(credential, subscription_id)
+                backup_client = RecoveryServicesBackupClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
                 # List protected items in this vault
                 for item in backup_client.backup_protected_items.list(vault_name, rg):
@@ -271,7 +272,7 @@ def collect_backup_recovery_points(credential, subscription_id: str) -> List[Clo
 
     resources = []
     try:
-        rs_client = RecoveryServicesClient(credential, subscription_id)
+        rs_client = RecoveryServicesClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         # First get all vaults
         vaults = list(rs_client.vaults.list_by_subscription_id())
@@ -293,7 +294,7 @@ def collect_backup_recovery_points(credential, subscription_id: str) -> List[Clo
             rg = extract_resource_group(vault_id)
 
             try:
-                backup_client = RecoveryServicesBackupClient(credential, subscription_id)
+                backup_client = RecoveryServicesBackupClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
                 # List protected items to get their recovery points
                 for item in backup_client.backup_protected_items.list(vault_name, rg):

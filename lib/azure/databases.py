@@ -2,6 +2,7 @@
 import logging
 from typing import List, Optional
 
+from lib.azure.cloud import get_active_cloud
 from lib.azure.helpers import extract_resource_group, normalize_region
 from lib.models import CloudResource
 from lib.utils import check_and_raise_auth_error, format_bytes_to_gb
@@ -54,7 +55,7 @@ def collect_sql_servers(credential, subscription_id: str) -> List[CloudResource]
 
     resources = []
     try:
-        sql_client = SqlManagementClient(credential, subscription_id)
+        sql_client = SqlManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for server in sql_client.servers.list():
             server_id = getattr(server, 'id', None)
@@ -147,7 +148,7 @@ def collect_sql_managed_instances(credential, subscription_id: str) -> List[Clou
 
     resources = []
     try:
-        sql_client = SqlManagementClient(credential, subscription_id)
+        sql_client = SqlManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for mi in sql_client.managed_instances.list():
             mi_id = getattr(mi, 'id', None)
@@ -209,7 +210,7 @@ def collect_sql_database_backups(credential, subscription_id: str) -> List[Cloud
 
     resources = []
     try:
-        sql_client = SqlManagementClient(credential, subscription_id)
+        sql_client = SqlManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for server in sql_client.servers.list():
             server_id = getattr(server, 'id', None)
@@ -329,7 +330,7 @@ def collect_cosmosdb_accounts(credential, subscription_id: str) -> List[CloudRes
 
     resources = []
     try:
-        cosmos_client = CosmosDBManagementClient(credential, subscription_id)
+        cosmos_client = CosmosDBManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for account in cosmos_client.database_accounts.list():
             if not account.id:
@@ -387,7 +388,7 @@ def collect_postgresql_servers(credential, subscription_id: str) -> List[CloudRe
         from azure.mgmt.rdbms.postgresql_flexibleservers import PostgreSQLManagementClient as PGFlexClient
 
         # Collect Flexible Servers (recommended)
-        flex_client = PGFlexClient(credential, subscription_id)
+        flex_client = PGFlexClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for server in flex_client.servers.list():
             server_id = getattr(server, 'id', None)
@@ -459,7 +460,7 @@ def collect_mysql_servers(credential, subscription_id: str) -> List[CloudResourc
         from azure.mgmt.rdbms.mysql_flexibleservers import MySQLManagementClient as MySQLFlexClient
 
         # Collect Flexible Servers (recommended)
-        flex_client = MySQLFlexClient(credential, subscription_id)
+        flex_client = MySQLFlexClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for server in flex_client.servers.list():
             server_id = getattr(server, 'id', None)
@@ -537,7 +538,7 @@ def collect_mariadb_servers(credential, subscription_id: str) -> List[CloudResou
     try:
         from azure.mgmt.rdbms.mariadb import MariaDBManagementClient
 
-        client = MariaDBManagementClient(credential, subscription_id)
+        client = MariaDBManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for server in client.servers.list():
             server_id = getattr(server, 'id', None)
@@ -606,7 +607,7 @@ def collect_synapse_workspaces(credential, subscription_id: str) -> List[CloudRe
     try:
         from azure.mgmt.synapse import SynapseManagementClient
 
-        client = SynapseManagementClient(credential, subscription_id)
+        client = SynapseManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         # List workspaces
         for workspace in client.workspaces.list():
@@ -720,7 +721,7 @@ def collect_redis_caches(credential, subscription_id: str) -> List[CloudResource
         return resources
 
     try:
-        redis_client = RedisManagementClient(credential, subscription_id)
+        redis_client = RedisManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for cache in redis_client.redis.list_by_subscription():
             cache_id = getattr(cache, 'id', None)

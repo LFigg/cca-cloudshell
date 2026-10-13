@@ -5,6 +5,12 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-10-13
+
+### Added
+
+- **Azure Government Cloud support (`lib/azure/cloud.py`)**: the Azure collector hardcoded the public cloud's ARM endpoint (`https://management.azure.com`) and AAD authority (`login.microsoftonline.com`) everywhere, so every management-client call failed in a Government tenant even once credentials worked, and `AzureCliCredential` itself failed first with "Please run 'az login' to set up an account" because it was requesting a token against the public ARM resource while its active cloud was `AzureUSGovernment`. The collector now detects which Azure cloud a run targets (an explicit `--azure-cloud` flag, then the `AZURE_CLOUD` env var, then the Azure CLI's active cloud via `az cloud show`, falling back to `AzureCloud`) and threads the correct authority, ARM base URL, and credential scopes through every `azure-mgmt-*` client constructed across `compute.py`, `databases.py`, `storage.py`, `container.py`, `backup.py`, `cost.py`, `permissions.py`, and `auth.py`. M365/Graph collection is untouched and stays public-cloud only.
+
 ## [2.3.1] - 2026-10-13
 
 ### Fixed

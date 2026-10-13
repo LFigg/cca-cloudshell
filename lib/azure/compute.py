@@ -2,6 +2,7 @@
 import logging
 from typing import List
 
+from lib.azure.cloud import get_active_cloud
 from lib.azure.helpers import extract_resource_group, normalize_region
 from lib.models import CloudResource
 from lib.utils import check_and_raise_auth_error, retry_with_backoff
@@ -27,7 +28,7 @@ def collect_vms(credential, subscription_id: str) -> List[CloudResource]:
 
     resources = []
     try:
-        compute_client = ComputeManagementClient(credential, subscription_id)
+        compute_client = ComputeManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for vm in compute_client.virtual_machines.list_all():
             if not vm.id:
@@ -93,7 +94,7 @@ def collect_disks(credential, subscription_id: str) -> List[CloudResource]:
 
     resources = []
     try:
-        compute_client = ComputeManagementClient(credential, subscription_id)
+        compute_client = ComputeManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for disk in compute_client.disks.list():
             if not disk.id:
@@ -151,7 +152,7 @@ def collect_disk_snapshots(credential, subscription_id: str) -> List[CloudResour
 
     resources = []
     try:
-        compute_client = ComputeManagementClient(credential, subscription_id)
+        compute_client = ComputeManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for snapshot in compute_client.snapshots.list():
             snapshot_id = getattr(snapshot, 'id', None)

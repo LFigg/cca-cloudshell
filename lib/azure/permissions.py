@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
+from lib.azure.cloud import get_active_cloud
 from lib.azure.helpers import extract_resource_group
 from lib.utils import is_auth_error, isoformat_z
 
@@ -80,79 +81,79 @@ class _AzurePermissionProbes:
     # -- Compute --------------------------------------------------------
     def vms(self):
         from azure.mgmt.compute import ComputeManagementClient
-        client = ComputeManagementClient(self.credential, self.subscription_id)
+        client = ComputeManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         vm = _first(client.virtual_machines.list_all())
         if vm is not None:
             self._sample_vm_id = vm.id
 
     def disks(self):
         from azure.mgmt.compute import ComputeManagementClient
-        client = ComputeManagementClient(self.credential, self.subscription_id)
+        client = ComputeManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.disks.list())
 
     def snapshots(self):
         from azure.mgmt.compute import ComputeManagementClient
-        client = ComputeManagementClient(self.credential, self.subscription_id)
+        client = ComputeManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.snapshots.list())
 
     # -- Storage ----------------------------------------------------------
     def storage_accounts(self):
         from azure.mgmt.storage import StorageManagementClient
-        client = StorageManagementClient(self.credential, self.subscription_id)
+        client = StorageManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         account = _first(client.storage_accounts.list())
         if account is not None:
             self._sample_storage_account_id = account.id
 
     def netapp(self):
         from azure.mgmt.netapp import NetAppManagementClient
-        client = NetAppManagementClient(self.credential, self.subscription_id)
+        client = NetAppManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.accounts.list_by_subscription())
 
     # -- Databases --------------------------------------------------------
     def sql_servers(self):
         from azure.mgmt.sql import SqlManagementClient
-        client = SqlManagementClient(self.credential, self.subscription_id)
+        client = SqlManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.servers.list())
 
     def sql_managed_instances(self):
         from azure.mgmt.sql import SqlManagementClient
-        client = SqlManagementClient(self.credential, self.subscription_id)
+        client = SqlManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.managed_instances.list())
 
     def cosmosdb(self):
         from azure.mgmt.cosmosdb import CosmosDBManagementClient
-        client = CosmosDBManagementClient(self.credential, self.subscription_id)
+        client = CosmosDBManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.database_accounts.list())
 
     def postgresql(self):
         from azure.mgmt.rdbms.postgresql_flexibleservers import PostgreSQLManagementClient
-        client = PostgreSQLManagementClient(self.credential, self.subscription_id)
+        client = PostgreSQLManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.servers.list())
 
     def mysql(self):
         from azure.mgmt.rdbms.mysql_flexibleservers import MySQLManagementClient
-        client = MySQLManagementClient(self.credential, self.subscription_id)
+        client = MySQLManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.servers.list())
 
     def mariadb(self):
         from azure.mgmt.rdbms.mariadb import MariaDBManagementClient
-        client = MariaDBManagementClient(self.credential, self.subscription_id)
+        client = MariaDBManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.servers.list())
 
     def synapse(self):
         from azure.mgmt.synapse import SynapseManagementClient
-        client = SynapseManagementClient(self.credential, self.subscription_id)
+        client = SynapseManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.workspaces.list())
 
     def redis(self):
         from azure.mgmt.redis import RedisManagementClient
-        client = RedisManagementClient(self.credential, self.subscription_id)
+        client = RedisManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.redis.list_by_subscription())
 
     # -- Backup -------------------------------------------------------------
     def recovery_services_vaults(self):
         from azure.mgmt.recoveryservices import RecoveryServicesClient
-        client = RecoveryServicesClient(self.credential, self.subscription_id)
+        client = RecoveryServicesClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         self._vaults = list(itertools.islice(client.vaults.list_by_subscription_id(), 1))
 
     def backup_policies(self):
@@ -161,13 +162,13 @@ class _AzurePermissionProbes:
         vault = self._vaults[0]
         rg = extract_resource_group(vault.id)
         from azure.mgmt.recoveryservicesbackup import RecoveryServicesBackupClient
-        client = RecoveryServicesBackupClient(self.credential, self.subscription_id)
+        client = RecoveryServicesBackupClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.backup_policies.list(vault_name=vault.name, resource_group_name=rg))
 
     # -- Containers / compute-adjacent --------------------------------------
     def aks_clusters(self):
         from azure.mgmt.containerservice import ContainerServiceClient
-        client = ContainerServiceClient(self.credential, self.subscription_id)
+        client = ContainerServiceClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         self._aks_clusters = list(itertools.islice(client.managed_clusters.list(), 1))
 
     def aks_pvc_credentials(self):
@@ -176,21 +177,21 @@ class _AzurePermissionProbes:
         cluster = self._aks_clusters[0]
         rg = extract_resource_group(cluster.id)
         from azure.mgmt.containerservice import ContainerServiceClient
-        client = ContainerServiceClient(self.credential, self.subscription_id)
+        client = ContainerServiceClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         client.managed_clusters.list_cluster_admin_credentials(
             resource_group_name=rg, resource_name=cluster.name
         )
 
     def function_apps(self):
         from azure.mgmt.web import WebSiteManagementClient
-        client = WebSiteManagementClient(self.credential, self.subscription_id)
+        client = WebSiteManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         _first(client.web_apps.list())
 
     # -- Monitor --------------------------------------------------------------
     def monitor_activity_log(self):
         """Baseline Microsoft.Insights read check - needs no specific resource."""
         from azure.mgmt.monitor import MonitorManagementClient
-        client = MonitorManagementClient(self.credential, self.subscription_id)
+        client = MonitorManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         end = datetime.now(timezone.utc)
         start = end - timedelta(hours=1)
         filter_str = f"eventTimestamp ge '{isoformat_z(start)}' and eventTimestamp le '{isoformat_z(end)}'"
@@ -209,7 +210,7 @@ class _AzurePermissionProbes:
         if not sample:
             return
         from azure.mgmt.monitor import MonitorManagementClient
-        client = MonitorManagementClient(self.credential, self.subscription_id)
+        client = MonitorManagementClient(self.credential, self.subscription_id, **get_active_cloud().arm_kwargs())
         metric_name = 'Percentage CPU' if self._sample_vm_id else 'UsedCapacity'
         end = datetime.now(timezone.utc)
         start = end - timedelta(hours=3)

@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, List
 
+from lib.azure.cloud import get_active_cloud
 from lib.constants import AZURE_BACKUP_FILTERS
 from lib.models import CostRecord
 
@@ -21,8 +22,11 @@ logger = logging.getLogger(__name__)
 # get a longer retry budget instead of the SDK's default of 3.
 def _build_cost_management_client(credential):
     from azure.mgmt.costmanagement import CostManagementClient
+    cloud = get_active_cloud()
     return CostManagementClient(
         credential,
+        base_url=cloud.resource_manager,
+        credential_scopes=cloud.credential_scopes,
         retry_total=6,
         retry_status=6,
         retry_backoff_factor=1.5,

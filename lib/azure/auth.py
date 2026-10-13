@@ -16,11 +16,20 @@ def get_credential():
     chain before AzureCliCredential (the one that actually works in Cloud
     Shell, since the session is already signed in) ever gets a turn.
 
+    The authority is set from the active Azure cloud (see lib/azure/cloud.py)
+    so a Government Cloud Shell session authenticates against
+    login.microsoftonline.us instead of the public AAD authority.
+
     Returns:
         A DefaultAzureCredential instance
     """
     from azure.identity import DefaultAzureCredential
-    return DefaultAzureCredential(exclude_managed_identity_credential=True)
+
+    from lib.azure.cloud import get_active_cloud
+    return DefaultAzureCredential(
+        exclude_managed_identity_credential=True,
+        authority=get_active_cloud().authority,
+    )
 
 
 def get_subscriptions(credential) -> List[Dict]:
@@ -34,7 +43,8 @@ def get_subscriptions(credential) -> List[Dict]:
     """
     from azure.mgmt.subscription import SubscriptionClient
 
-    subscription_client = SubscriptionClient(credential)
+    from lib.azure.cloud import get_active_cloud
+    subscription_client = SubscriptionClient(credential, **get_active_cloud().arm_kwargs())
     subscriptions = []
 
     for sub in subscription_client.subscriptions.list():

@@ -22,6 +22,7 @@ from lib.azure.backup import (
     collect_backup_recovery_points,
     collect_recovery_services_vaults,
 )
+from lib.azure.cloud import detect_azure_cloud, set_active_cloud
 from lib.azure.compute import collect_disk_snapshots, collect_disks, collect_vms
 from lib.azure.container import collect_aks_clusters, collect_function_apps
 from lib.azure.cost import collect_azure_costs
@@ -199,6 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Include individual recovery points (slow for large backup environments)')
     parser.add_argument('--no-costs', action='store_true',
                         help='Skip data protection cost collection (costs are collected by default)')
+    parser.add_argument('--azure-cloud', choices=['AzureCloud', 'AzureUSGovernment', 'AzureChinaCloud'],
+                        help='Azure cloud to collect from (default: auto-detect from the AZURE_CLOUD '
+                             "env var or the Azure CLI's active cloud, falling back to AzureCloud)")
     return parser
 
 
@@ -215,6 +219,10 @@ def run_collection(args) -> None:
     log_dir = args.output if not args.output.startswith(('s3://', 'gs://', 'https://')) else None
     setup_logging(args.log_level, output_dir=log_dir)
     log_arguments(args, "Azure collector")
+
+    cloud = detect_azure_cloud(getattr(args, 'azure_cloud', None))
+    set_active_cloud(cloud)
+    logger.info(f"Targeting Azure cloud: {cloud.name} ({cloud.resource_manager})")
 
     # Mandatory preflight: verify every package requirements.in says the Azure
     # collector needs is actually importable, before touching credentials or

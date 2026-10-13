@@ -2,6 +2,7 @@
 import logging
 from typing import List
 
+from lib.azure.cloud import get_active_cloud
 from lib.azure.helpers import extract_resource_group, normalize_region
 from lib.models import CloudResource
 from lib.utils import check_and_raise_auth_error
@@ -26,7 +27,7 @@ def collect_aks_clusters(credential, subscription_id: str) -> List[CloudResource
 
     resources = []
     try:
-        aks_client = ContainerServiceClient(credential, subscription_id)
+        aks_client = ContainerServiceClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for cluster in aks_client.managed_clusters.list():
             if not cluster.id:
@@ -81,7 +82,7 @@ def collect_function_apps(credential, subscription_id: str) -> List[CloudResourc
 
     resources = []
     try:
-        web_client = WebSiteManagementClient(credential, subscription_id)
+        web_client = WebSiteManagementClient(credential, subscription_id, **get_active_cloud().arm_kwargs())
 
         for app in web_client.web_apps.list():
             if not app.id or not app.kind or 'functionapp' not in app.kind.lower():
