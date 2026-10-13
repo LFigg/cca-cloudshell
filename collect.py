@@ -526,7 +526,12 @@ def check_azure_permissions() -> Tuple[bool, str, List[str]]:
         ]
 
     try:
-        credential = DefaultAzureCredential()
+        # Exclude managed identity: in Cloud Shell, ManagedIdentityCredential
+        # picks up the legacy Cloud Shell identity relay (via MSI_ENDPOINT)
+        # ahead of AzureCliCredential, and that relay's AudienceNotSupported
+        # failure for management.azure.com aborts the whole credential chain
+        # before AzureCliCredential ever runs.
+        credential = DefaultAzureCredential(exclude_managed_identity_credential=True)
         # Get token to verify credentials work
         credential.get_token("https://management.azure.com/.default")
         details.append("Auth:     DefaultAzureCredential")

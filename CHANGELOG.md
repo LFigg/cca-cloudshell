@@ -5,6 +5,13 @@ All notable changes to CCA CloudShell will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-10-13
+
+### Fixed
+
+- **`collect_rds_clusters()` / `collect_rds_cluster_snapshots()`**: called the plain `rds:DescribeDBClusters`/`DescribeDBClusterSnapshots` APIs with no engine filter, so every DocumentDB/Neptune cluster (sharing RDS's cluster control plane and ARN namespace) got collected twice: once correctly as `aws:docdb:cluster`/`aws:neptune:cluster`, and again as a duplicate `aws:rds:cluster` entry with the same resource ID. Both functions now exclude `Engine in ('docdb', 'neptune')`, matching the filter the DocumentDB/Neptune collectors already apply on their own engine-scoped calls.
+- **Azure credential check (`check_azure_permissions()` in `collect.py`, `get_credential()` in `lib/azure/auth.py`)**: in Azure Cloud Shell, `DefaultAzureCredential()` let `ManagedIdentityCredential` run ahead of `AzureCliCredential`. Cloud Shell sets `MSI_ENDPOINT` for its legacy managed-identity relay, which doesn't support the ARM audience (`https://management.azure.com`) and fails with a `ClientAuthenticationError` rather than `CredentialUnavailableError`. Since `ChainedTokenCredential` only continues past `CredentialUnavailableError`, that failure aborted the whole chain before `AzureCliCredential`, the credential that actually works since Cloud Shell sessions are already signed in, ever ran. Both call sites now pass `exclude_managed_identity_credential=True`.
+
 ## [2.3.0] - 2026-10-09
 
 ### Added

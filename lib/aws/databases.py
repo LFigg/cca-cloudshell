@@ -401,6 +401,18 @@ def collect_rds_clusters(session: boto3.Session, region: str, account_id: str) -
 
         for page in paginator.paginate():
             for cluster in page['DBClusters']:
+                # DocumentDB and Neptune clusters share RDS's cluster control
+                # plane (same ARN namespace) and come back here too, even
+                # though they're created via docdb:/neptune:CreateDBCluster,
+                # not rds's - collect_documentdb_clusters()/
+                # collect_neptune_clusters() already collect them correctly
+                # typed via their own engine-filtered calls, so including
+                # them here too would collect every one of them twice: once
+                # correctly typed, once more as a second 'aws:rds:cluster'
+                # entry sharing the same resource_id (ARN).
+                if cluster.get('Engine') in ('docdb', 'neptune'):
+                    continue
+
                 cluster_id = cluster.get('DBClusterIdentifier', '')
                 api_storage = float(cluster.get('AllocatedStorage', 0))
 
@@ -549,6 +561,15 @@ def collect_rds_cluster_snapshots(session: boto3.Session, region: str, account_i
 
         for page in paginator.paginate():
             for snapshot in page.get('DBClusterSnapshots', []):
+                # Same cross-service visibility as collect_rds_clusters():
+                # snapshots of DocumentDB/Neptune clusters come back from
+                # this unfiltered RDS API call too. There's no dedicated
+                # docdb/neptune snapshot collector to double-count against
+                # here, but labeling a DocumentDB backup as an RDS one is
+                # still wrong - skip them.
+                if snapshot.get('Engine') in ('docdb', 'neptune'):
+                    continue
+
                 snapshot_id = snapshot.get('DBClusterSnapshotIdentifier', '')
                 # Same as instance snapshots: AllocatedStorage is the source
                 # cluster's provisioned/placeholder storage, not the

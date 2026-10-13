@@ -6,13 +6,21 @@ logger = logging.getLogger(__name__)
 
 
 def get_credential():
-    """Get Azure credential. In Cloud Shell, uses managed identity.
+    """Get Azure credential.
+
+    Managed identity is excluded: Azure Cloud Shell sets MSI_ENDPOINT for its
+    legacy Cloud Shell identity relay, which ManagedIdentityCredential picks up
+    ahead of AzureCliCredential. That relay doesn't support the ARM audience
+    (https://management.azure.com) and fails with a ClientAuthenticationError
+    rather than CredentialUnavailableError, which aborts the whole credential
+    chain before AzureCliCredential (the one that actually works in Cloud
+    Shell, since the session is already signed in) ever gets a turn.
 
     Returns:
         A DefaultAzureCredential instance
     """
     from azure.identity import DefaultAzureCredential
-    return DefaultAzureCredential()
+    return DefaultAzureCredential(exclude_managed_identity_credential=True)
 
 
 def get_subscriptions(credential) -> List[Dict]:
